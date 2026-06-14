@@ -1,44 +1,49 @@
 # BriefTrack — Roadmap
 
-BriefTrack today is a single-user, locally-run tool that makes the **client
-brief the source of truth** and reconciles designed areas against it, with a
-scale-accurate, image-aware bubble diagram for early space planning. This is
-where it could go next. Items are grouped by theme and roughly ordered by
+BriefTrack is a **single-user, locally-run** tool that makes the **client brief
+the source of truth** and reconciles designed areas against it, with a
+scale-accurate, image-aware bubble diagram for early space planning. Its future
+is as a **self-contained desktop app** that architects can install and run
+without Node or a server — not a hosted or multi-user product. This is where it
+could go next. Items are grouped by theme and roughly ordered by
 value-to-effort within each group; nothing here is committed.
+
+## Shipped
+
+The near-term core is now in place:
+
+- **Undo / redo** for diagram edits (pin, move, link, shape, area, category).
+- **Multi-select** on the diagram — marquee and shift-click — with batch pin,
+  box, recategorise and delete, plus **group move** (drag the whole selection
+  at once).
+- **Bubble grouping hulls** behind each department / building.
+- **Adjacency matrix view** as an alternative editor for the same adjacency
+  data.
+- **Snapshot diffing** — overlay two milestones to see which spaces grew or
+  shrank.
+- **Per-space notes & reference images**.
+- **Keyboard-first editing** in the Brief tree (move, reorder, nest, edit).
+- **Custom categories** — create and assign departments from the diagram, each
+  with a custom colour.
 
 ## Near term (rounding out the core)
 
-- **Undo / redo** for diagram edits (pin, move, link, shape, area). Currently
-  every change persists immediately; an in-memory command stack would make
-  experimentation safe.
-- **Multi-select on the diagram** — marquee or shift-click to pin / box /
-  delete several bubbles at once (the data model already supports per-instance
-  state).
-- **Bubble grouping hulls** — draw a soft convex hull behind each building /
-  department so containment reads at a glance.
-- **Adjacency matrix view** — the classic architect's triangular matrix as an
-  alternative editor for the same `adjacencies` data.
-- **Snapshot diffing** — overlay two milestones to see which spaces grew or
-  shrank, reusing the existing `snapshots` model.
-- **Per-space notes & images** — the `notes` column exists but is unused in the
-  UI; surface it plus reference images per space.
-- **Keyboard-first editing** in the Brief tree (arrow to move, tab to indent).
+- **Per-space data sheets** — build on notes/images with finishes, occupancy,
+  servicing and other brief attributes per space.
+- **Diagram presets** — save and reuse colour palettes, scales and layer
+  setups across projects.
+- **Richer PDF / export options** — page-size and title-block customisation,
+  multi-page sheet sets.
 
-## Medium term (collaboration & integration)
+## Medium term (integration & data)
 
-- **Multi-user + auth** — the API is already REST/SQLite; add accounts,
-  project sharing, and optimistic-locking on writes. The single biggest change
-  to the data layer.
-- **Realtime presence** — WebSocket layer so two people can arrange bubbles
-  together; the simulation already runs per-client, so broadcasting node
-  positions is the main work.
 - **Import area schedules** — parse a Revit/IFC or spreadsheet export straight
   into a milestone (the milestone model is keyed by space, so a column mapping
   UI is enough).
 - **DXF / DWG underlay** — accept CAD as a background layer (vector, not just
   raster), reusing the per-layer calibration model.
-- **Version history** — keep a per-project audit log; SQLite makes
-  append-only history cheap.
+- **Local version history** — keep a per-project, append-only history so edits
+  can be reviewed and rolled back; SQLite makes this cheap.
 
 ## Longer term (intelligence & output)
 
@@ -57,12 +62,14 @@ value-to-effort within each group; nothing here is committed.
 
 ## Platform / quality
 
+- **Desktop packaging (the headline direction)** — ship as a Tauri or Electron
+  app so non-technical architects can install and run BriefTrack without Node.
+  The SQLite database lives in a normal app-data location, and projects can be
+  saved and opened as portable files.
 - **Tests** — pure helpers in `src/compute.js` and the scale math are the
   highest-value unit-test targets; add an API integration test suite.
 - **Type safety** — migrate to TypeScript (or JSDoc + `checkJs`) starting with
   `compute.js` and the API contract.
-- **Packaging** — ship as a desktop app (Tauri/Electron) so non-technical
-  architects can run it without Node, or a hosted multi-tenant deployment.
 - **Accessibility** — keyboard and screen-reader passes on the diagram
   (currently pointer-driven) and full-app focus management.
 - **i18n & imperial polish** — the unit system exists; complete imperial
@@ -71,7 +78,8 @@ value-to-effort within each group; nothing here is committed.
 ## Known limitations to address
 
 - Background images are stored as base64 data URLs inside the project row —
-  fine for a single user, but should move to blob storage for sharing/scale.
+  fine for local single-user use, but very large image sets would be better
+  stored as files alongside the database (a natural fit once packaged as a
+  desktop app).
 - The force simulation runs on the main thread; very large programs (hundreds
   of rooms) would benefit from a web worker.
-- No server-side auth or rate-limiting on the geocode/tile proxies.
