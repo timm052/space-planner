@@ -99,6 +99,7 @@ ensureColumn('projects', 'sat_visible', 'sat_visible INTEGER DEFAULT 1');
 ensureColumn('projects', 'sat_x', 'sat_x REAL DEFAULT 0');
 ensureColumn('projects', 'sat_y', 'sat_y REAL DEFAULT 0');
 ensureColumn('projects', 'north_deg', 'north_deg REAL DEFAULT 0'); // project north, clockwise from up
+ensureColumn('projects', 'category_colors', 'category_colors TEXT'); // JSON map: category/building label → custom colour
 ensureColumn('projects', 'bg_rot', 'bg_rot REAL DEFAULT 0'); // custom image rotation, degrees CW
 ensureColumn('projects', 'sat_rot', 'sat_rot REAL DEFAULT 0'); // satellite rotation, degrees CW
 

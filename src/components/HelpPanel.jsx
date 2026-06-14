@@ -9,6 +9,8 @@ const SECTIONS = [
       ['Pin', 'Hover a bubble and press P (or select it and use the Pin button) to pin/unpin it. Pinned bubbles wear a dashed ring and never move.'],
       ['Box', 'Hover a bubble and press B to switch it between a circle and an equal-area square. Use “All boxes / All bubbles” to convert every space at once.'],
       ['Multi-select', 'Drag across empty canvas to marquee-select bubbles, or Shift-click to add/remove them. A toolbar lets you pin, box or delete the whole selection at once. Esc clears it.'],
+      ['Move together', 'With several bubbles selected, drag any one of them to move the whole group; they pin where you drop them.'],
+      ['Categories', 'Bubbles colour by department. Recolour any category by clicking its legend swatch. Select bubbles and use the Category box to reassign them — typing a new name creates that category.'],
       ['Edit area', 'The Areas panel on the right edits areas in a list — bubbles resize as you type.'],
     ],
   },

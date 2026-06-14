@@ -112,6 +112,8 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
   const [drafts, setDrafts] = useState({});
   const [panMode, setPanMode] = useState(false);
   const [multi, setMulti] = useState(() => new Set()); // selected instance keys for batch ops
+  const [catDraft, setCatDraft] = useState(''); // batch category/department assignment input
+  const [localColors, setLocalColors] = useState({}); // optimistic category colour overrides
   const [marquee, setMarquee] = useState(null); // { x0,y0,x1,y1 } in svg coords while selecting
   const [hulls, setHulls] = useState(() => localStorage.getItem('brieftrack.hulls') === '1');
   const [showMatrix, setShowMatrix] = useState(false);
@@ -143,8 +145,11 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
   adjRef.current = adjacencies;
 
   const history = useHistory();
-  // Reset history when switching projects — recorded closures belong to one project.
-  useEffect(() => history.clear(), [project.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Reset history + optimistic colours when switching projects.
+  useEffect(() => {
+    history.clear();
+    setLocalColors({});
+  }, [project.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const units = project.units;
   const simEnabled = !!project.sim_enabled;
@@ -277,7 +282,32 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
     return s.department || 'General';
   };
   const groups = [...new Set(leaves.map(groupKey))];
-  const colorOf = (s) => PALETTE[groups.indexOf(groupKey(s)) % PALETTE.length];
+  // All department names (the categories), regardless of the current colour mode.
+  const departments = [...new Set(leaves.map((s) => s.department || 'General'))];
+
+  // Custom category/building colours: persisted JSON map merged with optimistic edits.
+  const savedColors = useMemo(() => {
+    try {
+      return JSON.parse(project.category_colors || '{}') || {};
+    } catch {
+      return {};
+    }
+  }, [project.category_colors]);
+  const effColors = { ...savedColors, ...localColors };
+  const colorForLabel = (label) => effColors[label] || PALETTE[groups.indexOf(label) % PALETTE.length];
+  const colorOf = (s) => colorForLabel(groupKey(s));
+
+  function setCategoryColor(label, color) {
+    setLocalColors((m) => {
+      const next = { ...m, [label]: color };
+      clearTimeout(debouncers.current.catcolor);
+      debouncers.current.catcolor = setTimeout(
+        () => saveProject({ category_colors: JSON.stringify({ ...savedColors, ...next }) }, { silent: true }),
+        250
+      );
+      return next;
+    });
+  }
 
   const instances = useMemo(
     () =>
@@ -450,7 +480,10 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
   // Force simulation.
   useEffect(() => {
     let raf;
-    const held = (key) => dragRef.current?.key === key;
+    const held = (key) => {
+      const d = dragRef.current;
+      return !!d && (d.key === key || (d.groupSet != null && d.groupSet.has(key)));
+    };
     const fixedInst = (o) => held(o.key) || !!instPin(o.s, o.i);
 
     const simulate = (alpha) => {
@@ -616,10 +649,23 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
       return;
     }
     if (!dragRef.current) return;
-    const node = nodesRef.current.get(dragRef.current.key);
-    if (!node) return;
+    const drag = dragRef.current;
     const { x, y } = toSvgCoords(e);
-    dragRef.current.moved += Math.hypot(x - node.x, y - node.y);
+    if (drag.starts) {
+      // Group drag: translate every selected node by the same delta.
+      const dx = x - drag.anchor.x;
+      const dy = y - drag.anchor.y;
+      drag.moved = Math.hypot(dx, dy);
+      for (const s of drag.starts) {
+        const n = nodesRef.current.get(s.key);
+        if (n) ((n.x = s.x + dx), (n.y = s.y + dy));
+      }
+      setTick((t) => t + 1);
+      return;
+    }
+    const node = nodesRef.current.get(drag.key);
+    if (!node) return;
+    drag.moved += Math.hypot(x - node.x, y - node.y);
     node.x = x;
     node.y = y;
     setTick((t) => t + 1);
@@ -645,6 +691,11 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
     dragRef.current = null;
     alphaRef.current = Math.max(alphaRef.current, 0.3);
     if (!drag) return;
+    if (drag.starts) {
+      // Group drag: pin the whole selection where it was dropped (one undo step).
+      if (drag.moved >= 6) await multiPin(true);
+      return;
+    }
     const space = byId.get(drag.spaceId);
     if (!space) return;
     if (drag.moved >= 6) {
@@ -668,7 +719,19 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
     } catch {
       /* synthetic pointer */
     }
-    dragRef.current = { key: o.key, spaceId: o.s.id, idx: o.i, moved: 0 };
+    // If the pressed bubble is part of a multi-selection, drag moves them all.
+    let starts = null, anchor = null, groupSet = null;
+    if (multi.has(o.key) && multi.size > 1) {
+      anchor = toSvgCoords(e);
+      groupSet = new Set(multi);
+      starts = [...multi]
+        .map((k) => {
+          const n = nodesRef.current.get(k);
+          return n ? { key: k, x: n.x, y: n.y } : null;
+        })
+        .filter(Boolean);
+    }
+    dragRef.current = { key: o.key, spaceId: o.s.id, idx: o.i, moved: 0, starts, anchor, groupSet };
   }
 
   function commitView(v) {
@@ -779,6 +842,18 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
     const ids = [...new Set(multiList().map((o) => o.id))];
     const changes = ids.map((id) => ({ id, before: { shape: shapeOf(byId.get(id)) }, after: { shape } }));
     await commitMany(changes, 'shape selection');
+  }
+  // Assign the selected bubbles to a category (department) — typing a new name
+  // creates it. Colour by department to see the grouping update.
+  async function multiSetCategory(name) {
+    const dept = name.trim();
+    if (!dept) return;
+    const ids = [...new Set(multiList().map((o) => o.id))];
+    const changes = ids
+      .map((id) => ({ id, before: { department: byId.get(id).department }, after: { department: dept } }))
+      .filter((c) => c.before.department !== c.after.department);
+    await commitMany(changes, 'set category');
+    setCatDraft('');
   }
   async function multiDelete() {
     const ids = [...new Set(multiList().map((o) => o.id))];
@@ -1342,9 +1417,11 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
           )}
 
           <div className="stage-legend">
-            {groups.map((g, i) => (
+            {groups.map((g) => (
               <span key={g} className="legend-item">
-                <span className="legend-dot" style={{ background: PALETTE[i % PALETTE.length] }} />
+                <label className="legend-swatch" style={{ background: colorForLabel(g) }} title={`Recolour “${g}”`}>
+                  <input type="color" value={colorForLabel(g)} onChange={(e) => setCategoryColor(g, e.target.value)} />
+                </label>
                 {g}
               </span>
             ))}
@@ -1545,6 +1622,25 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
               <button className="btn small" onClick={() => multiPin(false)} title="Unpin the selected bubbles">Unpin</button>
               <button className="btn small" onClick={() => multiShape('box')} title="Make the selected spaces boxes">▢ Box</button>
               <button className="btn small" onClick={() => multiShape('bubble')} title="Make the selected spaces bubbles">○ Bubble</button>
+              <span className="multi-sep" />
+              <input
+                className="multi-cat"
+                list="diagram-categories"
+                placeholder="Category…"
+                value={catDraft}
+                onChange={(e) => setCatDraft(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') multiSetCategory(catDraft); }}
+                title="Assign the selected bubbles to a category (type a new name to create it)"
+              />
+              <datalist id="diagram-categories">
+                {departments.map((d) => (
+                  <option key={d} value={d} />
+                ))}
+              </datalist>
+              <button className="btn small" onClick={() => multiSetCategory(catDraft)} disabled={!catDraft.trim()} title="Set the category of the selected bubbles">
+                Set
+              </button>
+              <span className="multi-sep" />
               <button className="btn small ghost danger" onClick={multiDelete} title="Delete the selected spaces from the brief">✕ Delete</button>
               <button className="btn small ghost" onClick={() => setMulti(new Set())} title="Clear the selection (Esc)">Clear</button>
             </div>
@@ -1556,7 +1652,7 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
               : panMode
               ? 'Pan mode — drag the canvas. Toggle Pan off to edit bubbles.'
               : multi.size > 0
-              ? `${multi.size} selected — batch pin/box/delete above · Esc to clear · Shift-click or drag to change selection`
+              ? `${multi.size} selected — drag any selected bubble to move them together · set category / pin / box above · Esc to clear`
               : 'Drag to move · hover + P to pin · hover + B for box · click two bubbles to link · drag empty canvas to multi-select' +
                 (effScale ? ` · ${scaleLabelFor(effScale)}` : '') +
                 (hasImage ? '' : ' · add a site image under Layers')}
@@ -1575,7 +1671,7 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
               {groups.map((g) => (
                 <div key={g} className="split-group">
                   <div className="split-dept">
-                    <span className="legend-dot" style={{ background: PALETTE[groups.indexOf(g) % PALETTE.length] }} />
+                    <span className="legend-dot" style={{ background: colorForLabel(g) }} />
                     {g}
                   </div>
                   {leaves
