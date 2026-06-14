@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api.js';
 import {
   briefNet,
@@ -20,6 +20,18 @@ export default function BriefTab({ project, spaces, onChanged }) {
   const [error, setError] = useState(null);
   const [dragId, setDragId] = useState(null);
   const [dropId, setDropId] = useState(null); // 0 = top level
+  const [focusId, setFocusId] = useState(null);
+  const [expandedId, setExpandedId] = useState(null); // row whose notes/image panel is open
+  const rowEls = useRef(new Map());
+  const pendingFocus = useRef(null); // re-focus this row after the next refetch
+
+  // Keep keyboard focus on the row the user just moved/indented, across refetch.
+  useEffect(() => {
+    if (pendingFocus.current != null) {
+      rowEls.current.get(pendingFocus.current)?.focus();
+      pendingFocus.current = null;
+    }
+  });
 
   async function reparent(id, parentId) {
     if (id === parentId) return;
@@ -109,6 +121,114 @@ export default function BriefTab({ project, spaces, onChanged }) {
     onChanged();
   }
 
+  // ---------- keyboard-first editing ----------
+  function focusRow(id) {
+    setFocusId(id);
+    rowEls.current.get(id)?.focus();
+  }
+  function siblingsOf(space) {
+    return spaces
+      .filter((x) => (x.parent_id ?? null) === (space.parent_id ?? null))
+      .sort((a, b) => a.sort_order - b.sort_order || a.id - b.id);
+  }
+  async function moveWithin(space, dir) {
+    const sibs = siblingsOf(space);
+    const i = sibs.findIndex((x) => x.id === space.id);
+    const j = i + dir;
+    if (j < 0 || j >= sibs.length) return;
+    const reordered = [...sibs];
+    [reordered[i], reordered[j]] = [reordered[j], reordered[i]];
+    pendingFocus.current = space.id;
+    setError(null);
+    try {
+      // Normalise sort_order to position so a swap is unambiguous.
+      for (let k = 0; k < reordered.length; k++) {
+        if (reordered[k].sort_order !== k) await api.updateSpace(reordered[k].id, { sort_order: k });
+      }
+      onChanged();
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+  function indent(space) {
+    const sibs = siblingsOf(space);
+    const i = sibs.findIndex((x) => x.id === space.id);
+    if (i <= 0) return; // nothing to nest under
+    pendingFocus.current = space.id;
+    reparent(space.id, sibs[i - 1].id);
+  }
+  function outdent(space) {
+    if (space.parent_id == null) return;
+    const parent = byId.get(space.parent_id);
+    pendingFocus.current = space.id;
+    reparent(space.id, parent ? parent.parent_id ?? null : null);
+  }
+  function onTreeKey(e, s) {
+    if (editingId != null) return;
+    const ids = tree.map((t) => t.space.id);
+    const idx = ids.indexOf(s.id);
+    if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+      e.preventDefault();
+      moveWithin(s, e.key === 'ArrowUp' ? -1 : 1);
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (ids[idx + 1] != null) focusRow(ids[idx + 1]);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (ids[idx - 1] != null) focusRow(ids[idx - 1]);
+    } else if (e.key === 'Tab') {
+      e.preventDefault();
+      e.shiftKey ? outdent(s) : indent(s);
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      startEdit(s);
+    } else if (e.key === 'Delete') {
+      e.preventDefault();
+      remove(s);
+    } else if (e.key.toLowerCase() === 'n') {
+      e.preventDefault();
+      setExpandedId(expandedId === s.id ? null : s.id);
+    }
+  }
+
+  // ---------- per-space notes & reference image ----------
+  async function saveNotes(space, value) {
+    if (value === (space.notes ?? '')) return;
+    setError(null);
+    try {
+      await api.updateSpace(space.id, { notes: value });
+      onChanged();
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+  function onSpaceImage(space, e) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (file.size > 6 * 1024 * 1024) return setError('Reference image is too large (6 MB max).');
+    const reader = new FileReader();
+    reader.onload = async () => {
+      setError(null);
+      try {
+        await api.updateSpace(space.id, { image: reader.result });
+        onChanged();
+      } catch (err) {
+        setError(err.message);
+      }
+    };
+    reader.readAsDataURL(file);
+  }
+  async function clearImage(space) {
+    setError(null);
+    try {
+      await api.updateSpace(space.id, { image: null });
+      onChanged();
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
   const parentOptions = containers.filter((c) => c.id !== editingId);
   const addingUnder = addParent != null ? byId.get(addParent) : null;
   const unit = project.units === 'ft2' ? 'ft²' : 'm²';
@@ -155,6 +275,13 @@ export default function BriefTab({ project, spaces, onChanged }) {
         </div>
       </form>
       {error && <div className="banner error">{error}</div>}
+
+      {spaces.length > 0 && (
+        <p className="brief-hint hint">
+          Keyboard: click a row, then <kbd>↑</kbd>/<kbd>↓</kbd> move · <kbd>Alt</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd> reorder ·{' '}
+          <kbd>Tab</kbd>/<kbd>⇧Tab</kbd> nest/unnest · <kbd>Enter</kbd> edit · <kbd>N</kbd> notes · <kbd>Del</kbd> remove.
+        </p>
+      )}
 
       {spaces.length === 0 ? (
         <div className="empty">The brief is empty. Add a building or the client's required spaces above.</div>
@@ -220,38 +347,80 @@ export default function BriefTab({ project, spaces, onChanged }) {
                     </td>
                   </tr>
                 ) : (
-                  <tr
-                    key={s.id}
-                    className={`${isContainerRow(s) ? 'container-row' : ''} ${dragId === s.id ? 'dragging' : ''} ${dropId === s.id ? 'drop-target' : ''}`}
-                    draggable
-                    onDragStart={() => setDragId(s.id)}
-                    onDragEnd={() => (setDragId(null), setDropId(null))}
-                    onDragOver={(e) => { e.preventDefault(); if (dropId !== s.id) setDropId(s.id); }}
-                    onDrop={(e) => { e.preventDefault(); onDropRow(s); }}
-                  >
-                    <td style={{ paddingLeft: 10 + depth * 20 }}>
-                      <span className="drag-grip" title="Drag to move / nest">⠿</span>
-                      <span className="kind-icon">{isContainerRow(s) ? '▦' : '·'}</span>
-                      {s.name}
-                    </td>
-                    <td>{isContainerKind(s) ? <span className="muted">{s.kind}</span> : s.department}</td>
-                    <td className="num">{isContainerKind(s) ? '—' : s.count}</td>
-                    <td className="num">{isContainerKind(s) ? '—' : fmtArea(s.target_area, project.units)}</td>
-                    <td className="num strong">{fmtArea(isContainerRow(s) ? subtreeArea(s, spaces) : targetTotal(s), project.units)}</td>
-                    <td className="row-actions">
-                      {isContainerRow(s) && (
-                        <button className="btn small ghost" onClick={() => setAddParent(s.id)} type="button" title={`Add a space inside ${s.name}`}>
-                          + inside
+                  <Fragment key={s.id}>
+                    <tr
+                      ref={(el) => (el ? rowEls.current.set(s.id, el) : rowEls.current.delete(s.id))}
+                      tabIndex={0}
+                      className={`${isContainerRow(s) ? 'container-row' : ''} ${dragId === s.id ? 'dragging' : ''} ${dropId === s.id ? 'drop-target' : ''} ${focusId === s.id ? 'kb-focus' : ''}`}
+                      draggable
+                      onFocus={() => setFocusId(s.id)}
+                      onKeyDown={(e) => onTreeKey(e, s)}
+                      onDragStart={() => setDragId(s.id)}
+                      onDragEnd={() => (setDragId(null), setDropId(null))}
+                      onDragOver={(e) => { e.preventDefault(); if (dropId !== s.id) setDropId(s.id); }}
+                      onDrop={(e) => { e.preventDefault(); onDropRow(s); }}
+                    >
+                      <td style={{ paddingLeft: 10 + depth * 20 }}>
+                        <span className="drag-grip" title="Drag to move / nest">⠿</span>
+                        <span className="kind-icon">{isContainerRow(s) ? '▦' : '·'}</span>
+                        {s.name}
+                        {s.notes ? <span className="row-flag" title="Has notes">📝</span> : null}
+                        {s.image ? <span className="row-flag" title="Has reference image">🖼</span> : null}
+                      </td>
+                      <td>{isContainerKind(s) ? <span className="muted">{s.kind}</span> : s.department}</td>
+                      <td className="num">{isContainerKind(s) ? '—' : s.count}</td>
+                      <td className="num">{isContainerKind(s) ? '—' : fmtArea(s.target_area, project.units)}</td>
+                      <td className="num strong">{fmtArea(isContainerRow(s) ? subtreeArea(s, spaces) : targetTotal(s), project.units)}</td>
+                      <td className="row-actions">
+                        {isContainerRow(s) && (
+                          <button className="btn small ghost" onClick={() => setAddParent(s.id)} type="button" title={`Add a space inside ${s.name}`}>
+                            + inside
+                          </button>
+                        )}
+                        <button className={`btn small ghost ${expandedId === s.id ? 'primary' : ''}`} onClick={() => setExpandedId(expandedId === s.id ? null : s.id)} type="button" title="Notes & reference image (N)">
+                          Notes
                         </button>
-                      )}
-                      <button className="btn small ghost" onClick={() => startEdit(s)} type="button">
-                        Edit
-                      </button>
-                      <button className="btn small ghost danger" onClick={() => remove(s)} type="button">
-                        ✕
-                      </button>
-                    </td>
-                  </tr>
+                        <button className="btn small ghost" onClick={() => startEdit(s)} type="button">
+                          Edit
+                        </button>
+                        <button className="btn small ghost danger" onClick={() => remove(s)} type="button">
+                          ✕
+                        </button>
+                      </td>
+                    </tr>
+                    {expandedId === s.id && (
+                      <tr className="detail-row">
+                        <td colSpan="6">
+                          <div className="space-detail" style={{ marginLeft: depth * 20 }}>
+                            <div className="detail-notes">
+                              <label className="detail-label">Notes</label>
+                              <textarea
+                                defaultValue={s.notes ?? ''}
+                                placeholder="Design notes, client requirements, references…"
+                                onBlur={(e) => saveNotes(s, e.target.value)}
+                              />
+                            </div>
+                            <div className="detail-image">
+                              <label className="detail-label">Reference image</label>
+                              {s.image ? (
+                                <div className="detail-thumb">
+                                  <img src={s.image} alt={`${s.name} reference`} />
+                                  <button className="btn small ghost danger" type="button" onClick={() => clearImage(s)}>
+                                    Remove
+                                  </button>
+                                </div>
+                              ) : (
+                                <label className="btn small">
+                                  Upload…
+                                  <input type="file" accept="image/*" hidden onChange={(e) => onSpaceImage(s, e)} />
+                                </label>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 )
               )}
             </tbody>

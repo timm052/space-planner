@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api.js';
 import { fmtArea, areaToM2, distToMeters, distUnit, leafSpaces, rootContainer } from '../compute.js';
 import { exportDiagramPdf } from '../pdfExport.js';
+import { useHistory } from '../useHistory.js';
 import HelpPanel from './HelpPanel.jsx';
 
 // Logical design canvas — the world anchor for spawning, gravity and image
@@ -19,6 +20,41 @@ const SCALE_PRESETS = {
 };
 const ratioToScale = (ratio) => ratio * M_PER_UNIT_PER_RATIO;
 const scaleToRatio = (scale) => Math.round(scale / M_PER_UNIT_PER_RATIO);
+
+// Andrew's monotone-chain convex hull (counter-clockwise, no collinear points).
+function convexHull(points) {
+  if (points.length < 3) return points.slice();
+  const p = [...points].sort((a, b) => a.x - b.x || a.y - b.y);
+  const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+  const lower = [];
+  for (const q of p) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], q) <= 0) lower.pop();
+    lower.push(q);
+  }
+  const upper = [];
+  for (let i = p.length - 1; i >= 0; i--) {
+    const q = p[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], q) <= 0) upper.pop();
+    upper.push(q);
+  }
+  lower.pop();
+  upper.pop();
+  return lower.concat(upper);
+}
+
+// A soft, rounded closed path through a polygon's points (midpoint quadratics).
+function smoothHullPath(pts) {
+  const n = pts.length;
+  if (n < 3) return '';
+  const mid = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+  let d = `M ${mid(pts[n - 1], pts[0]).x} ${mid(pts[n - 1], pts[0]).y} `;
+  for (let i = 0; i < n; i++) {
+    const cur = pts[i];
+    const m = mid(cur, pts[(i + 1) % n]);
+    d += `Q ${cur.x} ${cur.y} ${m.x} ${m.y} `;
+  }
+  return d + 'Z';
+}
 
 function pinsOf(s) {
   if (s.pin_json) {
@@ -75,6 +111,10 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
   const [colorBy, setColorBy] = useState('department');
   const [drafts, setDrafts] = useState({});
   const [panMode, setPanMode] = useState(false);
+  const [multi, setMulti] = useState(() => new Set()); // selected instance keys for batch ops
+  const [marquee, setMarquee] = useState(null); // { x0,y0,x1,y1 } in svg coords while selecting
+  const [hulls, setHulls] = useState(() => localStorage.getItem('brieftrack.hulls') === '1');
+  const [showMatrix, setShowMatrix] = useState(false);
   const [view, setViewState] = useState({ x: project.view_x || 0, y: project.view_y || 0 });
   const [dims, setDims] = useState({ bg: null, sat: null });
   const [vb, setVb] = useState({ w: W, h: H }); // visible viewBox size = container pixels
@@ -98,6 +138,13 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
   const debouncers = useRef({});
   const migratedRef = useRef(false);
   const hoverRef = useRef(null); // { space, idx } currently under the cursor
+  const marqueeRef = useRef(null); // { sx, sy, additive } while drag-selecting
+  const adjRef = useRef(adjacencies); // latest adjacencies, for history closures
+  adjRef.current = adjacencies;
+
+  const history = useHistory();
+  // Reset history when switching projects — recorded closures belong to one project.
+  useEffect(() => history.clear(), [project.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const units = project.units;
   const simEnabled = !!project.sim_enabled;
@@ -283,18 +330,73 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [spaces]);
 
+  // Global shortcuts: undo/redo, clear selection, delete the multi-selection.
+  useEffect(() => {
+    function onKey(e) {
+      if (e.target.matches?.('input, select, textarea')) return;
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        e.shiftKey ? history.redo() : history.undo();
+      } else if (mod && e.key.toLowerCase() === 'y') {
+        e.preventDefault();
+        history.redo();
+      } else if (e.key === 'Escape') {
+        if (multi.size) setMulti(new Set());
+        setSelected(null);
+      } else if ((e.key === 'Delete' || e.key === 'Backspace') && multi.size) {
+        e.preventDefault();
+        multiDelete();
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [multi]);
+
   const shapeOf = (s) => (s.shape === 'box' ? 'box' : 'bubble');
-  function toggleShape(space) {
-    api.updateSpace(space.id, { shape: shapeOf(space) === 'box' ? 'bubble' : 'box' }).then(onChanged).catch((e) => setError(e.message));
+
+  // Apply field updates to a space and refetch. Returns a promise.
+  async function applySpace(id, fields) {
+    await api.updateSpace(id, fields);
+    onChanged();
   }
-  async function convertAll(shape) {
+  // Apply now and push an undo/redo entry capturing the previous values.
+  async function commitSpace(space, fields, label) {
+    const before = {};
+    for (const k of Object.keys(fields)) before[k] = space[k] ?? null;
+    history.record({ label, undo: () => applySpace(space.id, before), redo: () => applySpace(space.id, fields) });
     setError(null);
     try {
-      for (const s of leaves) if (shapeOf(s) !== shape) await api.updateSpace(s.id, { shape });
-      onChanged();
+      await applySpace(space.id, fields);
     } catch (e) {
       setError(e.message);
     }
+  }
+  // Batch the same kind of change across many spaces as one undoable step.
+  async function commitMany(changes, label) {
+    if (changes.length === 0) return;
+    const run = (pick) => async () => {
+      for (const c of changes) await api.updateSpace(c.id, pick(c));
+      onChanged();
+    };
+    history.record({ label, undo: run((c) => c.before), redo: run((c) => c.after) });
+    setError(null);
+    try {
+      await run((c) => c.after)();
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
+  function toggleShape(space) {
+    commitSpace(space, { shape: shapeOf(space) === 'box' ? 'bubble' : 'box' }, 'shape');
+  }
+  async function convertAll(shape) {
+    const changes = leaves
+      .filter((s) => shapeOf(s) !== shape)
+      .map((s) => ({ id: s.id, before: { shape: shapeOf(s) }, after: { shape } }));
+    await commitMany(changes, 'convert all');
   }
 
   // Keep simulation nodes in sync with the leaves (per instance).
@@ -480,7 +582,16 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
       layerMoveRef.current = { kind: moveLayer, sx: e.clientX, sy: e.clientY, lx: l.x, ly: l.y };
       return;
     }
-    if (panMode && !dragRef.current) panRef.current = { sx: e.clientX, sy: e.clientY, vx: view.x, vy: view.y };
+    if (panMode) {
+      if (!dragRef.current) panRef.current = { sx: e.clientX, sy: e.clientY, vx: view.x, vy: view.y };
+      return;
+    }
+    // Empty-canvas drag = marquee multi-select (a bubble press sets dragRef first).
+    if (!dragRef.current) {
+      const p = toSvgCoords(e);
+      marqueeRef.current = { sx: p.x, sy: p.y, additive: e.shiftKey };
+      setMarquee({ x0: p.x, y0: p.y, x1: p.x, y1: p.y });
+    }
   }
 
   function onMove(e) {
@@ -499,6 +610,11 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
       });
       return;
     }
+    if (marqueeRef.current) {
+      const p = toSvgCoords(e);
+      setMarquee((m) => (m ? { ...m, x1: p.x, y1: p.y } : m));
+      return;
+    }
     if (!dragRef.current) return;
     const node = nodesRef.current.get(dragRef.current.key);
     if (!node) return;
@@ -510,6 +626,10 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
   }
 
   async function onUp() {
+    if (marqueeRef.current) {
+      finishMarquee();
+      return;
+    }
     if (layerMoveRef.current) {
       const m = layerMoveRef.current;
       layerMoveRef.current = null;
@@ -537,6 +657,12 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
 
   function onBubbleDown(e, o) {
     if (scalePoints || panMode || moveLayer) return;
+    if (e.shiftKey) {
+      // Shift-click toggles a bubble in the multi-selection (no drag, no marquee).
+      e.stopPropagation();
+      toggleMulti(o.key);
+      return;
+    }
     try {
       e.target.setPointerCapture?.(e.pointerId);
     } catch {
@@ -551,15 +677,17 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
   }
 
   async function savePin(space, idx, pinned) {
-    setError(null);
     const key = `${space.id}:${idx}`;
     const node = nodesRef.current.get(key);
     const pins = { ...pinsOf(space) };
+    if (pinned && node) ((pins[idx] = { x: node.x, y: node.y }), pinOverride.current.set(key, pins[idx]));
+    else ((delete pins[idx]), pinOverride.current.set(key, null));
+    const before = { pin_json: space.pin_json ?? null, pin_x: space.pin_x ?? null, pin_y: space.pin_y ?? null };
+    const after = { pin_json: JSON.stringify(pins), pin_x: null, pin_y: null };
+    history.record({ label: pinned ? 'pin' : 'unpin', undo: () => applySpace(space.id, before), redo: () => applySpace(space.id, after) });
+    setError(null);
     try {
-      if (pinned && node) ((pins[idx] = { x: node.x, y: node.y }), pinOverride.current.set(key, pins[idx]));
-      else ((delete pins[idx]), pinOverride.current.set(key, null));
-      await api.updateSpace(space.id, { pin_json: JSON.stringify(pins), pin_x: null, pin_y: null });
-      onChanged();
+      await applySpace(space.id, after);
     } catch (err) {
       setError(err.message);
     }
@@ -567,7 +695,6 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
 
   // Pin/unpin every instance of a space at once (so a multiplied space stays put).
   async function savePinAll(space, pinned) {
-    setError(null);
     const count = Math.max(1, space.count || 1);
     const pins = {};
     for (let i = 0; i < count; i++) {
@@ -579,12 +706,99 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
         pinOverride.current.set(key, null);
       }
     }
+    const before = { pin_json: space.pin_json ?? null, pin_x: space.pin_x ?? null, pin_y: space.pin_y ?? null };
+    const after = { pin_json: JSON.stringify(pins), pin_x: null, pin_y: null };
+    history.record({ label: pinned ? 'pin all' : 'unpin all', undo: () => applySpace(space.id, before), redo: () => applySpace(space.id, after) });
+    setError(null);
     try {
-      await api.updateSpace(space.id, { pin_json: JSON.stringify(pins), pin_x: null, pin_y: null });
-      onChanged();
+      await applySpace(space.id, after);
     } catch (err) {
       setError(err.message);
     }
+  }
+
+  // ---------- multi-select (marquee + shift-click) ----------
+  function toggleMulti(key) {
+    setMulti((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+  const multiList = () =>
+    [...multi]
+      .map((k) => {
+        const [id, i] = k.split(':');
+        return { id: Number(id), i: Number(i), space: byId.get(Number(id)) };
+      })
+      .filter((o) => o.space);
+
+  function finishMarquee() {
+    const m = marqueeRef.current;
+    const box = marquee;
+    marqueeRef.current = null;
+    setMarquee(null);
+    if (!box || !m) return;
+    const minX = Math.min(box.x0, box.x1), maxX = Math.max(box.x0, box.x1);
+    const minY = Math.min(box.y0, box.y1), maxY = Math.max(box.y0, box.y1);
+    // A near-zero drag is a click on empty canvas → clear selection.
+    if (maxX - minX < 4 && maxY - minY < 4) {
+      if (!m.additive) (setMulti(new Set()), setSelected(null));
+      return;
+    }
+    const hit = new Set(m.additive ? multi : []);
+    for (const o of instances) {
+      const n = nodesRef.current.get(o.key);
+      if (n && n.x >= minX && n.x <= maxX && n.y >= minY && n.y <= maxY) hit.add(o.key);
+    }
+    setMulti(hit);
+  }
+
+  async function multiPin(pinned) {
+    const bySpace = new Map();
+    for (const { id, i, space } of multiList()) {
+      if (!bySpace.has(id)) bySpace.set(id, { space, idxs: [] });
+      bySpace.get(id).idxs.push(i);
+    }
+    const changes = [];
+    for (const { space, idxs } of bySpace.values()) {
+      const before = { pin_json: space.pin_json ?? null, pin_x: space.pin_x ?? null, pin_y: space.pin_y ?? null };
+      const pins = { ...pinsOf(space) };
+      for (const i of idxs) {
+        if (pinned) {
+          const n = nodesRef.current.get(`${space.id}:${i}`);
+          if (n) pins[i] = { x: n.x, y: n.y };
+        } else delete pins[i];
+      }
+      changes.push({ id: space.id, before, after: { pin_json: JSON.stringify(pins), pin_x: null, pin_y: null } });
+    }
+    await commitMany(changes, pinned ? 'pin selection' : 'unpin selection');
+  }
+  async function multiShape(shape) {
+    const ids = [...new Set(multiList().map((o) => o.id))];
+    const changes = ids.map((id) => ({ id, before: { shape: shapeOf(byId.get(id)) }, after: { shape } }));
+    await commitMany(changes, 'shape selection');
+  }
+  async function multiDelete() {
+    const ids = [...new Set(multiList().map((o) => o.id))];
+    if (ids.length === 0) return;
+    if (!window.confirm(`Delete ${ids.length} space${ids.length > 1 ? 's' : ''} from the brief? Their recorded areas and links are removed too.`)) return;
+    setError(null);
+    try {
+      for (const id of ids) await api.deleteSpace(id);
+      setMulti(new Set());
+      history.clear(); // deletions invalidate recorded closures referencing these spaces
+      onChanged();
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+  function toggleHulls() {
+    setHulls((v) => {
+      localStorage.setItem('brieftrack.hulls', v ? '0' : '1');
+      return !v;
+    });
   }
 
   async function handleBubbleClick(spaceId, idx = 0) {
@@ -595,33 +809,42 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
       if (selectedInst !== idx) return setSelectedInst(idx);
       return setSelected(null);
     }
+    await cyclePair(selected, spaceId);
+    setSelected(null);
+  }
+
+  // findPair reads the latest adjacencies via a ref so history closures stay
+  // correct after a refetch reassigns adjacency ids.
+  const findPair = (a, b) =>
+    adjRef.current.find((l) => (l.space_a === a && l.space_b === b) || (l.space_a === b && l.space_b === a));
+
+  // Drive a pair to a target strength: null (none) | 'desired' | 'required'.
+  async function setPair(a, b, target) {
+    const existing = findPair(a, b);
+    if (target == null) {
+      if (existing) await api.deleteAdjacency(existing.id);
+    } else if (!existing) {
+      await api.createAdjacency(project.id, { space_a: a, space_b: b, strength: target });
+    } else if (existing.strength !== target) {
+      await api.updateAdjacency(existing.id, { strength: target });
+    }
+    onChanged();
+  }
+
+  async function cyclePair(a, b) {
+    const cur = findPair(a, b)?.strength ?? null;
+    const next = cur == null ? 'desired' : cur === 'desired' ? 'required' : null;
+    history.record({ label: 'link', undo: () => setPair(a, b, cur), redo: () => setPair(a, b, next) });
+    setError(null);
     try {
-      await cyclePair(selected, spaceId);
-      setSelected(null);
-      onChanged();
+      await setPair(a, b, next);
     } catch (err) {
       setError(err.message);
     }
-  }
-
-  const findPair = (a, b) =>
-    adjacencies.find((l) => (l.space_a === a && l.space_b === b) || (l.space_a === b && l.space_b === a));
-
-  async function cyclePair(a, b) {
-    const existing = findPair(a, b);
-    if (!existing) await api.createAdjacency(project.id, { space_a: a, space_b: b, strength: 'desired' });
-    else if (existing.strength === 'desired') await api.updateAdjacency(existing.id, { strength: 'required' });
-    else await api.deleteAdjacency(existing.id);
   }
 
   async function onLinkClick(l) {
-    setError(null);
-    try {
-      await cyclePair(l.space_a, l.space_b);
-      onChanged();
-    } catch (err) {
-      setError(err.message);
-    }
+    await cyclePair(l.space_a, l.space_b);
   }
 
   async function saveProject(fields, { silent } = {}) {
@@ -787,11 +1010,17 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
   function onAreaDraft(space, value) {
     setDrafts((d) => ({ ...d, [space.id]: value }));
     clearTimeout(draftTimers.current.get(space.id));
+    const before = space.target_area;
     draftTimers.current.set(
       space.id,
       setTimeout(async () => {
         const area = Number(value);
-        if (!(area > 0)) return;
+        if (!(area > 0) || area === before) return;
+        history.record({
+          label: 'area',
+          undo: () => applySpace(space.id, { target_area: before }),
+          redo: () => applySpace(space.id, { target_area: area }),
+        });
         try {
           await api.updateSpace(space.id, { target_area: area });
           setDrafts((d) => {
@@ -930,6 +1159,9 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
   return (
     <div className={`diagram-layout ${split ? '' : 'norail'}`}>
       {showHelp && <HelpPanel onClose={() => setShowHelp(false)} />}
+      {showMatrix && (
+        <MatrixPanel leaves={leaves} adjacencies={adjacencies} colorOf={colorOf} onCycle={cyclePair} onClose={() => setShowMatrix(false)} />
+      )}
 
       <div className="diagram-main">
         <div className="diagram-toolbar">
@@ -946,6 +1178,15 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
                 ⌖ Recentre
               </button>
             )}
+          </div>
+          <div className="toolbar-sep" />
+          <div className="toolbar-group">
+            <button className="btn small ghost" onClick={history.undo} disabled={!history.canUndo} title={history.canUndo ? `Undo ${history.undoLabel} (Ctrl+Z)` : 'Nothing to undo'}>
+              ↶ Undo
+            </button>
+            <button className="btn small ghost" onClick={history.redo} disabled={!history.canRedo} title={history.canRedo ? `Redo ${history.redoLabel} (Ctrl+Shift+Z)` : 'Nothing to redo'}>
+              ↷ Redo
+            </button>
           </div>
           <div className="toolbar-sep" />
           <div className="toolbar-group">
@@ -986,6 +1227,12 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
           <div className="toolbar-group">
             <button className="btn small" onClick={() => convertAll(leaves.every((s) => shapeOf(s) === 'box') ? 'bubble' : 'box')} title="Convert every space to boxes (or back to bubbles)">
               {leaves.every((s) => shapeOf(s) === 'box') ? '○ All bubbles' : '▢ All boxes'}
+            </button>
+            <button className={`btn small ${hulls ? 'primary' : ''}`} onClick={toggleHulls} title="Draw a soft hull behind each department / building group.">
+              ⬡ Groups
+            </button>
+            <button className={`btn small ${showMatrix ? 'primary' : ''}`} onClick={() => setShowMatrix(true)} title="Edit relationships as an adjacency matrix.">
+              ▦ Matrix
             </button>
           </div>
           <div className="toolbar-spacer" />
@@ -1119,6 +1366,26 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
               <image href={layers.bg.image} x={bgR.x} y={bgR.y} width={bgR.w} height={bgR.h} opacity={layers.bg.opacity} preserveAspectRatio="none" transform={imgTransform(bgR)} className={moveLayer === 'bg' ? 'layer-active' : ''} />
             )}
 
+            {hulls &&
+              (() => {
+                const byGroup = new Map();
+                for (const o of instances) {
+                  const n = nodes.get(o.key);
+                  if (!n) continue;
+                  const g = groupKey(o.s);
+                  if (!byGroup.has(g)) byGroup.set(g, []);
+                  const r = radiusOf(o.s) + 26; // pad so the hull wraps softly around bubbles
+                  for (let a = 0; a < Math.PI * 2; a += Math.PI / 4)
+                    byGroup.get(g).push({ x: n.x + Math.cos(a) * r, y: n.y + Math.sin(a) * r });
+                }
+                return [...byGroup.entries()].map(([g, pts]) => {
+                  const d = smoothHullPath(convexHull(pts));
+                  if (!d) return null;
+                  const color = PALETTE[groups.indexOf(g) % PALETTE.length];
+                  return <path key={g} d={d} className="group-hull" fill={color} stroke={color} />;
+                });
+              })()}
+
             {scalePoints &&
               scalePoints.map((p, i) => (
                 <g key={i} className="scale-point">
@@ -1151,6 +1418,7 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
               const r = radiusOf(s);
               const isSel = selected === s.id && (Math.max(1, s.count || 1) === 1 || selectedInst === i);
               const pinned = !!instPin(s, i);
+              const inMulti = multi.has(o.key);
               const count = Math.max(1, s.count || 1);
               const box = shapeOf(s) === 'box';
               const side = r * Math.sqrt(Math.PI); // square of equal area
@@ -1161,7 +1429,7 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
                   key={o.key}
                   data-space-id={s.id}
                   data-instance={i}
-                  className={`bubble ${isSel ? 'selected' : ''}`}
+                  className={`bubble ${isSel ? 'selected' : ''} ${inMulti ? 'multi' : ''}`}
                   transform={`translate(${n.x}, ${n.y})`}
                   onPointerDown={(e) => onBubbleDown(e, o)}
                   onPointerEnter={() => (hoverRef.current = { space: s, idx: i })}
@@ -1176,6 +1444,12 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
                       <rect x={-side / 2 - 5} y={-side / 2 - 5} width={side + 10} height={side + 10} rx="3" className="pin-ring" />
                     ) : (
                       <circle r={r + 5} className="pin-ring" />
+                    ))}
+                  {inMulti &&
+                    (box ? (
+                      <rect x={-side / 2 - 7} y={-side / 2 - 7} width={side + 14} height={side + 14} rx="4" className="multi-ring" />
+                    ) : (
+                      <circle r={r + 7} className="multi-ring" />
                     ))}
                   {box ? (
                     <rect x={-side / 2} y={-side / 2} width={side} height={side} rx={Math.min(4, side / 8)} fill={colorOf(s)} fillOpacity={fillOp} stroke={colorOf(s)} strokeWidth={sw} />
@@ -1211,6 +1485,16 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
               <text x={originX + vb.w - 8} y={originY + vb.h - 8} textAnchor="end" className="attribution">
                 {(layers.sat.visible && layers.sat.attribution) || (layers.bg.visible && layers.bg.attribution) || ''}
               </text>
+            )}
+
+            {marquee && (
+              <rect
+                className="marquee"
+                x={Math.min(marquee.x0, marquee.x1)}
+                y={Math.min(marquee.y0, marquee.y1)}
+                width={Math.abs(marquee.x1 - marquee.x0)}
+                height={Math.abs(marquee.y1 - marquee.y0)}
+              />
             )}
           </svg>
 
@@ -1254,12 +1538,26 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
             );
           })()}
 
+          {multi.size > 0 && (
+            <div className="multi-bar">
+              <span className="multi-count">{multi.size} selected</span>
+              <button className="btn small" onClick={() => multiPin(true)} title="Pin every selected bubble where it sits">📌 Pin</button>
+              <button className="btn small" onClick={() => multiPin(false)} title="Unpin the selected bubbles">Unpin</button>
+              <button className="btn small" onClick={() => multiShape('box')} title="Make the selected spaces boxes">▢ Box</button>
+              <button className="btn small" onClick={() => multiShape('bubble')} title="Make the selected spaces bubbles">○ Bubble</button>
+              <button className="btn small ghost danger" onClick={multiDelete} title="Delete the selected spaces from the brief">✕ Delete</button>
+              <button className="btn small ghost" onClick={() => setMulti(new Set())} title="Clear the selection (Esc)">Clear</button>
+            </div>
+          )}
+
           <div className="stage-hint">
             {moveLayer
               ? 'Moving image layer — drag the canvas to reposition it.'
               : panMode
               ? 'Pan mode — drag the canvas. Toggle Pan off to edit bubbles.'
-              : 'Drag to move · hover + P to pin · hover + B for box · click two bubbles to link them' +
+              : multi.size > 0
+              ? `${multi.size} selected — batch pin/box/delete above · Esc to clear · Shift-click or drag to change selection`
+              : 'Drag to move · hover + P to pin · hover + B for box · click two bubbles to link · drag empty canvas to multi-select' +
                 (effScale ? ` · ${scaleLabelFor(effScale)}` : '') +
                 (hasImage ? '' : ' · add a site image under Layers')}
           </div>
@@ -1388,6 +1686,69 @@ function LayerRow({ title, layer, dims, units, calibrated, onToggleVisible, onOp
             </button>
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+function MatrixPanel({ leaves, adjacencies, colorOf, onCycle, onClose }) {
+  const strengthOf = (a, b) => {
+    const l = adjacencies.find(
+      (x) => (x.space_a === a && x.space_b === b) || (x.space_a === b && x.space_b === a)
+    );
+    return l?.strength ?? null;
+  };
+  const glyph = { required: '●', desired: '○' };
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal matrix-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h2>Adjacency matrix</h2>
+          <button className="btn ghost" onClick={onClose}>✕</button>
+        </div>
+        <p className="hint">
+          Click a cell to cycle the relationship: blank → <b>○ desired</b> → <b>● required</b> → blank. Changes
+          sync with the diagram and are undoable.
+        </p>
+        <div className="matrix-scroll">
+          <table className="matrix">
+            <thead>
+              <tr>
+                <th className="corner" />
+                {leaves.map((s) => (
+                  <th key={s.id} className="mcol" title={s.name}>
+                    <span>{s.name}</span>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {leaves.map((row, ri) => (
+                <tr key={row.id}>
+                  <th className="mrow" title={row.name}>
+                    <span className="legend-dot" style={{ background: colorOf(row) }} />
+                    {row.name}
+                  </th>
+                  {leaves.map((col, ci) => {
+                    if (ci === ri) return <td key={col.id} className="mdiag" />;
+                    if (ci > ri) return <td key={col.id} className="mvoid" />;
+                    const st = strengthOf(row.id, col.id);
+                    return (
+                      <td
+                        key={col.id}
+                        className={`mcell ${st || ''}`}
+                        title={`${row.name} ↔ ${col.name}`}
+                        onClick={() => onCycle(row.id, col.id)}
+                      >
+                        {glyph[st] || ''}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );

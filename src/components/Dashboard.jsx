@@ -12,6 +12,101 @@ import DriftChart from './DriftChart.jsx';
 
 const STATUS_LABEL = { on: 'On target', over: 'Over', under: 'Under', missing: 'Not measured' };
 
+// Overlay two milestones to see which spaces grew or shrank between them.
+function SnapshotDiff({ project, spaces, snapshots }) {
+  const leaves = leafSpaces(spaces);
+  const [aId, setAId] = useState(snapshots[snapshots.length - 2].id);
+  const [bId, setBId] = useState(snapshots[snapshots.length - 1].id);
+  const a = snapshots.find((s) => s.id === Number(aId));
+  const b = snapshots.find((s) => s.id === Number(bId));
+  if (!a || !b) return null;
+
+  const rows = leaves
+    .map((s) => {
+      const va = a.areas[s.id] ?? null;
+      const vb = b.areas[s.id] ?? null;
+      const delta = va != null && vb != null ? vb - va : null;
+      const pct = delta != null && va > 0 ? delta / va : null;
+      return { s, va, vb, delta, pct };
+    })
+    .filter((r) => r.delta != null && Math.abs(r.delta) > 1e-6)
+    .sort((x, y) => Math.abs(y.delta) - Math.abs(x.delta));
+
+  const netDelta = snapshotNet(b, spaces) - snapshotNet(a, spaces);
+  const maxAbs = Math.max(1, ...rows.map((r) => Math.abs(r.delta)));
+  const opts = snapshots.map((sn) => (
+    <option key={sn.id} value={sn.id}>
+      {sn.label} · {sn.taken_at}
+    </option>
+  ));
+
+  return (
+    <div className="card">
+      <div className="card-head-row">
+        <h3>Milestone comparison</h3>
+        <div className="diff-picker">
+          <select value={aId} onChange={(e) => setAId(e.target.value)}>{opts}</select>
+          <span className="diff-arrow">→</span>
+          <select value={bId} onChange={(e) => setBId(e.target.value)}>{opts}</select>
+        </div>
+      </div>
+      {a.id === b.id ? (
+        <div className="empty small">Pick two different milestones to compare.</div>
+      ) : rows.length === 0 ? (
+        <div className="empty small">No measured spaces changed between these milestones.</div>
+      ) : (
+        <>
+          <div className="diff-summary">
+            Net change{' '}
+            <strong className={netDelta > 0 ? 'warn-text' : netDelta < 0 ? 'ok-text' : ''}>
+              {netDelta > 0 ? '+' : ''}
+              {fmtArea(netDelta, project.units)}
+            </strong>{' '}
+            across {rows.length} space{rows.length > 1 ? 's' : ''}.
+          </div>
+          <table className="table diff-table">
+            <thead>
+              <tr>
+                <th>Space</th>
+                <th className="num">{a.label}</th>
+                <th className="num">{b.label}</th>
+                <th className="num">Δ</th>
+                <th>Change</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(({ s, va, vb, delta, pct }) => {
+                const grew = delta > 0;
+                const frac = Math.abs(delta) / maxAbs;
+                return (
+                  <tr key={s.id}>
+                    <td>
+                      {s.name}
+                      <span className="muted"> · {s.department}</span>
+                    </td>
+                    <td className="num">{va != null ? fmtArea(va, project.units) : '—'}</td>
+                    <td className="num">{vb != null ? fmtArea(vb, project.units) : '—'}</td>
+                    <td className={`num ${grew ? 'warn-text' : 'ok-text'}`}>
+                      {grew ? '+' : ''}
+                      {fmtArea(delta, project.units)}
+                      {pct != null ? ` (${fmtPct(pct)})` : ''}
+                    </td>
+                    <td>
+                      <span className="diff-bar-wrap">
+                        <span className={`diff-bar ${grew ? 'grew' : 'shrank'}`} style={{ width: `${Math.round(frac * 100)}%` }} />
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function Dashboard({ project, spaces, snapshots }) {
   const [groupBy, setGroupBy] = useState('department');
   if (spaces.length === 0) {
@@ -63,6 +158,8 @@ export default function Dashboard({ project, spaces, snapshots }) {
           <DriftChart project={project} spaces={spaces} snapshots={snapshots} />
         </div>
       )}
+
+      {snapshots.length >= 2 && <SnapshotDiff project={project} spaces={spaces} snapshots={snapshots} />}
 
       {latest && (
         <div className="two-col">

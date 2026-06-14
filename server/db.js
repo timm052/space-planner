@@ -106,6 +106,7 @@ ensureColumn('projects', 'sat_rot', 'sat_rot REAL DEFAULT 0'); // satellite rota
 ensureColumn('spaces', 'parent_id', 'parent_id INTEGER');
 ensureColumn('spaces', 'kind', "kind TEXT DEFAULT 'space'"); // 'space' | 'building' | 'group'
 ensureColumn('spaces', 'shape', "shape TEXT DEFAULT 'bubble'"); // 'bubble' | 'box'
+ensureColumn('spaces', 'image', 'image TEXT'); // per-space reference image (data URL)
 
 const DEFAULT_SETTINGS = {
   default_units: 'm2',

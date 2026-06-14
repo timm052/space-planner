@@ -8,6 +8,7 @@ const SECTIONS = [
       ['Move', 'Drag a bubble to reposition it. With Auto-layout on, others flow around it.'],
       ['Pin', 'Hover a bubble and press P (or select it and use the Pin button) to pin/unpin it. Pinned bubbles wear a dashed ring and never move.'],
       ['Box', 'Hover a bubble and press B to switch it between a circle and an equal-area square. Use “All boxes / All bubbles” to convert every space at once.'],
+      ['Multi-select', 'Drag across empty canvas to marquee-select bubbles, or Shift-click to add/remove them. A toolbar lets you pin, box or delete the whole selection at once. Esc clears it.'],
       ['Edit area', 'The Areas panel on the right edits areas in a list — bubbles resize as you type.'],
     ],
   },
@@ -15,7 +16,9 @@ const SECTIONS = [
     title: 'Relationships',
     items: [
       ['Link', 'Click one bubble, then another, to connect them. Each click cycles desired → required → removed.'],
+      ['Matrix', 'Open ▦ Matrix for the classic triangular adjacency grid — click a cell to cycle the same desired → required → none.'],
       ['Group', 'In the Brief tab, drag a space onto a building to nest it, or onto the top-level zone to ungroup.'],
+      ['Group hulls', 'Toggle ⬡ Groups to draw a soft hull behind each department or building so containment reads at a glance.'],
       ['Lines', 'Required links are solid and pull rooms close; desired links are dashed and looser. Click a line to cycle it.'],
     ],
   },
@@ -35,6 +38,7 @@ const SECTIONS = [
       ['North', 'Drag the compass rose (top-right of the canvas) to set project north. Double-click it to reset to up.'],
       ['PDF', 'Export a scale-accurate PDF with the background images, scale bar, north arrow and a title block.'],
       ['Auto-layout', 'Turn it off to place every bubble by hand — positions are saved exactly where you drop them.'],
+      ['Undo / redo', 'Pin, move, link, shape and area edits are undoable — use the ↶/↷ buttons or Ctrl+Z / Ctrl+Shift+Z.'],
     ],
   },
 ];

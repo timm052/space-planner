@@ -170,10 +170,13 @@ app.put('/api/spaces/:id', (req, res) => {
   const pin_y = 'pin_y' in req.body ? req.body.pin_y : space.pin_y;
   let pin_json = 'pin_json' in req.body ? req.body.pin_json : space.pin_json;
   if (pin_json != null && typeof pin_json !== 'string') pin_json = JSON.stringify(pin_json);
+  // image and sort_order are settable (image to null clears it), so check key presence.
+  const image = 'image' in req.body ? req.body.image : space.image;
+  const sort_order = 'sort_order' in req.body ? Number(req.body.sort_order) : space.sort_order;
   const area = CONTAINER_KINDS.has(kind) ? 0 : Number(target_area);
   db.prepare(
-    'UPDATE spaces SET department = ?, name = ?, count = ?, target_area = ?, notes = ?, pin_x = ?, pin_y = ?, pin_json = ?, parent_id = ?, kind = ?, shape = ? WHERE id = ?'
-  ).run(department, name, Number(count) || 1, area, notes, pin_x, pin_y, pin_json, parent_id, kind, shape === 'box' ? 'box' : 'bubble', space.id);
+    'UPDATE spaces SET department = ?, name = ?, count = ?, target_area = ?, notes = ?, pin_x = ?, pin_y = ?, pin_json = ?, parent_id = ?, kind = ?, shape = ?, image = ?, sort_order = ? WHERE id = ?'
+  ).run(department, name, Number(count) || 1, area, notes, pin_x, pin_y, pin_json, parent_id, kind, shape === 'box' ? 'box' : 'bubble', image, sort_order, space.id);
   res.json(db.prepare('SELECT * FROM spaces WHERE id = ?').get(space.id));
 });
 
