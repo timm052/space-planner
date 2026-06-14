@@ -1,0 +1,28 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+
+# runtime data (SQLite database + WAL files)
+data/
+
+# logs
+*.log
+npm-debug.log*
+
+# environment
+.env
+.env.local
+
+# editor / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# vite cache
+.vite/
+
+# editor / agent tooling
+.claude/
