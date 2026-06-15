@@ -10,8 +10,10 @@ const SECTIONS = [
       ['Box', 'Hover a bubble and press B to switch it between a circle and an equal-area square. Use “All boxes / All bubbles” to convert every space at once.'],
       ['Multi-select', 'Drag across empty canvas to marquee-select bubbles, or Shift-click to add/remove them. A toolbar lets you pin, box or delete the whole selection at once. Esc clears it.'],
       ['Move together', 'With several bubbles selected, drag any one of them to move the whole group; they pin where you drop them.'],
-      ['Categories', 'Bubbles colour by department. Recolour any category by clicking its legend swatch. Select bubbles and use the Category box to reassign them — typing a new name creates that category.'],
-      ['Edit area', 'The Areas panel on the right edits areas in a list — bubbles resize as you type.'],
+      ['Categories', 'Bubbles colour by category. Recolour any category by clicking its legend swatch. Select bubbles and use the Category box to reassign them — typing a new name creates that category.'],
+      ['Style', 'Choose how bubbles are drawn: Solid, Outline, or a hand-drawn Sketch look.'],
+      ['Nesting', 'In the Brief, a space with children can be a grouping (areas sum), keep its children Within its own area, or Attached so they move with it on the diagram.'],
+      ['Edit area', 'The Areas panel edits areas in a list — collapse categories, or switch to Building mode to see them by building and level. Bubbles resize as you type.'],
     ],
   },
   {
@@ -30,7 +32,8 @@ const SECTIONS = [
       ['Scale', 'Pick a standard scale (1:200…1:2000). Bubbles and images are drawn true-to-size and the PDF matches.'],
       ['Layers', 'Add a satellite image (by address) and/or import a site plan. Each is calibrated on its own, then both share the diagram scale and line up.'],
       ['Calibrate', 'Click Calibrate on a layer, mark a known distance on the image, and enter its real length.'],
-      ['Move layer', 'Use Move on a layer to nudge it into alignment with the other.'],
+      ['Move layer', 'Use Move on a layer to nudge it, or Rotate then drag the canvas to turn it. Add as many images as you like.'],
+      ['Filters', 'Apply a diagrammatic filter to any image (grayscale, blueprint, faded, high-contrast, ink) — it carries through to the PDF.'],
     ],
   },
   {

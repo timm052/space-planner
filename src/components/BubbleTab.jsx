@@ -73,9 +73,31 @@ function pinsOf(s) {
   return {};
 }
 
-// Rotate an image data URL by `deg` (clockwise) onto a canvas sized to its
-// rotated bounding box — used to bake rotation into the PDF export.
-function bakeRotation(dataUrl, deg) {
+// Diagrammatic image filter presets (applied as CSS filters on screen and baked
+// into the PDF via canvas ctx.filter).
+const IMAGE_FILTERS = [
+  ['', 'None'],
+  ['grayscale', 'Grayscale'],
+  ['blueprint', 'Blueprint'],
+  ['faded', 'Faded'],
+  ['contrast', 'High contrast'],
+  ['ink', 'Ink / line'],
+];
+function filterCss(f) {
+  return (
+    {
+      grayscale: 'grayscale(1) contrast(1.1)',
+      blueprint: 'grayscale(1) brightness(0.85) sepia(1) hue-rotate(175deg) saturate(5) contrast(1.1)',
+      faded: 'saturate(0.5) contrast(0.82) brightness(1.1)',
+      contrast: 'contrast(1.6) brightness(1.05)',
+      ink: 'grayscale(1) contrast(2.2) brightness(1.15)',
+    }[f] || 'none'
+  );
+}
+
+// Bake rotation (clockwise deg) and/or a CSS filter into a data URL on a canvas
+// sized to the rotated bounding box — keeps the PDF export scale-accurate.
+function bakeImage(dataUrl, deg, filter) {
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
@@ -88,6 +110,7 @@ function bakeRotation(dataUrl, deg) {
       c.width = cw;
       c.height = ch;
       const ctx = c.getContext('2d');
+      if (filter && filter !== 'none') ctx.filter = filter;
       ctx.translate(cw / 2, ch / 2);
       ctx.rotate(rad);
       ctx.drawImage(img, -w / 2, -h / 2);
@@ -125,6 +148,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const [hullPad, setHullPad] = useState(() => Number(localStorage.getItem('brieftrack.hullpad')) || 26);
   const [showMatrix, setShowMatrix] = useState(false);
   const [railW, setRailW] = useState(() => Number(localStorage.getItem('brieftrack.railw')) || 340);
+  const [areaMode, setAreaMode] = useState('category'); // Areas panel grouping
+  const [collapsed, setCollapsed] = useState(() => new Set()); // collapsed Areas groups
   const [view, setViewState] = useState({ x: project.view_x || 0, y: project.view_y || 0 });
   const [dims, setDims] = useState({}); // image id → { w, h } natural pixel size
   const [vb, setVb] = useState({ w: W, h: H }); // visible viewBox size = container pixels
@@ -694,8 +719,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     alphaRef.current = Math.max(alphaRef.current, 0.3);
     if (!drag) return;
     if (drag.starts) {
-      // Group drag: pin the whole selection where it was dropped (one undo step).
-      if (drag.moved >= 6) await multiPin(true);
+      // Group drag: pin every moved bubble where it was dropped (one undo step).
+      if (drag.moved >= 6) await pinKeys(drag.starts.map((s) => s.key));
       return;
     }
     const space = byId.get(drag.spaceId);
@@ -721,12 +746,19 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     } catch {
       /* synthetic pointer */
     }
-    // If the pressed bubble is part of a multi-selection, drag moves them all.
+    // Drag moves a group when: the bubble is in a multi-selection, OR it's an
+    // 'attached' parent (then its children move with it).
+    let groupKeys = null;
+    if (multi.has(o.key) && multi.size > 1) groupKeys = [...multi];
+    else if (o.s.child_mode === 'attached' && spaces.some((x) => x.parent_id === o.s.id)) {
+      const keys = descendantInstanceKeys(o.s.id);
+      if (keys.length > 1) groupKeys = keys;
+    }
     let starts = null, anchor = null, groupSet = null;
-    if (multi.has(o.key) && multi.size > 1) {
+    if (groupKeys) {
       anchor = toSvgCoords(e);
-      groupSet = new Set(multi);
-      starts = [...multi]
+      groupSet = new Set(groupKeys);
+      starts = groupKeys
         .map((k) => {
           const n = nodesRef.current.get(k);
           return n ? { key: k, x: n.x, y: n.y } : null;
@@ -840,6 +872,42 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     }
     await commitMany(changes, pinned ? 'pin selection' : 'unpin selection');
   }
+  // Instance keys for a space and all its (leaf) descendants — used to drag an
+  // 'attached' parent together with its children.
+  function descendantInstanceKeys(spaceId) {
+    const ids = new Set([spaceId]);
+    let added = true;
+    while (added) {
+      added = false;
+      for (const s of spaces) {
+        if (s.parent_id != null && ids.has(s.parent_id) && !ids.has(s.id)) (ids.add(s.id), (added = true));
+      }
+    }
+    return instances.filter((o) => ids.has(o.s.id)).map((o) => o.key);
+  }
+  // Pin a set of instance keys at their current positions, in one undo step.
+  async function pinKeys(keys) {
+    const bySpace = new Map();
+    for (const k of keys) {
+      const [id, i] = k.split(':');
+      const sp = byId.get(Number(id));
+      if (!sp) continue;
+      if (!bySpace.has(sp.id)) bySpace.set(sp.id, { space: sp, idxs: [] });
+      bySpace.get(sp.id).idxs.push(Number(i));
+    }
+    const changes = [];
+    for (const { space, idxs } of bySpace.values()) {
+      const before = { pin_json: space.pin_json ?? null, pin_x: space.pin_x ?? null, pin_y: space.pin_y ?? null };
+      const pins = { ...pinsOf(space) };
+      for (const i of idxs) {
+        const n = nodesRef.current.get(`${space.id}:${i}`);
+        if (n) pins[i] = { x: n.x, y: n.y };
+      }
+      changes.push({ id: space.id, before, after: { pin_json: JSON.stringify(pins), pin_x: null, pin_y: null } });
+    }
+    await commitMany(changes, 'move group');
+  }
+
   async function multiShape(shape) {
     const ids = [...new Set(multiList().map((o) => o.id))];
     const changes = ids.map((id) => ({ id, before: { shape: shapeOf(byId.get(id)) }, after: { shape } }));
@@ -880,6 +948,16 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   function setHullSize(v) {
     setHullPad(v);
     localStorage.setItem('brieftrack.hullpad', String(v));
+  }
+  function toggleCollapse(key) {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+  }
+  function setBubbleStyle(v) {
+    saveProject({ bubble_style: v });
   }
   // Drag the rail's left edge to resize it (persisted).
   function startRailResize(e) {
@@ -1212,12 +1290,13 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       if (!im.visible) continue;
       const r = layerRect(im);
       if (!r) continue;
-      if (!r.rot) {
+      const fcss = filterCss(im.filter);
+      if (!r.rot && (!im.filter || fcss === 'none')) {
         sceneLayers.push({ dataUrl: r.dataUrl, x: r.x, y: r.y, w: r.w, h: r.h, opacity: r.opacity });
         continue;
       }
-      // Bake rotation into the image so the PDF stays scale-accurate.
-      const baked = await bakeRotation(r.dataUrl, r.rot);
+      // Bake rotation + filter into the image so the PDF stays scale-accurate.
+      const baked = await bakeImage(r.dataUrl, r.rot, fcss);
       if (!baked) continue;
       const unitsPerPx = r.w / baked.naturalW;
       const bw = baked.canvasW * unitsPerPx;
@@ -1243,6 +1322,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
         layers: sceneLayers,
         links,
         bubbles,
+        bubbleStyle,
         scale: effScale ? { ratioLabel, scaleBar: scaleBar ? { lenUnits: scaleBar.len, label: scaleBar.label } : null } : null,
         north: { deg: project.north_deg || 0 },
         title: {
@@ -1287,14 +1367,41 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const hasImage = imgLayers.length > 0;
   const attributionLayer = imgLayers.find((im) => im.visible && im.attribution);
   const imgTransform = (r) => (r.rot ? `rotate(${r.rot} ${r.cx} ${r.cy})` : undefined);
+  const bubbleStyle = project.bubble_style || 'solid';
   const selectedSpace = selected != null ? byId.get(selected) : null;
   // When a space is selected, the Relationships panel narrows to its links.
   const relList = selectedSpace ? adjacencies.filter((l) => l.space_a === selected || l.space_b === selected) : adjacencies;
 
+  // Areas panel: building → level → spaces (for the building display mode).
+  const areaTree = (() => {
+    const m = new Map();
+    for (const s of leaves) {
+      const root = rootContainer(s, byId);
+      const b = root ? root.name : 'Unassigned';
+      const lvl = s.level || '';
+      if (!m.has(b)) m.set(b, new Map());
+      const lm = m.get(b);
+      if (!lm.has(lvl)) lm.set(lvl, []);
+      lm.get(lvl).push(s);
+    }
+    return m;
+  })();
+  const areaRow = (s) => (
+    <div key={s.id} className={`split-row ${selected === s.id ? 'selected' : ''}`} onClick={() => setSelected(selected === s.id ? null : s.id)}>
+      <span className="split-name" title={s.name}>
+        {anyPinned(s) && <span className="split-pin">◉</span>}
+        {s.name}
+        {s.count > 1 ? ` ×${s.count}` : ''}
+      </span>
+      <input type="number" min="0.1" step="any" value={drafts[s.id] ?? s.target_area} onChange={(e) => onAreaDraft(s, e.target.value)} onClick={(e) => e.stopPropagation()} />
+      <span className="split-total">{fmtArea((s.count || 1) * ea(s), units)}</span>
+    </div>
+  );
+
   return (
     <div
       className={`diagram-layout ${split ? '' : 'norail'}`}
-      style={split ? { gridTemplateColumns: `minmax(0, 1fr) ${railW}px` } : undefined}
+      style={{ '--rail-w': `${railW}px` }}
     >
       {showHelp && <HelpPanel onClose={() => setShowHelp(false)} />}
       {showMatrix && (
@@ -1308,7 +1415,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
               <input type="checkbox" checked={simEnabled} onChange={(e) => saveProject({ sim_enabled: e.target.checked ? 1 : 0 })} />
               Auto-layout
             </label>
-            <button className={`btn small ${panMode ? 'primary' : ''}`} onClick={() => (setPanMode((v) => !v), setMoveLayer(null), setRotateLayer(null))} title="Toggle panning — drag the canvas to move the view.">
+            <button className={`btn small ${panMode ? 'on' : ''}`} onClick={() => (setPanMode((v) => !v), setMoveLayer(null), setRotateLayer(null))} title="Toggle panning — drag the canvas to move the view.">
               ✋ Pan
             </button>
             {viewMoved && (
@@ -1354,10 +1461,10 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
           </div>
           <div className="toolbar-sep" />
           <div className="toolbar-group">
-            <button className={`btn small ${panel === 'layers' ? 'primary' : ''}`} onClick={() => setPanel(panel === 'layers' ? null : 'layers')} title="Satellite & imported images, each with its own scale and rotation.">
+            <button className={`btn small ${panel === 'layers' ? 'on' : ''}`} onClick={() => setPanel(panel === 'layers' ? null : 'layers')} title="Satellite & imported images, each with its own scale and rotation.">
               🗺 Layers
             </button>
-            <button className={`btn small ${split ? 'primary' : ''}`} onClick={toggleSplit} title="Show or hide the side panel.">
+            <button className={`btn small ${split ? 'on' : ''}`} onClick={toggleSplit} title="Show or hide the Areas & Relationships panel.">
               ◫ Panel
             </button>
           </div>
@@ -1366,7 +1473,15 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
             <button className="btn small" onClick={() => convertAll(leaves.every((s) => shapeOf(s) === 'box') ? 'bubble' : 'box')} title="Convert every space to boxes (or back to bubbles)">
               {leaves.every((s) => shapeOf(s) === 'box') ? '○ All bubbles' : '▢ All boxes'}
             </button>
-            <button className={`btn small ${hulls ? 'primary' : ''}`} onClick={toggleHulls} title="Show a soft hull behind each category group (building hulls always show).">
+            <label className="scale-label" title="How bubbles are drawn">
+              Style
+              <select className="scale-select" value={bubbleStyle} onChange={(e) => setBubbleStyle(e.target.value)}>
+                <option value="solid">Solid</option>
+                <option value="outline">Outline</option>
+                <option value="sketch">Sketch</option>
+              </select>
+            </label>
+            <button className={`btn small ${hulls ? 'on' : ''}`} onClick={toggleHulls} title="Show a soft hull behind each category group (building hulls always show).">
               ⬡ Categories
             </button>
             {(hulls || hasBuildings) && (
@@ -1374,7 +1489,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                 <input type="range" min="6" max="80" step="2" value={hullPad} onChange={(e) => setHullSize(Number(e.target.value))} />
               </label>
             )}
-            <button className={`btn small ${showMatrix ? 'primary' : ''}`} onClick={() => setShowMatrix(true)} title="Edit relationships as an adjacency matrix.">
+            <button className={`btn small ${showMatrix ? 'on' : ''}`} onClick={() => setShowMatrix(true)} title="Edit relationships as an adjacency matrix.">
               ▦ Matrix
             </button>
           </div>
@@ -1421,6 +1536,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                     moving={moveLayer === im.id}
                     onRotateMode={() => ((setMoveLayer(null)), setRotateLayer(rotateLayer === im.id ? null : im.id))}
                     rotating={rotateLayer === im.id}
+                    onFilter={(v) => layerSlider(im, 'filter', v)}
                     onDelete={() => deleteImageLayer(im.id)}
                   />
                 ))}
@@ -1498,6 +1614,12 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
             onPointerUp={onUp}
             onPointerLeave={onUp}
           >
+            <defs>
+              <filter id="sketchy" x="-20%" y="-20%" width="140%" height="140%">
+                <feTurbulence type="fractalNoise" baseFrequency="0.018" numOctaves="2" seed="7" result="n" />
+                <feDisplacementMap in="SourceGraphic" in2="n" scale="5" xChannelSelector="R" yChannelSelector="G" />
+              </filter>
+            </defs>
             {imgLayers.map((im) => {
               if (!im.visible) return null;
               const r = layerRect(im);
@@ -1514,6 +1636,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                   opacity={im.opacity}
                   preserveAspectRatio="none"
                   transform={imgTransform(r)}
+                  style={im.filter ? { filter: filterCss(im.filter) } : undefined}
                   className={active ? 'layer-active' : ''}
                 />
               );
@@ -1594,6 +1717,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
               const side = r * Math.sqrt(Math.PI); // square of equal area
               const fillOp = isSel ? Math.min((project.bubble_opacity ?? 0.32) + 0.25, 1) : pinned ? Math.min((project.bubble_opacity ?? 0.32) + 0.1, 1) : project.bubble_opacity ?? 0.32;
               const sw = isSel ? 3 : pinned ? 2.5 : 1.5;
+              const outline = bubbleStyle === 'outline';
+              const sketch = bubbleStyle === 'sketch';
+              const fillOpEff = outline ? 0 : fillOp;
+              const swEff = outline ? sw + 1 : sw;
+              const shapeFilter = sketch ? 'url(#sketchy)' : undefined;
               return (
                 <g
                   key={o.key}
@@ -1622,9 +1750,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                       <circle r={r + 7} className="multi-ring" />
                     ))}
                   {box ? (
-                    <rect x={-side / 2} y={-side / 2} width={side} height={side} rx={Math.min(4, side / 8)} fill={colorOf(s)} fillOpacity={fillOp} stroke={colorOf(s)} strokeWidth={sw} />
+                    <rect x={-side / 2} y={-side / 2} width={side} height={side} rx={Math.min(4, side / 8)} fill={colorOf(s)} fillOpacity={fillOpEff} stroke={colorOf(s)} strokeWidth={swEff} filter={shapeFilter} />
                   ) : (
-                    <circle r={r} fill={colorOf(s)} fillOpacity={fillOp} stroke={colorOf(s)} strokeWidth={sw} />
+                    <circle r={r} fill={colorOf(s)} fillOpacity={fillOpEff} stroke={colorOf(s)} strokeWidth={swEff} filter={shapeFilter} />
                   )}
                   <text textAnchor="middle" dy={r > 26 ? -2 : r > 13 ? 3 : r + 11} className="bubble-name" style={{ fontSize: Math.max(9, Math.min(14, r / 3.2)) }}>
                     {s.name}
@@ -1757,34 +1885,61 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
 
       {split && (
         <aside className="diagram-rail">
+          <button className="rail-close" onClick={toggleSplit} title="Close panel">▾ Close panel</button>
           <div className="rail-resizer" onPointerDown={startRailResize} title="Drag to resize the panel" />
           <section className="rail-section areas">
             <div className="rail-head">
               <h3>Areas</h3>
-              <span className="muted">live</span>
+              {hasBuildings && (
+                <div className="seg small">
+                  <button className={`seg-btn ${areaMode === 'category' ? 'active' : ''}`} onClick={() => setAreaMode('category')}>Category</button>
+                  <button className={`seg-btn ${areaMode === 'building' ? 'active' : ''}`} onClick={() => setAreaMode('building')}>Building</button>
+                </div>
+              )}
             </div>
             <div className="split-rows">
-              {groups.map((g) => (
-                <div key={g} className="split-group">
-                  <div className="split-dept">
-                    <span className="legend-dot" style={{ background: colorForLabel(g) }} />
-                    {g}
-                  </div>
-                  {leaves
-                    .filter((s) => groupKey(s) === g)
-                    .map((s) => (
-                      <div key={s.id} className={`split-row ${selected === s.id ? 'selected' : ''}`} onClick={() => setSelected(selected === s.id ? null : s.id)}>
-                        <span className="split-name" title={s.name}>
-                          {anyPinned(s) && <span className="split-pin">◉</span>}
-                          {s.name}
-                          {s.count > 1 ? ` ×${s.count}` : ''}
-                        </span>
-                        <input type="number" min="0.1" step="any" value={drafts[s.id] ?? s.target_area} onChange={(e) => onAreaDraft(s, e.target.value)} onClick={(e) => e.stopPropagation()} />
-                        <span className="split-total">{fmtArea((s.count || 1) * ea(s), units)}</span>
+              {areaMode === 'building' && hasBuildings
+                ? [...areaTree.entries()].map(([b, levels]) => {
+                    const bKey = `b:${b}`;
+                    const open = !collapsed.has(bKey);
+                    const bSpaces = [...levels.values()].flat();
+                    const bTotal = bSpaces.reduce((t, s) => t + (s.count || 1) * ea(s), 0);
+                    const multiLevel = levels.size > 1 || ![...levels.keys()].every((k) => k === '');
+                    return (
+                      <div key={bKey} className="split-group">
+                        <div className="split-dept building" onClick={() => toggleCollapse(bKey)}>
+                          <span className="collapse-caret">{open ? '▾' : '▸'}</span>
+                          <span className="legend-dot" style={{ background: colorForLabel(b) }} />
+                          🏢 {b}
+                          <span className="split-grouptotal">{fmtArea(bTotal, units)}</span>
+                        </div>
+                        {open &&
+                          [...levels.entries()].map(([lvl, list]) => (
+                            <div key={lvl} className="split-level-group">
+                              {multiLevel && <div className="split-level">{lvl || 'Unassigned level'}</div>}
+                              {list.map((s) => areaRow(s))}
+                            </div>
+                          ))}
                       </div>
-                    ))}
-                </div>
-              ))}
+                    );
+                  })
+                : groups.map((g) => {
+                    const gKey = `c:${g}`;
+                    const open = !collapsed.has(gKey);
+                    const list = leaves.filter((s) => groupKey(s) === g);
+                    const gTotal = list.reduce((t, s) => t + (s.count || 1) * ea(s), 0);
+                    return (
+                      <div key={gKey} className="split-group">
+                        <div className="split-dept" onClick={() => toggleCollapse(gKey)}>
+                          <span className="collapse-caret">{open ? '▾' : '▸'}</span>
+                          <span className="legend-dot" style={{ background: colorForLabel(g) }} />
+                          {g}
+                          <span className="split-grouptotal">{fmtArea(gTotal, units)}</span>
+                        </div>
+                        {open && list.map((s) => areaRow(s))}
+                      </div>
+                    );
+                  })}
             </div>
             <div className="split-foot">
               <span>Net total</span>
@@ -1843,36 +1998,41 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   );
 }
 
-function LayerRow({ title, layer, dims, units, calibrated, onToggleVisible, onOpacity, onRotate, onCalibrate, onMove, moving, onRotateMode, rotating, onDelete }) {
+function LayerRow({ title, layer, dims, units, calibrated, onToggleVisible, onOpacity, onRotate, onCalibrate, onMove, moving, onRotateMode, rotating, onFilter, onDelete }) {
   let scaleNote = '';
   if (calibrated && dims) {
     const realW = dims.w * layer.mpp;
-    scaleNote = `${Math.round(realW).toLocaleString()} ${distUnit(units)} wide`;
+    scaleNote = `${Math.round(realW).toLocaleString()} ${distUnit(units)}`;
   }
   return (
     <div className="layer-row">
-      <label className="switch" title="Show or hide this layer">
-        <input type="checkbox" checked={!!layer.visible} onChange={(e) => onToggleVisible(e.target.checked)} />
-        {title}
-      </label>
-      <span className={`layer-cal ${calibrated ? 'ok' : 'warn'}`}>
-        {calibrated ? scaleNote || 'calibrated' : 'not calibrated'}
-      </span>
-      <div className="layer-controls">
-        <label className="opacity-label">
-          Opacity
-          <input type="range" min="0.1" max="1" step="0.05" value={layer.opacity} onChange={(e) => onOpacity(Number(e.target.value))} />
+      <div className="layer-head">
+        <label className="switch" title="Show or hide this layer">
+          <input type="checkbox" checked={!!layer.visible} onChange={(e) => onToggleVisible(e.target.checked)} />
+          <span className="layer-name">{title}</span>
         </label>
+        <span className={`layer-cal ${calibrated ? 'ok' : 'warn'}`} title={calibrated ? `${scaleNote} wide` : 'Not calibrated — use 📏 to set the scale'}>
+          {calibrated ? scaleNote : 'uncal.'}
+        </span>
+        <button className="btn small ghost danger layer-del" onClick={onDelete} title="Remove this image">✕</button>
+      </div>
+      <div className="layer-ctrls">
+        <span className="opacity-mini" title="Opacity">
+          ◐
+          <input type="range" min="0.1" max="1" step="0.05" value={layer.opacity} onChange={(e) => onOpacity(Number(e.target.value))} />
+        </span>
         <span className="rot-field" title="Rotation in degrees (clockwise)">
           ⟳
-          <input type="number" step="1" value={Math.round(layer.rot || 0)} onChange={(e) => onRotate(((Number(e.target.value) % 360) + 360) % 360)} />°
+          <input type="number" step="1" value={Math.round(layer.rot || 0)} onChange={(e) => onRotate(((Number(e.target.value) % 360) + 360) % 360)} />
         </span>
-      </div>
-      <div className="layer-actions">
-        <button className="btn small" onClick={onCalibrate}>📏 Calibrate</button>
-        <button className={`btn small ${moving ? 'primary' : ''}`} onClick={onMove}>✥ Move</button>
-        <button className={`btn small ${rotating ? 'primary' : ''}`} onClick={onRotateMode} title="Rotate mode — then drag the canvas to turn this image">⟲ Rotate</button>
-        <button className="btn small ghost danger" onClick={onDelete}>✕</button>
+        <select className="filter-select" value={layer.filter || ''} onChange={(e) => onFilter(e.target.value)} title="Diagrammatic filter">
+          {IMAGE_FILTERS.map(([v, l]) => (
+            <option key={v} value={v}>{l}</option>
+          ))}
+        </select>
+        <button className="btn small" onClick={onCalibrate} title="Calibrate scale — mark a known distance">📏</button>
+        <button className={`btn small ${moving ? 'on' : ''}`} onClick={onMove} title="Move — then drag the canvas">✥</button>
+        <button className={`btn small ${rotating ? 'on' : ''}`} onClick={onRotateMode} title="Rotate — then drag the canvas">⟲</button>
       </div>
     </div>
   );

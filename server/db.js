@@ -150,6 +150,18 @@ ensureColumn('spaces', 'parent_id', 'parent_id INTEGER');
 ensureColumn('spaces', 'kind', "kind TEXT DEFAULT 'space'"); // 'space' | 'building' | 'group'
 ensureColumn('spaces', 'shape', "shape TEXT DEFAULT 'bubble'"); // 'bubble' | 'box'
 ensureColumn('spaces', 'image', 'image TEXT'); // per-space reference image (data URL)
+// How a space relates to its children: 'group' = pure grouping container (sums
+// children, no own area, default/legacy), 'within' = a real space whose children
+// sit inside its own area (children excluded from totals), 'attached' = a real
+// space whose children are separate areas that move with it on the diagram.
+ensureColumn('spaces', 'child_mode', "child_mode TEXT DEFAULT 'group'");
+ensureColumn('spaces', 'level', "level TEXT DEFAULT ''"); // building level / storey label
+
+// Per-image diagrammatic filter preset (''|grayscale|blueprint|faded|contrast|ink).
+ensureColumn('images', 'filter', "filter TEXT DEFAULT ''");
+
+// Bubble rendering style: 'solid' (default) | 'outline' | 'sketch'.
+ensureColumn('projects', 'bubble_style', "bubble_style TEXT DEFAULT 'solid'");
 
 const DEFAULT_SETTINGS = {
   default_units: 'm2',

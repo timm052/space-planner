@@ -105,20 +105,23 @@ export function exportDiagramPdf(scene) {
   }
   doc.setLineDashPattern([], 0);
 
-  // Bubbles (or boxes).
+  // Bubbles (or boxes). Outline style draws stroke only, to match the viewport.
+  const outline = scene.bubbleStyle === 'outline';
   for (const b of scene.bubbles) {
     const [r, g, bl] = hexToRgb(b.color);
     const rmm = b.r * mmPerUnit;
     const side = rmm * Math.sqrt(Math.PI); // square of equal area
     const drawShape = (style) =>
       b.box ? doc.rect(X(b.x) - side / 2, Y(b.y) - side / 2, side, side, style) : doc.circle(X(b.x), Y(b.y), rmm, style);
-    doc.saveGraphicsState();
-    doc.setGState(new doc.GState({ opacity: b.opacity }));
-    doc.setFillColor(r, g, bl);
-    drawShape('F');
-    doc.restoreGraphicsState();
+    if (!outline) {
+      doc.saveGraphicsState();
+      doc.setGState(new doc.GState({ opacity: b.opacity }));
+      doc.setFillColor(r, g, bl);
+      drawShape('F');
+      doc.restoreGraphicsState();
+    }
     doc.setDrawColor(r, g, bl);
-    doc.setLineWidth(0.25);
+    doc.setLineWidth(outline ? 0.4 : 0.25);
     drawShape('S');
 
     // Label, scaled to the bubble but kept legible.

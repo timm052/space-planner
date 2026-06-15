@@ -55,7 +55,7 @@ const PROJECT_FIELDS = [
   'bubble_opacity', 'view_x', 'view_y',
   'bg_mpp', 'bg_visible', 'bg_x', 'bg_y',
   'sat_image', 'sat_mpp', 'sat_opacity', 'sat_attribution', 'sat_visible', 'sat_x', 'sat_y',
-  'north_deg', 'bg_rot', 'sat_rot', 'category_colors',
+  'north_deg', 'bg_rot', 'sat_rot', 'category_colors', 'bubble_style',
 ];
 
 app.put('/api/projects/:id', (req, res) => {
@@ -135,7 +135,8 @@ function parentOk(projectId, parentId, selfId) {
 app.post('/api/projects/:id/spaces', (req, res) => {
   const project = requireProject(req, res);
   if (!project) return;
-  const { department = 'General', name, count = 1, target_area, notes = '', kind = 'space' } = req.body;
+  const { department = 'General', name, count = 1, target_area, notes = '', kind = 'space', level = '' } = req.body;
+  const child_mode = ['group', 'within', 'attached'].includes(req.body.child_mode) ? req.body.child_mode : 'group';
   const parent_id = req.body.parent_id != null ? Number(req.body.parent_id) : null;
   if (!name || !name.trim()) return res.status(400).json({ error: 'Space name is required' });
   const isContainer = CONTAINER_KINDS.has(kind);
@@ -150,12 +151,12 @@ app.post('/api/projects/:id/spaces', (req, res) => {
     .get(project.id).m;
   const r = db
     .prepare(
-      `INSERT INTO spaces (project_id, department, name, count, target_area, notes, sort_order, parent_id, kind)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO spaces (project_id, department, name, count, target_area, notes, sort_order, parent_id, kind, child_mode, level)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       project.id, department, name.trim(), Number(count) || 1,
-      isContainer ? 0 : Number(target_area), notes, max + 1, parent_id, kind
+      isContainer ? 0 : Number(target_area), notes, max + 1, parent_id, kind, child_mode, level
     );
   res.status(201).json(db.prepare('SELECT * FROM spaces WHERE id = ?').get(r.lastInsertRowid));
 });
@@ -163,7 +164,7 @@ app.post('/api/projects/:id/spaces', (req, res) => {
 app.put('/api/spaces/:id', (req, res) => {
   const space = db.prepare('SELECT * FROM spaces WHERE id = ?').get(Number(req.params.id));
   if (!space) return res.status(404).json({ error: 'Space not found' });
-  const { department = space.department, name = space.name, count = space.count, target_area = space.target_area, notes = space.notes, kind = space.kind, shape = space.shape } = req.body;
+  const { department = space.department, name = space.name, count = space.count, target_area = space.target_area, notes = space.notes, kind = space.kind, shape = space.shape, child_mode = space.child_mode, level = space.level } = req.body;
   const parent_id = 'parent_id' in req.body ? (req.body.parent_id != null ? Number(req.body.parent_id) : null) : space.parent_id;
   if (!parentOk(space.project_id, parent_id, space.id)) {
     return res.status(400).json({ error: 'Invalid parent (would create a cycle)' });
@@ -177,9 +178,10 @@ app.put('/api/spaces/:id', (req, res) => {
   const image = 'image' in req.body ? req.body.image : space.image;
   const sort_order = 'sort_order' in req.body ? Number(req.body.sort_order) : space.sort_order;
   const area = CONTAINER_KINDS.has(kind) ? 0 : Number(target_area);
+  const childMode = ['group', 'within', 'attached'].includes(child_mode) ? child_mode : 'group';
   db.prepare(
-    'UPDATE spaces SET department = ?, name = ?, count = ?, target_area = ?, notes = ?, pin_x = ?, pin_y = ?, pin_json = ?, parent_id = ?, kind = ?, shape = ?, image = ?, sort_order = ? WHERE id = ?'
-  ).run(department, name, Number(count) || 1, area, notes, pin_x, pin_y, pin_json, parent_id, kind, shape === 'box' ? 'box' : 'bubble', image, sort_order, space.id);
+    'UPDATE spaces SET department = ?, name = ?, count = ?, target_area = ?, notes = ?, pin_x = ?, pin_y = ?, pin_json = ?, parent_id = ?, kind = ?, shape = ?, image = ?, sort_order = ?, child_mode = ?, level = ? WHERE id = ?'
+  ).run(department, name, Number(count) || 1, area, notes, pin_x, pin_y, pin_json, parent_id, kind, shape === 'box' ? 'box' : 'bubble', image, sort_order, childMode, level ?? '', space.id);
   res.json(db.prepare('SELECT * FROM spaces WHERE id = ?').get(space.id));
 });
 
@@ -302,7 +304,7 @@ app.delete('/api/snapshots/:id', (req, res) => {
 
 // ---------- Image layers ----------
 
-const IMAGE_FIELDS = ['kind', 'name', 'image', 'mpp', 'opacity', 'visible', 'x', 'y', 'rot', 'sort_order', 'attribution'];
+const IMAGE_FIELDS = ['kind', 'name', 'image', 'mpp', 'opacity', 'visible', 'x', 'y', 'rot', 'sort_order', 'attribution', 'filter'];
 
 app.post('/api/projects/:id/images', (req, res) => {
   const project = requireProject(req, res);

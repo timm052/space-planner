@@ -6,11 +6,13 @@ import {
   subtreeArea,
   orderedTree,
   isContainerKind,
+  isPureContainer,
   childIdSet,
   fmtArea,
 } from '../compute.js';
 
 const NEW = { kind: 'space', department: '', name: '', count: 1, target_area: '' };
+const CHILD_MODE_LABEL = { group: 'Group', within: 'Within', attached: 'Attached' };
 
 export default function BriefTab({ project, spaces, onChanged }) {
   const [form, setForm] = useState(NEW);
@@ -92,7 +94,10 @@ export default function BriefTab({ project, spaces, onChanged }) {
   const tree = useMemo(() => orderedTree(spaces), [spaces]);
   const parents = useMemo(() => childIdSet(spaces), [spaces]);
   const byId = useMemo(() => new Map(spaces.map((s) => [s.id, s])), [spaces]);
-  const isContainerRow = (s) => isContainerKind(s) || parents.has(s.id);
+  // Pure containers (buildings/zones and group-mode parents) show rolled-up
+  // areas; 'within'/'attached' parents are real spaces with their own area.
+  const isContainerRow = (s) => isPureContainer(s, parents);
+  const hasChildren = (s) => parents.has(s.id);
 
   async function add(e) {
     e.preventDefault();
@@ -123,6 +128,8 @@ export default function BriefTab({ project, spaces, onChanged }) {
       count: s.count,
       target_area: s.target_area,
       parent_id: s.parent_id,
+      child_mode: s.child_mode || 'group',
+      level: s.level || '',
     });
   }
 
@@ -136,6 +143,8 @@ export default function BriefTab({ project, spaces, onChanged }) {
         count: Number(edit.count) || 1,
         target_area: Number(edit.target_area),
         parent_id: edit.parent_id ? Number(edit.parent_id) : null,
+        child_mode: edit.child_mode || 'group',
+        level: edit.level || '',
       });
       setEditingId(null);
       onChanged();
@@ -357,14 +366,26 @@ export default function BriefTab({ project, spaces, onChanged }) {
                       {edit.kind === 'building' ? <span className="muted">—</span> : <input type="number" min="0.1" step="any" value={edit.target_area} onChange={(e) => setEdit({ ...edit, target_area: e.target.value })} />}
                     </td>
                     <td className="num">
-                      <select className="parent-select" value={edit.parent_id || ''} onChange={(e) => setEdit({ ...edit, parent_id: e.target.value })} title="Parent container">
-                        <option value="">Top level</option>
-                        {parentOptions.map((c) => (
-                          <option key={c.id} value={c.id}>
-                            in {c.name}
-                          </option>
-                        ))}
-                      </select>
+                      <div className="edit-extra">
+                        <select className="parent-select" value={edit.parent_id || ''} onChange={(e) => setEdit({ ...edit, parent_id: e.target.value })} title="Parent container">
+                          <option value="">Top level</option>
+                          {parentOptions.map((c) => (
+                            <option key={c.id} value={c.id}>
+                              in {c.name}
+                            </option>
+                          ))}
+                        </select>
+                        {edit.kind !== 'building' && hasChildren(s) && (
+                          <select className="mode-select" value={edit.child_mode} onChange={(e) => setEdit({ ...edit, child_mode: e.target.value })} title="How nested spaces relate to this one">
+                            <option value="group">Children: grouped (sum)</option>
+                            <option value="within">Children: within its area</option>
+                            <option value="attached">Children: attached (move together)</option>
+                          </select>
+                        )}
+                        {edit.kind !== 'building' && (
+                          <input className="level-input" placeholder="Level (e.g. Ground)" value={edit.level} onChange={(e) => setEdit({ ...edit, level: e.target.value })} title="Building level / storey" />
+                        )}
+                      </div>
                     </td>
                     <td className="row-actions">
                       <button className="btn small primary" onClick={() => saveEdit(s.id)} type="button">
@@ -393,6 +414,10 @@ export default function BriefTab({ project, spaces, onChanged }) {
                         <span className="drag-grip" title="Drag to move / nest">⠿</span>
                         <span className="kind-icon">{s.kind === 'building' ? '🏢' : isContainerRow(s) ? '▦' : '·'}</span>
                         <span className={isContainerRow(s) ? 'container-name' : ''}>{s.name}</span>
+                        {s.level ? <span className="row-tag" title="Building level">{s.level}</span> : null}
+                        {hasChildren(s) && s.kind === 'space' && (s.child_mode === 'within' || s.child_mode === 'attached') ? (
+                          <span className="row-tag mode" title="How nested spaces relate to this one">{CHILD_MODE_LABEL[s.child_mode]}</span>
+                        ) : null}
                         {s.notes ? <span className="row-flag" title="Has notes">📝</span> : null}
                         {s.image ? <span className="row-flag" title="Has reference image">🖼</span> : null}
                       </td>
@@ -403,8 +428,8 @@ export default function BriefTab({ project, spaces, onChanged }) {
                           s.department
                         )}
                       </td>
-                      <td className="num">{isContainerKind(s) ? '—' : s.count}</td>
-                      <td className="num">{isContainerKind(s) ? '—' : fmtArea(s.target_area, project.units)}</td>
+                      <td className="num">{isContainerRow(s) ? '—' : s.count}</td>
+                      <td className="num">{isContainerRow(s) ? '—' : fmtArea(s.target_area, project.units)}</td>
                       <td className="num strong">{fmtArea(isContainerRow(s) ? subtreeArea(s, spaces) : targetTotal(s), project.units)}</td>
                       <td className="row-actions">
                         {isContainerRow(s) && (
@@ -412,7 +437,7 @@ export default function BriefTab({ project, spaces, onChanged }) {
                             + inside
                           </button>
                         )}
-                        <button className={`btn small ghost ${expandedId === s.id ? 'primary' : ''}`} onClick={() => setExpandedId(expandedId === s.id ? null : s.id)} type="button" title="Notes & reference image (N)">
+                        <button className={`btn small ghost ${expandedId === s.id ? 'on' : ''}`} onClick={() => setExpandedId(expandedId === s.id ? null : s.id)} type="button" title="Notes & reference image (N)">
                           Notes
                         </button>
                         <button className="btn small ghost" onClick={() => startEdit(s)} type="button">
