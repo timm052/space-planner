@@ -25,24 +25,48 @@ The near-term core is now in place:
 - **Keyboard-first editing** in the Brief tree (move, reorder, nest, edit).
 - **Custom categories** — create and assign departments from the diagram, each
   with a custom colour.
-- **Automated test suite** — `npm test` (Node's built-in runner, no extra deps)
-  covering the pure domain math (`compute.js`, `scale.js`) and the full REST API
-  against an isolated temp DB; wired into CI ahead of the build.
+- **Automated test suite** — `npm test` (Node's built-in runner) covering the
+  pure domain math (`compute.js`, `scale.js`), the diagram geometry helpers
+  (`geometry.js` — hull, pins, filters), the full REST API against an isolated
+  temp DB, and the prop-driven React views (`react-dom/server` static markup);
+  wired into CI ahead of the build.
 - **Keyboard focus & motion accessibility** — visible focus rings across all
   controls, keyboard-operable project cards, `prefers-reduced-motion` support
   and themed scrollbars.
 
 ## Near term (rounding out the core)
 
+- **Brief templates / starter programs** — seed a new project from a building-type
+  template (school, library, clinic, small office) instead of a blank brief; the
+  demo seed already proves the shape, so this is templated `spaces` rows.
+- **Bulk brief entry** — paste a spreadsheet or import a CSV of the *program*
+  (department, space, count, target) to populate the brief in one go — distinct
+  from milestone import below, which brings in *measured* areas.
+- **Find / quick-select spaces** — a search box (and `Cmd/Ctrl-K` palette) to
+  jump to a space by name, select it on the diagram and scroll the Brief to it.
+- **Colour-by status & level** — extend the diagram's colour-by beyond
+  department/building to *compliance status* (over/under/on vs. the latest
+  milestone) and *building level*, reusing the existing legend/colour plumbing.
 - **Per-space data sheets** — build on notes/images with finishes, occupancy,
   servicing and other brief attributes per space.
 - **Diagram presets** — save and reuse colour palettes, scales and layer
   setups across projects.
 - **Richer PDF / export options** — page-size and title-block customisation,
-  multi-page sheet sets.
+  multi-page sheet sets, plus a **client-ready area schedule** (formatted
+  PDF/XLSX, not just today's CSV).
 
 ## Medium term (integration & data)
 
+- **Departmental area budgets** — set a target budget per department/building and
+  track live consumption with progress gauges as you edit the brief, so over-brief
+  shows up *before* a milestone is recorded (proactive vs. the reactive variance).
+- **Adjacency compliance score** — grade the current layout against its adjacency
+  requirements (are all "required" pairs within a distance threshold?) and surface
+  a "diagram quality" metric with the unmet links highlighted.
+- **Design options / scenarios** — branch a project's layout into A/B options and
+  compare them side by side (areas, adjacency score, drift) for option studies.
+- **Stacking diagram** — a vertical by-level view (the `level` column already
+  exists) showing department area per floor, complementing the plan-view bubbles.
 - **Import area schedules** — parse a Revit/IFC or spreadsheet export straight
   into a milestone (the milestone model is keyed by space, so a column mapping
   UI is enough).
@@ -65,6 +89,12 @@ The near-term core is now in place:
   diagram-only export.
 - **Cost & carbon overlays** — attach $/m² and embodied-carbon factors per
   department for live budget and carbon estimates as areas change.
+- **Annotations, dimensions & measure tool** — text notes, leader lines and
+  dimension strings on the canvas, plus a quick distance/area measure on the
+  calibrated background for presentation-ready diagrams.
+- **Occupancy-driven area standards** — derive target areas from occupancy counts
+  × area-per-person standards, so the brief can be generated from headcounts and
+  re-checked against the chosen standard.
 
 ## Platform / quality
 
@@ -72,9 +102,10 @@ The near-term core is now in place:
   app so non-technical architects can install and run BriefTrack without Node.
   The SQLite database lives in a normal app-data location, and projects can be
   saved and opened as portable files.
-- **Tests** — unit + API suites are now in place (see Shipped). Next: component
-  tests for the React tabs (Testing Library + jsdom) and an end-to-end happy
-  path; the diagram's pointer/sim logic is the largest remaining gap.
+- **Tests** — unit, geometry, API and view-render suites are in place (see
+  Shipped). Next: an end-to-end happy path (Playwright) and coverage of the
+  diagram's interactive shell (pointer/drag/RAF sim), which still needs jsdom +
+  simulated pointer events or further helper extraction.
 - **Type safety** — migrate to TypeScript (or JSDoc + `checkJs`) starting with
   `compute.js` and the API contract.
 - **Accessibility** — full-app focus rings and keyboard-operable cards are done;
@@ -83,6 +114,8 @@ The near-term core is now in place:
   the tabs and tables.
 - **i18n & imperial polish** — the unit system exists; complete imperial
   formatting (feet-and-inches) and translatable strings.
+- **Light theme** — the palette is fully tokenised in `:root`; add a light theme
+  and a toggle (respect `prefers-color-scheme`) for bright-office / print use.
 
 ## Known limitations to address
 
