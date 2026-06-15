@@ -16,6 +16,7 @@ jobs:
           node-version: '22.x'
           cache: 'npm'
       - run: npm ci
+      - run: npm test
       - run: npm run build
       # Smoke-test that the API boots and serves the seeded project.
       - name: API smoke test

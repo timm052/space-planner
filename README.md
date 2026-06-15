@@ -98,6 +98,19 @@ npm run build
 npm start          # serves API + built app on :3001 (or $PORT)
 ```
 
+## Tests
+
+```bash
+npm test           # Node's built-in test runner (no extra deps)
+```
+
+The suite (`test/`) covers the pure domain logic in `compute.js` (hierarchy,
+leaf-aware rollups, units, CSV) and `scale.js` (scale conversions + the
+zoom-about-anchor invariant), plus API integration tests that spin the Express
+app up against an isolated temp database (set via `BRIEFTRACK_DB_DIR`) and
+exercise every endpoint, including parent-cycle prevention and recursive
+subtree deletes. CI runs `npm test` before the build.
+
 ## API
 
 | Method | Route | Purpose |

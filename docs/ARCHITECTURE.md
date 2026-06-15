@@ -305,8 +305,11 @@ a `.page` wrapper, the diagram renders full-bleed (`.project-content.full`).
 
 ## 9. Notes for AI agents
 
-- **Always run `npm run build` after edits** — it's the fastest correctness
-  gate. Then verify scale/alignment behaviour in the running app.
+- **Run `npm test` and `npm run build` after edits** — the fastest correctness
+  gates. `npm test` (Node's built-in runner, no extra deps) covers the pure
+  helpers in `compute.js`/`scale.js` and the full REST surface against an
+  isolated temp DB (`BRIEFTRACK_DB_DIR`). Add a case there when you change
+  domain math or an endpoint. Then verify scale/alignment in the running app.
 - The API server does **not** hot-reload; **restart it** after touching
   `server/*` (the preview launcher restart re-runs migrations).
 - `compute.js` changes ripple into Dashboard, CSV, and the diagram — verify

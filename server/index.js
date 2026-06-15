@@ -406,11 +406,18 @@ if (process.env.NODE_ENV === 'production') {
   app.get('*', (req, res) => res.sendFile(path.join(dist, 'index.html')));
 }
 
-// In dev, Vite owns PORT (the launcher may inject it); the API listens on its own port.
-const PORT =
-  process.env.API_PORT ||
-  (process.env.NODE_ENV === 'production' && process.env.PORT) ||
-  3001;
-app.listen(PORT, () => {
-  console.log(`BriefTrack API listening on http://localhost:${PORT}`);
-});
+export { app };
+
+// Only start listening when run directly (node server/index.js), not when the
+// app is imported by tests (which start their own ephemeral-port server).
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) {
+  // In dev, Vite owns PORT (the launcher may inject it); the API listens on its own port.
+  const PORT =
+    process.env.API_PORT ||
+    (process.env.NODE_ENV === 'production' && process.env.PORT) ||
+    3001;
+  app.listen(PORT, () => {
+    console.log(`BriefTrack API listening on http://localhost:${PORT}`);
+  });
+}

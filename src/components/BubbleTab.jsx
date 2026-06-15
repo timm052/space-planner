@@ -3,6 +3,7 @@ import { api } from '../api.js';
 import { fmtArea, areaToM2, distToMeters, distUnit, leafSpaces, rootContainer } from '../compute.js';
 import { exportDiagramPdf } from '../pdfExport.js';
 import { useHistory } from '../useHistory.js';
+import { SCALE_PRESETS, ratioToScale, scaleToRatio, zoomAbout } from '../scale.js';
 import HelpPanel from './HelpPanel.jsx';
 
 // Logical design canvas — the world anchor for spawning, gravity and image
@@ -17,14 +18,6 @@ const SAT_CANVAS = 768;
 // every non-pinned bubble's position and let the sim re-scatter them on return.
 // This module-level cache keeps the last layout per project for the session.
 const layoutCache = new Map(); // projectId → Map(instanceKey → {x,y})
-
-const M_PER_UNIT_PER_RATIO = 0.0002646;
-const SCALE_PRESETS = {
-  m2: [[100, '1:100'], [200, '1:200'], [500, '1:500'], [1000, '1:1000'], [2000, '1:2000']],
-  ft2: [[96, '1/8″=1′'], [192, '1/16″=1′'], [240, '1″=20′'], [600, '1″=50′'], [1200, '1″=100′']],
-};
-const ratioToScale = (ratio) => ratio * M_PER_UNIT_PER_RATIO;
-const scaleToRatio = (scale) => Math.round(scale / M_PER_UNIT_PER_RATIO);
 
 // Andrew's monotone-chain convex hull (counter-clockwise, no collinear points).
 function convexHull(points) {
@@ -1182,7 +1175,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     if (Math.abs(f - 1) > 1e-9) {
       // Uniform zoom about the viewport centre keeps bubbles aligned with images.
       const A = { x: viewRef.current.x + W / 2, y: viewRef.current.y + H / 2 };
-      const tx = (p) => ({ x: A.x + (p.x - A.x) * f, y: A.y + (p.y - A.y) * f });
+      const tx = (p) => zoomAbout(p, A, f);
       for (const n of nodesRef.current.values()) {
         const t = tx(n);
         n.x = t.x;
