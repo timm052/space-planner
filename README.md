@@ -52,6 +52,10 @@ milestone into a recorded snapshot measured against it:
     not clamped to the viewport.
   - **One bubble per room** — count 3 draws three clustered bubbles, each
     pinnable; adjacency links connect the closest pair of rooms.
+  - **Adjacency compliance score** — with a scale set, a toolbar badge grades how
+    well the current layout honours the declared relationships (the weighted share
+    of required/desired links whose bubbles are actually placed adjacent); click
+    it to highlight the unmet links in red.
   - **Help** — a "?" panel documents every gesture and feature.
 - **Settings** — user preferences: default units (m²/ft²), default tolerance,
   and default efficiency target for new projects.

@@ -24,6 +24,7 @@ const SECTIONS = [
       ['Group', 'In the Brief tab, drag a space onto a building to nest it, or onto the top-level zone to ungroup.'],
       ['Group hulls', 'Toggle ⬡ Groups to draw a soft hull behind each department or building so containment reads at a glance.'],
       ['Lines', 'Required links are solid and pull rooms close; desired links are dashed and looser. Click a line to cycle it.'],
+      ['Adjacency score', 'With a scale set, the ◈ Adjacency badge shows what share of your relationships are actually satisfied (bubbles placed adjacent), weighting required links double. Click it to highlight the unmet links in red.'],
     ],
   },
   {

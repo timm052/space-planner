@@ -33,6 +33,9 @@ The near-term core is now in place:
 - **Keyboard focus & motion accessibility** — visible focus rings across all
   controls, keyboard-operable project cards, `prefers-reduced-motion` support
   and themed scrollbars.
+- **Adjacency compliance score** — a toolbar badge grading the weighted share of
+  required/desired relationships whose bubbles are placed adjacent (judged in
+  metres once a scale is set), with one-click highlighting of the unmet links.
 
 ## Near term (rounding out the core)
 
@@ -60,9 +63,9 @@ The near-term core is now in place:
 - **Departmental area budgets** — set a target budget per department/building and
   track live consumption with progress gauges as you edit the brief, so over-brief
   shows up *before* a milestone is recorded (proactive vs. the reactive variance).
-- **Adjacency compliance score** — grade the current layout against its adjacency
-  requirements (are all "required" pairs within a distance threshold?) and surface
-  a "diagram quality" metric with the unmet links highlighted.
+- **Adjacency score — next steps** — build on the shipped score: per-strength
+  thresholds in Settings, a breakdown panel listing each unmet pair with its gap,
+  and feeding the score into auto-layout as an objective.
 - **Design options / scenarios** — branch a project's layout into A/B options and
   compare them side by side (areas, adjacency score, drift) for option studies.
 - **Stacking diagram** — a vertical by-level view (the `level` column already

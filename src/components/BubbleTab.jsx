@@ -5,6 +5,7 @@ import { exportDiagramPdf } from '../pdfExport.js';
 import { useHistory } from '../useHistory.js';
 import { SCALE_PRESETS, ratioToScale, scaleToRatio, zoomAbout } from '../scale.js';
 import { convexHull, smoothHullPath, pinsOf, filterCss, IMAGE_FILTERS } from '../geometry.js';
+import { edgeGap, adjacencyScore, scoreBand } from '../adjacency.js';
 import HelpPanel from './HelpPanel.jsx';
 
 // Logical design canvas — the world anchor for spawning, gravity and image
@@ -72,6 +73,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const [hulls, setHulls] = useState(() => localStorage.getItem('brieftrack.hulls') === '1');
   const [hullPad, setHullPad] = useState(() => Number(localStorage.getItem('brieftrack.hullpad')) || 26);
   const [showMatrix, setShowMatrix] = useState(false);
+  const [highlightGaps, setHighlightGaps] = useState(false); // flag unmet adjacencies on the diagram
   const [railW, setRailW] = useState(() => Number(localStorage.getItem('brieftrack.railw')) || 340);
   const [areaMode, setAreaMode] = useState('category'); // Areas panel grouping
   const [collapsed, setCollapsed] = useState(() => new Set()); // collapsed Areas groups
@@ -1272,6 +1274,25 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const nodes = nodesRef.current;
   const presets = SCALE_PRESETS[units === 'ft2' ? 'ft2' : 'm2'];
 
+  // Adjacency compliance — how well the current layout honours the declared
+  // relationships. Needs a real scale (gaps are judged in metres), so it's only
+  // meaningful when effScale is set. Recomputed each render as the sim moves nodes.
+  const adjLinks = effScale
+    ? adjacencies
+        .map((l) => {
+          const sa = byId.get(l.space_a);
+          const sb = byId.get(l.space_b);
+          if (!sa || !sb) return null;
+          const pair = closestPair(sa, sb);
+          if (!pair) return null;
+          return { id: l.id, strength: l.strength, gap: edgeGap(pair.d, radiusOf(sa), radiusOf(sb)) * effScale };
+        })
+        .filter(Boolean)
+    : [];
+  const adjResult = adjacencyScore(adjLinks);
+  const unmetLinkIds = new Set(adjResult.unmet.map((l) => l.id));
+  const showScore = effScale && adjacencies.length > 0;
+
   function scaleLabelFor(S) {
     const ratio = scaleToRatio(S);
     const preset = presets.find(([r]) => Math.abs(r - ratio) / r < 0.02);
@@ -1417,6 +1438,15 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
             <button className={`btn small ${showMatrix ? 'on' : ''}`} onClick={() => setShowMatrix(true)} title="Edit relationships as an adjacency matrix.">
               ▦ Matrix
             </button>
+            {showScore && (
+              <button
+                className={`btn small adj-score ${scoreBand(adjResult.score) || ''} ${highlightGaps ? 'active' : ''}`}
+                onClick={() => setHighlightGaps((v) => !v)}
+                title={`Adjacency compliance: ${adjResult.met}/${adjResult.total} relationships satisfied (required links weigh double). Click to highlight the ${adjResult.unmet.length} unmet link${adjResult.unmet.length === 1 ? '' : 's'} on the diagram.`}
+              >
+                ◈ Adjacency {adjResult.score == null ? '—' : `${Math.round(adjResult.score * 100)}%`}
+              </button>
+            )}
           </div>
           <div className="toolbar-spacer" />
           <div className="toolbar-group">
@@ -1624,7 +1654,13 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
               return (
                 <g key={l.id} className="link-hit" onClick={() => onLinkClick(l)}>
                   <line x1={pair.a.x} y1={pair.a.y} x2={pair.b.x} y2={pair.b.y} className="link-hitarea" />
-                  <line x1={pair.a.x} y1={pair.a.y} x2={pair.b.x} y2={pair.b.y} className={`link ${l.strength}`} />
+                  <line
+                    x1={pair.a.x}
+                    y1={pair.a.y}
+                    x2={pair.b.x}
+                    y2={pair.b.y}
+                    className={`link ${l.strength}${highlightGaps && unmetLinkIds.has(l.id) ? ' unmet' : ''}`}
+                  />
                 </g>
               );
             })}
