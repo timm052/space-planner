@@ -106,10 +106,13 @@ npm test           # Node's built-in test runner (no extra deps)
 
 The suite (`test/`) covers the pure domain logic in `compute.js` (hierarchy,
 leaf-aware rollups, units, CSV) and `scale.js` (scale conversions + the
-zoom-about-anchor invariant), plus API integration tests that spin the Express
-app up against an isolated temp database (set via `BRIEFTRACK_DB_DIR`) and
-exercise every endpoint, including parent-cycle prevention and recursive
-subtree deletes. CI runs `npm test` before the build.
+zoom-about-anchor invariant); API integration tests that spin the Express app up
+against an isolated temp database (set via `BRIEFTRACK_DB_DIR`) and exercise
+every endpoint, including parent-cycle prevention and recursive subtree deletes;
+and component tests that render the prop-driven React views (Dashboard,
+DriftChart, ProjectList) to static markup via `react-dom/server` and assert on
+the output. JSX in the tests is transformed by `tsx` (the `--import tsx` flag in
+the `test` script). CI runs `npm test` before the build.
 
 ## API
 

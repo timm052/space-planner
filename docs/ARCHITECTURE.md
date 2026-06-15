@@ -306,10 +306,13 @@ a `.page` wrapper, the diagram renders full-bleed (`.project-content.full`).
 ## 9. Notes for AI agents
 
 - **Run `npm test` and `npm run build` after edits** — the fastest correctness
-  gates. `npm test` (Node's built-in runner, no extra deps) covers the pure
-  helpers in `compute.js`/`scale.js` and the full REST surface against an
-  isolated temp DB (`BRIEFTRACK_DB_DIR`). Add a case there when you change
-  domain math or an endpoint. Then verify scale/alignment in the running app.
+  gates. `npm test` (Node's built-in runner via `tsx` for JSX) covers the pure
+  helpers in `compute.js`/`scale.js`, the full REST surface against an isolated
+  temp DB (`BRIEFTRACK_DB_DIR`), and the prop-driven React views rendered to
+  static markup (`react-dom/server`). Add a case there when you change domain
+  math, an endpoint, or a view. Note: `tsx` transforms JSX with the *classic*
+  runtime, so component tests set `globalThis.React` before rendering. Then
+  verify scale/alignment in the running app.
 - The API server does **not** hot-reload; **restart it** after touching
   `server/*` (the preview launcher restart re-runs migrations).
 - `compute.js` changes ripple into Dashboard, CSV, and the diagram — verify
