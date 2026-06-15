@@ -25,6 +25,12 @@ The near-term core is now in place:
 - **Keyboard-first editing** in the Brief tree (move, reorder, nest, edit).
 - **Custom categories** — create and assign departments from the diagram, each
   with a custom colour.
+- **Automated test suite** — `npm test` (Node's built-in runner, no extra deps)
+  covering the pure domain math (`compute.js`, `scale.js`) and the full REST API
+  against an isolated temp DB; wired into CI ahead of the build.
+- **Keyboard focus & motion accessibility** — visible focus rings across all
+  controls, keyboard-operable project cards, `prefers-reduced-motion` support
+  and themed scrollbars.
 
 ## Near term (rounding out the core)
 
@@ -66,12 +72,15 @@ The near-term core is now in place:
   app so non-technical architects can install and run BriefTrack without Node.
   The SQLite database lives in a normal app-data location, and projects can be
   saved and opened as portable files.
-- **Tests** — pure helpers in `src/compute.js` and the scale math are the
-  highest-value unit-test targets; add an API integration test suite.
+- **Tests** — unit + API suites are now in place (see Shipped). Next: component
+  tests for the React tabs (Testing Library + jsdom) and an end-to-end happy
+  path; the diagram's pointer/sim logic is the largest remaining gap.
 - **Type safety** — migrate to TypeScript (or JSDoc + `checkJs`) starting with
   `compute.js` and the API contract.
-- **Accessibility** — keyboard and screen-reader passes on the diagram
-  (currently pointer-driven) and full-app focus management.
+- **Accessibility** — full-app focus rings and keyboard-operable cards are done;
+  remaining work is the diagram itself (currently pointer-driven — needs keyboard
+  bubble selection/move and screen-reader semantics) and a screen-reader pass on
+  the tabs and tables.
 - **i18n & imperial polish** — the unit system exists; complete imperial
   formatting (feet-and-inches) and translatable strings.
 
