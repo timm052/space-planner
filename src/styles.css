@@ -17,6 +17,7 @@
   --bad: #e5675f;
   --warn: #e8b04b;
   --shadow: 0 10px 34px rgba(0, 0, 0, 0.38);
+  --focus: rgba(240, 181, 63, 0.55);
   --rail-w: 340px;
   font-family: 'Inter', system-ui, sans-serif;
 }
@@ -128,6 +129,7 @@ h3 { margin: 0 0 12px; font-size: 14px; }
 .btn.back:hover { color: var(--accent); background: none; }
 .btn:disabled { opacity: 0.5; cursor: default; }
 .btn.icon { padding: 6px 9px; }
+.btn:not(:disabled):active { transform: translateY(1px); }
 
 /* ---------- forms ---------- */
 input, select, textarea {
@@ -139,7 +141,8 @@ input, select, textarea {
   font: inherit;
   width: 100%;
 }
-input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(240, 181, 63, 0.12); }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(240, 181, 63, 0.12); }
+input:disabled, select:disabled, textarea:disabled { opacity: 0.55; cursor: not-allowed; }
 
 .form-grid { display: grid; grid-template-columns: 2fr 2fr 1fr 1fr; gap: 12px; align-items: end; }
 .form-grid label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--muted); }
@@ -702,6 +705,45 @@ kbd {
     width: 100%; padding: 10px; border: none; background: var(--panel-2); color: var(--muted);
     border-radius: 16px 16px 0 0; font: inherit; font-size: 13px; cursor: pointer;
     position: sticky; top: 0; z-index: 2;
+  }
+}
+
+/* ---------- accessibility & polish ---------- */
+/* Visible keyboard focus for every interactive control. Mouse clicks don't
+   trigger :focus-visible, so this only shows for keyboard/AT users. Inputs keep
+   their own box-shadow ring (rule above wins on specificity). */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.btn:focus-visible, .navlink:focus-visible, .tab:focus-visible, .seg-btn:focus-visible,
+.fab:focus-visible, .brand:focus-visible, .project-card:focus-visible, .switch:focus-visible,
+.legend-swatch:focus-within, .chip:focus-visible, .split-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+.fab:focus-visible { outline-offset: 3px; }
+
+/* Themed text selection. */
+::selection { background: rgba(240, 181, 63, 0.3); }
+
+/* Subtle, theme-matched scrollbars instead of the bright OS default. */
+* { scrollbar-width: thin; scrollbar-color: var(--panel-3) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--panel-3);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--border); background-clip: padding-box; }
+
+/* Respect users who ask for less motion. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
   }
 }
 
