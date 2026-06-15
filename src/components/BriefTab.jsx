@@ -20,6 +20,7 @@ export default function BriefTab({ project, spaces, onChanged }) {
   const [error, setError] = useState(null);
   const [dragId, setDragId] = useState(null);
   const [dropId, setDropId] = useState(null); // 0 = top level
+  const [dropPos, setDropPos] = useState(null); // 'before' | 'after' | 'inside'
   const [focusId, setFocusId] = useState(null);
   const [expandedId, setExpandedId] = useState(null); // row whose notes/image panel is open
   const rowEls = useRef(new Map());
@@ -43,14 +44,47 @@ export default function BriefTab({ project, spaces, onChanged }) {
       setError(e.message);
     }
   }
-  function onDropRow(target) {
+  // Decide drop intent from the cursor's vertical position within the row:
+  // containers nest in the middle and reorder at the edges; leaves only reorder.
+  function dropIntent(e, target) {
+    const r = e.currentTarget.getBoundingClientRect();
+    const rel = (e.clientY - r.top) / r.height;
+    if (isContainerRow(target)) return rel < 0.3 ? 'before' : rel > 0.7 ? 'after' : 'inside';
+    return rel < 0.5 ? 'before' : 'after';
+  }
+  function onRowDrop(e, target) {
+    e.preventDefault();
     const id = dragId;
+    const pos = dropPos;
     setDragId(null);
     setDropId(null);
+    setDropPos(null);
     if (!id || id === target.id) return;
-    // Drop onto a container → nest inside it; onto a leaf → become its sibling.
-    const parent = isContainerKind(target) || parents.has(target.id) ? target.id : target.parent_id ?? null;
-    reparent(id, parent);
+    if (pos === 'inside') reparent(id, target.id);
+    else placeBeside(id, target, pos === 'after');
+  }
+  // Move `id` to sit just before/after `target`, in the same parent, reassigning
+  // sibling sort_order so the new order persists.
+  async function placeBeside(id, target, after) {
+    const dragSpace = byId.get(id);
+    if (!dragSpace) return;
+    const parentId = target.parent_id ?? null;
+    const sibs = spaces
+      .filter((x) => (x.parent_id ?? null) === parentId && x.id !== id)
+      .sort((a, b) => a.sort_order - b.sort_order || a.id - b.id);
+    const ti = sibs.findIndex((x) => x.id === target.id);
+    sibs.splice(after ? ti + 1 : ti, 0, dragSpace);
+    setError(null);
+    try {
+      for (let k = 0; k < sibs.length; k++) {
+        const upd = { sort_order: k };
+        if (sibs[k].id === id && (dragSpace.parent_id ?? null) !== parentId) upd.parent_id = parentId;
+        if (sibs[k].sort_order !== k || sibs[k].id === id) await api.updateSpace(sibs[k].id, upd);
+      }
+      onChanged();
+    } catch (e) {
+      setError(e.message);
+    }
   }
 
   const departments = [...new Set(spaces.map((s) => s.department).filter(Boolean))];
@@ -242,13 +276,8 @@ export default function BriefTab({ project, spaces, onChanged }) {
             <option value="building">Building / zone</option>
           </select>
           {form.kind !== 'building' && (
-            <input list="departments" placeholder="Department" value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value })} />
+            <CategorySelect value={form.department} options={departments} onChange={(v) => setForm({ ...form, department: v })} />
           )}
-          <datalist id="departments">
-            {departments.map((d) => (
-              <option key={d} value={d} />
-            ))}
-          </datalist>
           <input placeholder={form.kind === 'building' ? 'Building name (e.g. Main Building)' : 'Space name (e.g. Reading Room)'} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
           {form.kind !== 'building' && (
             <>
@@ -291,7 +320,7 @@ export default function BriefTab({ project, spaces, onChanged }) {
             <thead>
               <tr>
                 <th>Name</th>
-                <th>Department</th>
+                <th>Category</th>
                 <th className="num">Count</th>
                 <th className="num">Area each</th>
                 <th className="num">Total</th>
@@ -318,7 +347,7 @@ export default function BriefTab({ project, spaces, onChanged }) {
                       {edit.kind === 'building' ? (
                         <span className="muted">—</span>
                       ) : (
-                        <input value={edit.department} onChange={(e) => setEdit({ ...edit, department: e.target.value })} />
+                        <CategorySelect value={edit.department} options={departments} onChange={(v) => setEdit({ ...edit, department: v })} />
                       )}
                     </td>
                     <td className="num">
@@ -351,23 +380,29 @@ export default function BriefTab({ project, spaces, onChanged }) {
                     <tr
                       ref={(el) => (el ? rowEls.current.set(s.id, el) : rowEls.current.delete(s.id))}
                       tabIndex={0}
-                      className={`${isContainerRow(s) ? 'container-row' : ''} ${dragId === s.id ? 'dragging' : ''} ${dropId === s.id ? 'drop-target' : ''} ${focusId === s.id ? 'kb-focus' : ''}`}
+                      className={`${isContainerRow(s) ? 'container-row' : ''} ${s.kind === 'building' ? 'building-row' : ''} ${dragId === s.id ? 'dragging' : ''} ${dropId === s.id ? `drop-${dropPos}` : ''} ${focusId === s.id ? 'kb-focus' : ''}`}
                       draggable
                       onFocus={() => setFocusId(s.id)}
                       onKeyDown={(e) => onTreeKey(e, s)}
                       onDragStart={() => setDragId(s.id)}
-                      onDragEnd={() => (setDragId(null), setDropId(null))}
-                      onDragOver={(e) => { e.preventDefault(); if (dropId !== s.id) setDropId(s.id); }}
-                      onDrop={(e) => { e.preventDefault(); onDropRow(s); }}
+                      onDragEnd={() => (setDragId(null), setDropId(null), setDropPos(null))}
+                      onDragOver={(e) => { e.preventDefault(); const pos = dropIntent(e, s); if (dropId !== s.id || dropPos !== pos) { setDropId(s.id); setDropPos(pos); } }}
+                      onDrop={(e) => onRowDrop(e, s)}
                     >
                       <td style={{ paddingLeft: 10 + depth * 20 }}>
                         <span className="drag-grip" title="Drag to move / nest">⠿</span>
-                        <span className="kind-icon">{isContainerRow(s) ? '▦' : '·'}</span>
-                        {s.name}
+                        <span className="kind-icon">{s.kind === 'building' ? '🏢' : isContainerRow(s) ? '▦' : '·'}</span>
+                        <span className={isContainerRow(s) ? 'container-name' : ''}>{s.name}</span>
                         {s.notes ? <span className="row-flag" title="Has notes">📝</span> : null}
                         {s.image ? <span className="row-flag" title="Has reference image">🖼</span> : null}
                       </td>
-                      <td>{isContainerKind(s) ? <span className="muted">{s.kind}</span> : s.department}</td>
+                      <td>
+                        {isContainerKind(s) ? (
+                          <span className={`kind-badge ${s.kind}`}>{s.kind === 'building' ? 'Building' : 'Zone'}</span>
+                        ) : (
+                          s.department
+                        )}
+                      </td>
                       <td className="num">{isContainerKind(s) ? '—' : s.count}</td>
                       <td className="num">{isContainerKind(s) ? '—' : fmtArea(s.target_area, project.units)}</td>
                       <td className="num strong">{fmtArea(isContainerRow(s) ? subtreeArea(s, spaces) : targetTotal(s), project.units)}</td>
@@ -435,5 +470,49 @@ export default function BriefTab({ project, spaces, onChanged }) {
         </div>
       )}
     </div>
+  );
+}
+
+// A category picker: choose an existing category or create a new one inline.
+function CategorySelect({ value, options, onChange }) {
+  const [creating, setCreating] = useState(false);
+  const [draft, setDraft] = useState('');
+  const commit = () => {
+    const v = draft.trim();
+    if (v) onChange(v);
+    setCreating(false);
+    setDraft('');
+  };
+  if (creating) {
+    return (
+      <span className="cat-create">
+        <input
+          autoFocus
+          placeholder="New category"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') (e.preventDefault(), commit());
+            else if (e.key === 'Escape') (setCreating(false), setDraft(''));
+          }}
+        />
+        <button type="button" className="btn small" onClick={commit}>Add</button>
+        <button type="button" className="btn small ghost" onClick={() => (setCreating(false), setDraft(''))}>✕</button>
+      </span>
+    );
+  }
+  return (
+    <select
+      className="cat-select"
+      value={options.includes(value) ? value : value || ''}
+      onChange={(e) => (e.target.value === '__new__' ? setCreating(true) : onChange(e.target.value))}
+    >
+      {!value && <option value="">Category…</option>}
+      {options.map((o) => (
+        <option key={o} value={o}>{o}</option>
+      ))}
+      {value && !options.includes(value) && <option value={value}>{value}</option>}
+      <option value="__new__">＋ New category…</option>
+    </select>
   );
 }

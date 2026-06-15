@@ -613,6 +613,41 @@ kbd {
 .detail-thumb img { max-width: 100%; max-height: 130px; border-radius: 8px; border: 1px solid var(--border); display: block; margin-bottom: 8px; }
 .detail-image .btn { cursor: pointer; }
 
+/* ---------- resizable rail ---------- */
+.diagram-rail { position: relative; }
+.rail-resizer { position: absolute; left: -3px; top: 0; bottom: 0; width: 7px; cursor: col-resize; z-index: 6; }
+.rail-resizer:hover { background: var(--accent); opacity: 0.45; }
+
+/* ---------- hulls (buildings always, categories optional) ---------- */
+.hull-size { display: inline-flex; align-items: center; padding: 0 2px; }
+.hull-size input[type='range'] { width: 70px; }
+.group-hull.building-hull { fill-opacity: 0.05; stroke-opacity: 0.5; stroke-width: 2; stroke-dasharray: 10 6; }
+.group-hull.cat-hull { fill-opacity: 0.08; stroke-opacity: 0.3; stroke-width: 1.5; }
+.hull-label { font-size: 12px; font-weight: 700; opacity: 0.85; pointer-events: none; }
+
+/* ---------- relationships filter ---------- */
+.rel-filter { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); padding: 2px 2px 8px; }
+.rel-filter strong { color: var(--text); }
+
+/* ---------- multi-image layers panel ---------- */
+.layers-popover { width: 470px; max-width: 86vw; }
+.layers-list { display: flex; flex-direction: column; max-height: 50vh; overflow-y: auto; }
+.layers-add { display: flex; gap: 8px; margin-top: 10px; }
+
+/* ---------- brief: category picker & building rows ---------- */
+.cat-select { max-width: 170px; }
+.cat-create { display: inline-flex; gap: 4px; align-items: center; }
+.cat-create input { width: 130px; }
+.kind-badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+.kind-badge.building { background: rgba(240, 181, 63, 0.18); color: var(--accent); }
+.kind-badge.group { background: var(--panel-3); color: var(--muted); }
+.brief-table .building-row { background: rgba(240, 181, 63, 0.1); }
+.brief-table .building-row td:first-child { font-weight: 700; }
+.container-name { font-weight: 600; }
+.brief-table tr.drop-before td { box-shadow: inset 0 2px 0 var(--accent); }
+.brief-table tr.drop-after td { box-shadow: inset 0 -2px 0 var(--accent); }
+.brief-table tr.drop-inside td { background: rgba(240, 181, 63, 0.1); box-shadow: inset 0 0 0 1px var(--accent); }
+
 @media (max-width: 1200px) {
   .diagram-layout { grid-template-columns: minmax(0, 1fr) 300px; }
 }

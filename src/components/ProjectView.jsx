@@ -29,7 +29,7 @@ export default function ProjectView({ projectId, onBack }) {
   if (error) return <div className="scroll"><div className="page"><div className="banner error">{error}</div></div></div>;
   if (!data) return <div className="scroll"><div className="page"><div className="empty">Loading project…</div></div></div>;
 
-  const { project, spaces, snapshots, adjacencies = [] } = data;
+  const { project, spaces, snapshots, adjacencies = [], images = [] } = data;
 
   function exportCsv() {
     const csv = buildCsv(project, spaces, snapshots);
@@ -78,7 +78,7 @@ export default function ProjectView({ projectId, onBack }) {
           </div>
         )}
         {isDiagram && (
-          <BubbleTab project={project} spaces={spaces} adjacencies={adjacencies} onChanged={refresh} />
+          <BubbleTab project={project} spaces={spaces} adjacencies={adjacencies} images={images} onChanged={refresh} />
         )}
         {tab === 'Brief' && (
           <div className="page">

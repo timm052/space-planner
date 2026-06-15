@@ -99,7 +99,10 @@ app.get('/api/projects/:id', (req, res) => {
   const adjacencies = db
     .prepare('SELECT * FROM adjacencies WHERE project_id = ?')
     .all(project.id);
-  res.json({ project, spaces, snapshots, adjacencies });
+  const images = db
+    .prepare('SELECT * FROM images WHERE project_id = ? ORDER BY sort_order, id')
+    .all(project.id);
+  res.json({ project, spaces, snapshots, adjacencies, images });
 });
 
 // ---------- Spaces (brief) ----------
@@ -294,6 +297,43 @@ app.put('/api/snapshots/:id', (req, res) => {
 app.delete('/api/snapshots/:id', (req, res) => {
   const r = db.prepare('DELETE FROM snapshots WHERE id = ?').run(Number(req.params.id));
   if (r.changes === 0) return res.status(404).json({ error: 'Snapshot not found' });
+  res.status(204).end();
+});
+
+// ---------- Image layers ----------
+
+const IMAGE_FIELDS = ['kind', 'name', 'image', 'mpp', 'opacity', 'visible', 'x', 'y', 'rot', 'sort_order', 'attribution'];
+
+app.post('/api/projects/:id/images', (req, res) => {
+  const project = requireProject(req, res);
+  if (!project) return;
+  const { kind = 'custom', name = '', image, mpp = null, opacity = 0.6, visible = 1, x = 0, y = 0, rot = 0, attribution = null } = req.body;
+  if (!image || typeof image !== 'string') return res.status(400).json({ error: 'Image data is required' });
+  const max = db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM images WHERE project_id = ?').get(project.id).m;
+  const r = db
+    .prepare(
+      `INSERT INTO images (project_id, kind, name, image, mpp, opacity, visible, x, y, rot, sort_order, attribution)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(project.id, kind, name, image, mpp, opacity, visible ? 1 : 0, x, y, rot, max + 1, attribution);
+  res.status(201).json(db.prepare('SELECT * FROM images WHERE id = ?').get(r.lastInsertRowid));
+});
+
+app.put('/api/images/:id', (req, res) => {
+  const img = db.prepare('SELECT * FROM images WHERE id = ?').get(Number(req.params.id));
+  if (!img) return res.status(404).json({ error: 'Image not found' });
+  const updates = {};
+  for (const f of IMAGE_FIELDS) if (f in req.body) updates[f] = f === 'visible' ? (req.body[f] ? 1 : 0) : req.body[f];
+  if (Object.keys(updates).length > 0) {
+    const setSql = Object.keys(updates).map((f) => `${f} = ?`).join(', ');
+    db.prepare(`UPDATE images SET ${setSql} WHERE id = ?`).run(...Object.values(updates), img.id);
+  }
+  res.json(db.prepare('SELECT * FROM images WHERE id = ?').get(img.id));
+});
+
+app.delete('/api/images/:id', (req, res) => {
+  const r = db.prepare('DELETE FROM images WHERE id = ?').run(Number(req.params.id));
+  if (r.changes === 0) return res.status(404).json({ error: 'Image not found' });
   res.status(204).end();
 });
 

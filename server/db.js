@@ -64,6 +64,24 @@ db.exec(`
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
   );
+
+  -- Background image layers (multiple per project). Each is calibrated on its
+  -- own via mpp (metres per natural pixel) and shares the diagram scale.
+  CREATE TABLE IF NOT EXISTS images (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    kind TEXT DEFAULT 'custom',        -- 'custom' | 'satellite'
+    name TEXT DEFAULT '',
+    image TEXT NOT NULL,               -- data URL
+    mpp REAL,                          -- metres per natural pixel (null until calibrated)
+    opacity REAL DEFAULT 0.6,
+    visible INTEGER DEFAULT 1,
+    x REAL DEFAULT 0,
+    y REAL DEFAULT 0,
+    rot REAL DEFAULT 0,
+    sort_order INTEGER DEFAULT 0,
+    attribution TEXT
+  );
 `);
 
 // Additive migrations for databases created before these columns existed.
@@ -100,6 +118,30 @@ ensureColumn('projects', 'sat_x', 'sat_x REAL DEFAULT 0');
 ensureColumn('projects', 'sat_y', 'sat_y REAL DEFAULT 0');
 ensureColumn('projects', 'north_deg', 'north_deg REAL DEFAULT 0'); // project north, clockwise from up
 ensureColumn('projects', 'category_colors', 'category_colors TEXT'); // JSON map: category/building label → custom colour
+ensureColumn('projects', 'images_migrated', 'images_migrated INTEGER DEFAULT 0'); // legacy bg_/sat_ → images rows done
+
+// One-time migration: fold the legacy single satellite + custom layers into the
+// new multi-image `images` table so existing projects keep their backgrounds.
+function migrateImages() {
+  const projs = db.prepare('SELECT * FROM projects WHERE images_migrated = 0').all();
+  if (projs.length === 0) return;
+  const ins = db.prepare(
+    `INSERT INTO images (project_id, kind, name, image, mpp, opacity, visible, x, y, rot, sort_order, attribution)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+  const done = db.prepare('UPDATE projects SET images_migrated = 1 WHERE id = ?');
+  for (const p of projs) {
+    let order = 0;
+    if (p.sat_image) {
+      ins.run(p.id, 'satellite', 'Satellite', p.sat_image, p.sat_mpp ?? null, p.sat_opacity ?? 0.55, p.sat_visible == null ? 1 : p.sat_visible, p.sat_x || 0, p.sat_y || 0, p.sat_rot || 0, order++, p.sat_attribution ?? null);
+    }
+    if (p.bg_image) {
+      ins.run(p.id, 'custom', 'Imported image', p.bg_image, p.bg_mpp ?? null, p.bg_opacity ?? 0.5, p.bg_visible == null ? 1 : p.bg_visible, p.bg_x || 0, p.bg_y || 0, p.bg_rot || 0, order++, p.bg_attribution ?? null);
+    }
+    done.run(p.id);
+  }
+}
+migrateImages();
 ensureColumn('projects', 'bg_rot', 'bg_rot REAL DEFAULT 0'); // custom image rotation, degrees CW
 ensureColumn('projects', 'sat_rot', 'sat_rot REAL DEFAULT 0'); // satellite rotation, degrees CW
 

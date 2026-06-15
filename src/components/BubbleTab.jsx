@@ -13,6 +13,11 @@ const H = 620;
 const PALETTE = ['#e8b04b', '#5b9dd9', '#4cc38a', '#c678dd', '#e5707a', '#56b6c2', '#d19a66', '#98c379', '#7aa2f7', '#f7768e'];
 const SAT_CANVAS = 768;
 
+// BubbleTab unmounts when you leave the Diagram tab, which would otherwise lose
+// every non-pinned bubble's position and let the sim re-scatter them on return.
+// This module-level cache keeps the last layout per project for the session.
+const layoutCache = new Map(); // projectId → Map(instanceKey → {x,y})
+
 const M_PER_UNIT_PER_RATIO = 0.0002646;
 const SCALE_PRESETS = {
   m2: [[100, '1:100'], [200, '1:200'], [500, '1:500'], [1000, '1:1000'], [2000, '1:2000']],
@@ -93,15 +98,16 @@ function bakeRotation(dataUrl, deg) {
   });
 }
 
-export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
+export default function BubbleTab({ project, spaces, adjacencies, images = [], onChanged }) {
   const [selected, setSelected] = useState(null);
   const [selectedInst, setSelectedInst] = useState(0); // which instance of the selected space
   const [, setTick] = useState(0);
   const [error, setError] = useState(null);
   const [scalePoints, setScalePoints] = useState(null);
   const [scaleDistance, setScaleDistance] = useState('');
-  const [calibrateLayer, setCalibrateLayer] = useState(null);
-  const [moveLayer, setMoveLayer] = useState(null);
+  const [calibrateLayer, setCalibrateLayer] = useState(null); // image id being calibrated
+  const [moveLayer, setMoveLayer] = useState(null); // image id being moved
+  const [rotateLayer, setRotateLayer] = useState(null); // image id being rotated by mouse
   const [panel, setPanel] = useState(null); // 'layers' | 'sat' | null
   const [satQuery, setSatQuery] = useState('');
   const [satZoom, setSatZoom] = useState(18);
@@ -116,9 +122,11 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
   const [localColors, setLocalColors] = useState({}); // optimistic category colour overrides
   const [marquee, setMarquee] = useState(null); // { x0,y0,x1,y1 } in svg coords while selecting
   const [hulls, setHulls] = useState(() => localStorage.getItem('brieftrack.hulls') === '1');
+  const [hullPad, setHullPad] = useState(() => Number(localStorage.getItem('brieftrack.hullpad')) || 26);
   const [showMatrix, setShowMatrix] = useState(false);
+  const [railW, setRailW] = useState(() => Number(localStorage.getItem('brieftrack.railw')) || 340);
   const [view, setViewState] = useState({ x: project.view_x || 0, y: project.view_y || 0 });
-  const [dims, setDims] = useState({ bg: null, sat: null });
+  const [dims, setDims] = useState({}); // image id → { w, h } natural pixel size
   const [vb, setVb] = useState({ w: W, h: H }); // visible viewBox size = container pixels
 
   const viewRef = useRef(view);
@@ -128,10 +136,13 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
   };
   const draftTimers = useRef(new Map());
   const nodesRef = useRef(new Map());
-  const alphaRef = useRef(1);
+  // Start idle if we have a cached layout to restore (avoids a re-scatter on
+  // tab return); otherwise energise so the first layout settles.
+  const alphaRef = useRef(layoutCache.has(project.id) ? 0 : 1);
   const dragRef = useRef(null);
   const panRef = useRef(null);
   const layerMoveRef = useRef(null);
+  const rotateRef = useRef(null); // { id, startAngle, startRot } while rotating an image by mouse
   const svgRef = useRef(null);
   const stageRef = useRef(null);
   const lastClickRef = useRef({ key: null, t: 0 });
@@ -154,93 +165,28 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
   const units = project.units;
   const simEnabled = !!project.sim_enabled;
 
-  // ---------- image layers ----------
-  const layers = useMemo(
-    () => ({
-      sat: {
-        kind: 'sat',
-        image: project.sat_image,
-        mpp: project.sat_mpp,
-        opacity: project.sat_opacity ?? 0.55,
-        visible: project.sat_visible == null ? 1 : project.sat_visible,
-        x: project.sat_x || 0,
-        y: project.sat_y || 0,
-        rot: project.sat_rot || 0,
-        attribution: project.sat_attribution,
-      },
-      bg: {
-        kind: 'bg',
-        image: project.bg_image,
-        mpp: project.bg_mpp,
-        opacity: project.bg_opacity ?? 0.5,
-        visible: project.bg_visible == null ? 1 : project.bg_visible,
-        x: project.bg_x || 0,
-        y: project.bg_y || 0,
-        rot: project.bg_rot || 0,
-        attribution: project.bg_attribution,
-      },
-    }),
-    [project]
-  );
+  // ---------- image layers (multiple, ordered bottom→top) ----------
+  // Copy so optimistic move/rotate/opacity edits can mutate in place between
+  // refetches (the `images` prop is stable until onChanged re-fetches).
+  const imgLayers = useMemo(() => (images || []).map((im) => ({ ...im })), [images]);
+  const imgById = useMemo(() => new Map(imgLayers.map((im) => [im.id, im])), [imgLayers]);
 
-  const primary = layers.sat.image && layers.sat.visible ? 'sat' : layers.bg.image && layers.bg.visible ? 'bg' : null;
-  const primaryDims = primary ? dims[primary] : null;
-  const fitScale =
-    primary && primaryDims && layers[primary].mpp > 0 ? (primaryDims.w * layers[primary].mpp) / W : null;
+  // Scale auto-fit uses the first visible, calibrated image.
+  const primaryImg = imgLayers.find((im) => im.visible && im.mpp > 0 && dims[im.id]);
+  const fitScale = primaryImg ? (dims[primaryImg.id].w * primaryImg.mpp) / W : null;
   const displayScale = project.display_scale > 0 ? project.display_scale : null;
   const effScale = displayScale ?? fitScale;
 
-  // ---------- legacy single-layer → dual-layer migration (once) ----------
+  // Measure natural image sizes (once per image).
   useEffect(() => {
-    if (migratedRef.current) return;
-    if (project.bg_scale > 0 && project.bg_mpp == null && project.sat_mpp == null && project.bg_image) {
-      migratedRef.current = true;
+    for (const im of imgLayers) {
+      if (dims[im.id]) continue;
       const img = new Image();
-      img.onload = async () => {
-        const realW = project.bg_scale * W;
-        const mpp = realW / img.naturalWidth;
-        const isSat = /esri|imagery/i.test(project.bg_attribution || '');
-        try {
-          if (isSat) {
-            await api.updateProject(project.id, {
-              sat_image: project.bg_image,
-              sat_mpp: mpp,
-              sat_attribution: project.bg_attribution,
-              sat_opacity: project.bg_opacity ?? 0.55,
-              sat_visible: 1,
-              bg_image: null,
-              bg_scale: null,
-              bg_attribution: null,
-            });
-          } else {
-            await api.updateProject(project.id, { bg_mpp: mpp, bg_scale: null });
-          }
-          onChanged();
-        } catch {
-          /* non-fatal */
-        }
-      };
-      img.src = project.bg_image;
-    } else {
-      migratedRef.current = true;
+      img.onload = () => setDims((d) => ({ ...d, [im.id]: { w: img.naturalWidth, h: img.naturalHeight } }));
+      img.src = im.image;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project.id]);
-
-  // Measure natural image sizes.
-  useEffect(() => {
-    for (const kind of ['bg', 'sat']) {
-      const src = layers[kind].image;
-      if (!src) {
-        setDims((d) => (d[kind] ? { ...d, [kind]: null } : d));
-        continue;
-      }
-      const img = new Image();
-      img.onload = () => setDims((d) => ({ ...d, [kind]: { w: img.naturalWidth, h: img.naturalHeight } }));
-      img.src = src;
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [layers.bg.image, layers.sat.image]);
+  }, [imgLayers]);
 
   // Track the canvas size so the diagram fills the available space.
   useEffect(() => {
@@ -256,17 +202,16 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
     return () => ro.disconnect();
   }, []);
 
-  // Placement rectangle (in diagram units) for a layer.
-  function layerRect(kind) {
-    const l = layers[kind];
-    const nd = dims[kind];
-    if (!l.image || !nd) return null;
+  // Placement rectangle (in diagram units) for an image layer.
+  function layerRect(im) {
+    const nd = im && dims[im.id];
+    if (!im || !nd) return null;
     const aspect = nd.h / nd.w;
-    const wU = l.mpp > 0 && effScale ? (nd.w * l.mpp) / effScale : W;
+    const wU = im.mpp > 0 && effScale ? (nd.w * im.mpp) / effScale : W;
     const hU = wU * aspect;
-    const cx = W / 2 + l.x;
-    const cy = H / 2 + l.y;
-    return { x: cx - wU / 2, y: cy - hU / 2, w: wU, h: hU, cx, cy, rot: l.rot || 0, opacity: l.opacity, dataUrl: l.image };
+    const cx = W / 2 + (im.x || 0);
+    const cy = H / 2 + (im.y || 0);
+    return { x: cx - wU / 2, y: cy - hU / 2, w: wU, h: hU, cx, cy, rot: im.rot || 0, opacity: im.opacity, dataUrl: im.image };
   }
 
   // ---------- spaces / instances (leaves only) ----------
@@ -294,7 +239,16 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
     }
   }, [project.category_colors]);
   const effColors = { ...savedColors, ...localColors };
-  const colorForLabel = (label) => effColors[label] || PALETTE[groups.indexOf(label) % PALETTE.length];
+  const colorForLabel = (label) => {
+    if (effColors[label]) return effColors[label];
+    const i = groups.indexOf(label);
+    if (i >= 0) return PALETTE[i % PALETTE.length];
+    // Stable fallback for labels outside the current colour grouping (e.g. a
+    // building name while colouring by category).
+    let h = 0;
+    for (let k = 0; k < label.length; k++) h = (h * 31 + label.charCodeAt(k)) | 0;
+    return PALETTE[Math.abs(h) % PALETTE.length];
+  };
   const colorOf = (s) => colorForLabel(groupKey(s));
 
   function setCategoryColor(label, color) {
@@ -429,30 +383,42 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
     await commitMany(changes, 'convert all');
   }
 
-  // Keep simulation nodes in sync with the leaves (per instance).
+  // Keep simulation nodes in sync with the leaves (per instance). New nodes seed
+  // from a pin, then the saved layout cache, then a spawn ring; only genuinely
+  // new (uncached, unpinned) nodes re-energise the sim.
   useEffect(() => {
     const nodes = nodesRef.current;
+    const cache = layoutCache.get(project.id);
     const keys = new Set(instances.map((o) => o.key));
-    let changed = false;
-    for (const key of [...nodes.keys()]) if (!keys.has(key)) (nodes.delete(key), (changed = true));
+    let newSpawn = false;
+    for (const key of [...nodes.keys()]) if (!keys.has(key)) nodes.delete(key);
     instances.forEach((o, idx) => {
-      if (!nodes.has(o.key)) {
-        const pin = pinsOf(o.s)[o.i] ?? null;
+      if (nodes.has(o.key)) return;
+      const pin = pinsOf(o.s)[o.i] ?? null;
+      const cached = cache?.get(o.key);
+      if (pin) nodes.set(o.key, { x: pin.x, y: pin.y, vx: 0, vy: 0 });
+      else if (cached) nodes.set(o.key, { x: cached.x, y: cached.y, vx: 0, vy: 0 });
+      else {
         const angle = (idx / Math.max(instances.length, 1)) * Math.PI * 2;
-        nodes.set(o.key, {
-          x: pin ? pin.x : W / 2 + Math.cos(angle) * 190 + o.i * 9,
-          y: pin ? pin.y : H / 2 + Math.sin(angle) * 150 + o.i * 9,
-          vx: 0,
-          vy: 0,
-        });
-        changed = true;
+        nodes.set(o.key, { x: W / 2 + Math.cos(angle) * 190 + o.i * 9, y: H / 2 + Math.sin(angle) * 150 + o.i * 9, vx: 0, vy: 0 });
+        newSpawn = true;
       }
     });
     pinOverride.current.clear();
-    if (changed) alphaRef.current = 1;
+    if (newSpawn) alphaRef.current = 1;
     setTick((t) => t + 1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [spaces]);
+
+  // Persist the current layout when leaving the tab / switching projects.
+  useEffect(() => {
+    const pid = project.id;
+    return () => {
+      const m = new Map();
+      for (const [k, n] of nodesRef.current) m.set(k, { x: n.x, y: n.y });
+      layoutCache.set(pid, m);
+    };
+  }, [project.id]);
 
   useEffect(() => {
     alphaRef.current = Math.max(alphaRef.current, 0.6);
@@ -608,11 +574,21 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
   }
 
   // ---------- pointer handling ----------
+  const angleDeg = (cx, cy, p) => (Math.atan2(p.y - cy, p.x - cx) * 180) / Math.PI;
+
   function onSvgPointerDown(e) {
     if (scalePoints) return onSvgScaleClick(e);
+    if (rotateLayer) {
+      const im = imgById.get(rotateLayer);
+      if (im) {
+        const c = toSvgCoords(e);
+        rotateRef.current = { id: rotateLayer, startAngle: angleDeg(W / 2 + (im.x || 0), H / 2 + (im.y || 0), c), startRot: im.rot || 0 };
+      }
+      return;
+    }
     if (moveLayer) {
-      const l = layers[moveLayer];
-      layerMoveRef.current = { kind: moveLayer, sx: e.clientX, sy: e.clientY, lx: l.x, ly: l.y };
+      const im = imgById.get(moveLayer);
+      if (im) layerMoveRef.current = { id: moveLayer, sx: e.clientX, sy: e.clientY, lx: im.x || 0, ly: im.y || 0 };
       return;
     }
     if (panMode) {
@@ -631,9 +607,23 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
     const rect = svgRef.current.getBoundingClientRect();
     if (layerMoveRef.current) {
       const m = layerMoveRef.current;
-      layers[m.kind].x = m.lx + ((e.clientX - m.sx) * vb.w) / rect.width;
-      layers[m.kind].y = m.ly + ((e.clientY - m.sy) * vb.h) / rect.height;
-      setTick((t) => t + 1);
+      const im = imgById.get(m.id);
+      if (im) {
+        im.x = m.lx + ((e.clientX - m.sx) * vb.w) / rect.width;
+        im.y = m.ly + ((e.clientY - m.sy) * vb.h) / rect.height;
+        setTick((t) => t + 1);
+      }
+      return;
+    }
+    if (rotateRef.current) {
+      const rr = rotateRef.current;
+      const im = imgById.get(rr.id);
+      if (im) {
+        const c = toSvgCoords(e);
+        const ang = angleDeg(W / 2 + (im.x || 0), H / 2 + (im.y || 0), c);
+        im.rot = (((rr.startRot + (ang - rr.startAngle)) % 360) + 360) % 360;
+        setTick((t) => t + 1);
+      }
       return;
     }
     if (panRef.current) {
@@ -679,7 +669,19 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
     if (layerMoveRef.current) {
       const m = layerMoveRef.current;
       layerMoveRef.current = null;
-      await saveProject({ [`${m.kind}_x`]: layers[m.kind].x, [`${m.kind}_y`]: layers[m.kind].y }, { silent: true });
+      const im = imgById.get(m.id);
+      if (im) {
+        try { await api.updateImage(m.id, { x: im.x, y: im.y }); onChanged(); } catch (e) { setError(e.message); }
+      }
+      return;
+    }
+    if (rotateRef.current) {
+      const rr = rotateRef.current;
+      rotateRef.current = null;
+      const im = imgById.get(rr.id);
+      if (im) {
+        try { await api.updateImage(rr.id, { rot: im.rot }); onChanged(); } catch (e) { setError(e.message); }
+      }
       return;
     }
     if (panRef.current) {
@@ -707,7 +709,7 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
   }
 
   function onBubbleDown(e, o) {
-    if (scalePoints || panMode || moveLayer) return;
+    if (scalePoints || panMode || moveLayer || rotateLayer) return;
     if (e.shiftKey) {
       // Shift-click toggles a bubble in the multi-selection (no drag, no marquee).
       e.stopPropagation();
@@ -875,6 +877,26 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
       return !v;
     });
   }
+  function setHullSize(v) {
+    setHullPad(v);
+    localStorage.setItem('brieftrack.hullpad', String(v));
+  }
+  // Drag the rail's left edge to resize it (persisted).
+  function startRailResize(e) {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = railW;
+    const clamp = (w) => Math.max(260, Math.min(680, w));
+    const onMove = (ev) => setRailW(clamp(startW + (startX - ev.clientX)));
+    const onUp = (ev) => {
+      const w = clamp(startW + (startX - ev.clientX));
+      localStorage.setItem('brieftrack.railw', String(w));
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  }
 
   async function handleBubbleClick(spaceId, idx = 0) {
     setError(null);
@@ -939,29 +961,60 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
     if (!file) return;
     if (file.size > 12 * 1024 * 1024) return setError('Image is too large (12 MB max).');
     const reader = new FileReader();
-    reader.onload = () =>
-      saveProject({ bg_image: reader.result, bg_mpp: null, bg_visible: 1, bg_x: 0, bg_y: 0, bg_rot: 0, bg_attribution: null });
+    reader.onload = async () => {
+      setError(null);
+      try {
+        await api.createImage(project.id, {
+          kind: 'custom',
+          name: (file.name || 'Imported image').replace(/\.[^.]+$/, ''),
+          image: reader.result,
+          opacity: 0.6,
+          visible: 1,
+        });
+        setPanel('layers');
+        onChanged();
+      } catch (err) {
+        setError(err.message);
+      }
+    };
     reader.readAsDataURL(file);
   }
 
-  function layerSlider(kind, field, v) {
+  // Optimistically update an image field, then debounce-save it.
+  function layerSlider(im, field, v) {
     setError(null);
-    const prop = field.endsWith('_opacity') ? 'opacity' : field.endsWith('_rot') ? 'rot' : field;
-    layers[kind][prop] = v; // optimistic
+    im[field] = v;
     setTick((t) => t + 1);
-    clearTimeout(debouncers.current[field]);
-    debouncers.current[field] = setTimeout(() => saveProject({ [field]: v }, { silent: true }), 250);
+    const key = `img${im.id}_${field}`;
+    clearTimeout(debouncers.current[key]);
+    debouncers.current[key] = setTimeout(
+      () => api.updateImage(im.id, { [field]: v }).then(onChanged).catch((e) => setError(e.message)),
+      250
+    );
   }
 
-  function clearLayer(kind) {
-    if (kind === 'bg') saveProject({ bg_image: null, bg_mpp: null, bg_attribution: null, bg_x: 0, bg_y: 0, bg_rot: 0 });
-    else saveProject({ sat_image: null, sat_mpp: null, sat_attribution: null, sat_x: 0, sat_y: 0, sat_rot: 0 });
+  function toggleLayerVisible(im, v) {
+    api.updateImage(im.id, { visible: v ? 1 : 0 }).then(onChanged).catch((e) => setError(e.message));
   }
 
-  function startCalibrate(kind) {
+  async function deleteImageLayer(id) {
+    setError(null);
+    try {
+      await api.deleteImage(id);
+      if (moveLayer === id) setMoveLayer(null);
+      if (rotateLayer === id) setRotateLayer(null);
+      if (calibrateLayer === id) (setCalibrateLayer(null), setScalePoints(null));
+      onChanged();
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
+  function startCalibrate(id) {
     setPanel(null);
     setMoveLayer(null);
-    setCalibrateLayer(kind);
+    setRotateLayer(null);
+    setCalibrateLayer(id);
     setScalePoints([]);
     setScaleDistance('');
   }
@@ -975,16 +1028,21 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
     const [a, b] = scalePoints;
     const dUnits = Math.hypot(b.x - a.x, b.y - a.y);
     const meters = distToMeters(Number(scaleDistance), units);
-    const kind = calibrateLayer;
-    const rect = layerRect(kind);
-    const nd = dims[kind];
+    const im = imgById.get(calibrateLayer);
+    const rect = layerRect(im);
+    const nd = im && dims[im.id];
     if (!(meters > 0) || dUnits < 2 || !rect || !nd) return setError('Pick two points and enter a positive distance.');
     const naturalPx = (dUnits / rect.w) * nd.w;
     const mpp = meters / naturalPx;
     setScalePoints(null);
     setScaleDistance('');
     setCalibrateLayer(null);
-    await saveProject({ [`${kind}_mpp`]: mpp });
+    try {
+      await api.updateImage(im.id, { mpp });
+      onChanged();
+    } catch (e) {
+      setError(e.message);
+    }
   }
 
   async function fetchSatellite(e) {
@@ -1018,17 +1076,16 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
         for (let ty = Math.floor(y0 / 256); ty * 256 < y0 + SAT_CANVAS; ty++) jobs.push(loadTile(tx, ty));
       for (const { img, tx, ty } of await Promise.all(jobs)) ctx.drawImage(img, tx * 256 - x0, ty * 256 - y0);
       const metersPerPixel = (156543.03392 * Math.cos(latR)) / 2 ** z;
-      await api.updateProject(project.id, {
-        sat_image: canvas.toDataURL('image/jpeg', 0.85),
-        sat_mpp: metersPerPixel,
-        sat_attribution: `Imagery © Esri World Imagery · ${loc.display}`,
-        sat_opacity: project.sat_opacity ?? 0.55,
-        sat_visible: 1,
-        sat_x: 0,
-        sat_y: 0,
-        sat_rot: 0,
+      await api.createImage(project.id, {
+        kind: 'satellite',
+        name: 'Satellite',
+        image: canvas.toDataURL('image/jpeg', 0.85),
+        mpp: metersPerPixel,
+        attribution: `Imagery © Esri World Imagery · ${loc.display}`,
+        opacity: 0.55,
+        visible: 1,
       });
-      setPanel(null);
+      setPanel('layers');
       onChanged();
     } catch (err) {
       setError(err.message);
@@ -1064,13 +1121,14 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
         }
         pinUpdates.push({ id: s.id, pin_json: JSON.stringify(np) });
       }
-      for (const kind of ['bg', 'sat']) {
-        const c = tx({ x: W / 2 + (project[`${kind}_x`] || 0), y: H / 2 + (project[`${kind}_y`] || 0) });
-        fields[`${kind}_x`] = c.x - W / 2;
-        fields[`${kind}_y`] = c.y - H / 2;
-      }
+      // Image layers zoom about the same anchor so they stay aligned with bubbles.
+      const imageUpdates = imgLayers.map((im) => {
+        const c = tx({ x: W / 2 + (im.x || 0), y: H / 2 + (im.y || 0) });
+        return { id: im.id, x: c.x - W / 2, y: c.y - H / 2 };
+      });
       try {
         for (const u of pinUpdates) await api.updateSpace(u.id, { pin_json: u.pin_json, pin_x: null, pin_y: null });
+        for (const u of imageUpdates) await api.updateImage(u.id, { x: u.x, y: u.y });
       } catch (err) {
         setError(err.message);
       }
@@ -1150,9 +1208,9 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
     const bounds = { minX: minX - pad, minY: minY - pad, maxX: maxX + pad, maxY: maxY + pad };
 
     const sceneLayers = [];
-    for (const k of ['sat', 'bg']) {
-      if (!(layers[k].image && layers[k].visible)) continue;
-      const r = layerRect(k);
+    for (const im of imgLayers) {
+      if (!im.visible) continue;
+      const r = layerRect(im);
       if (!r) continue;
       if (!r.rot) {
         sceneLayers.push({ dataUrl: r.dataUrl, x: r.x, y: r.y, w: r.w, h: r.h, opacity: r.opacity });
@@ -1226,13 +1284,18 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
 
   const scaleValue = displayScale ? String(scaleToRatio(displayScale)) : 'auto';
   const viewMoved = Math.abs(view.x) > 0.5 || Math.abs(view.y) > 0.5;
-  const bgR = layerRect('bg');
-  const satR = layerRect('sat');
-  const hasImage = layers.bg.image || layers.sat.image;
+  const hasImage = imgLayers.length > 0;
+  const attributionLayer = imgLayers.find((im) => im.visible && im.attribution);
   const imgTransform = (r) => (r.rot ? `rotate(${r.rot} ${r.cx} ${r.cy})` : undefined);
+  const selectedSpace = selected != null ? byId.get(selected) : null;
+  // When a space is selected, the Relationships panel narrows to its links.
+  const relList = selectedSpace ? adjacencies.filter((l) => l.space_a === selected || l.space_b === selected) : adjacencies;
 
   return (
-    <div className={`diagram-layout ${split ? '' : 'norail'}`}>
+    <div
+      className={`diagram-layout ${split ? '' : 'norail'}`}
+      style={split ? { gridTemplateColumns: `minmax(0, 1fr) ${railW}px` } : undefined}
+    >
       {showHelp && <HelpPanel onClose={() => setShowHelp(false)} />}
       {showMatrix && (
         <MatrixPanel leaves={leaves} adjacencies={adjacencies} colorOf={colorOf} onCycle={cyclePair} onClose={() => setShowMatrix(false)} />
@@ -1245,8 +1308,8 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
               <input type="checkbox" checked={simEnabled} onChange={(e) => saveProject({ sim_enabled: e.target.checked ? 1 : 0 })} />
               Auto-layout
             </label>
-            <button className={`btn small ${panMode ? 'primary' : ''}`} onClick={() => ((setPanMode((v) => !v)), setMoveLayer(null))} title="Pan the canvas to reposition the view.">
-              {panMode ? '🖐 Panning' : '🔒 Pan'}
+            <button className={`btn small ${panMode ? 'primary' : ''}`} onClick={() => (setPanMode((v) => !v), setMoveLayer(null), setRotateLayer(null))} title="Toggle panning — drag the canvas to move the view.">
+              ✋ Pan
             </button>
             {viewMoved && (
               <button className="btn small ghost" onClick={() => ((setView({ x: 0, y: 0 })), commitView({ x: 0, y: 0 }))} title="Recentre the view">
@@ -1280,10 +1343,10 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
               </select>
             </label>
             {hasBuildings && (
-              <label className="scale-label" title="Colour bubbles by department or by building.">
+              <label className="scale-label" title="Colour bubbles by category or by building.">
                 Colour
                 <select className="scale-select" value={colorBy} onChange={(e) => setColorBy(e.target.value)}>
-                  <option value="department">Department</option>
+                  <option value="department">Category</option>
                   <option value="building">Building</option>
                 </select>
               </label>
@@ -1303,9 +1366,14 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
             <button className="btn small" onClick={() => convertAll(leaves.every((s) => shapeOf(s) === 'box') ? 'bubble' : 'box')} title="Convert every space to boxes (or back to bubbles)">
               {leaves.every((s) => shapeOf(s) === 'box') ? '○ All bubbles' : '▢ All boxes'}
             </button>
-            <button className={`btn small ${hulls ? 'primary' : ''}`} onClick={toggleHulls} title="Draw a soft hull behind each department / building group.">
-              ⬡ Groups
+            <button className={`btn small ${hulls ? 'primary' : ''}`} onClick={toggleHulls} title="Show a soft hull behind each category group (building hulls always show).">
+              ⬡ Categories
             </button>
+            {(hulls || hasBuildings) && (
+              <label className="hull-size" title="Hull padding around the bubbles">
+                <input type="range" min="6" max="80" step="2" value={hullPad} onChange={(e) => setHullSize(Number(e.target.value))} />
+              </label>
+            )}
             <button className={`btn small ${showMatrix ? 'primary' : ''}`} onClick={() => setShowMatrix(true)} title="Edit relationships as an adjacency matrix.">
               ▦ Matrix
             </button>
@@ -1330,47 +1398,41 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
           )}
 
           {panel === 'layers' && (
-            <div className="stage-popover">
+            <div className="stage-popover layers-popover">
               <div className="layers-panel-head">
                 <h3>Image layers</h3>
                 <button className="btn small ghost" onClick={() => setPanel(null)}>✕</button>
               </div>
-              <LayerRow
-                title="🛰 Satellite imagery"
-                layer={layers.sat}
-                dims={dims.sat}
-                units={units}
-                calibrated={layers.sat.mpp > 0}
-                onToggleVisible={(v) => saveProject({ sat_visible: v ? 1 : 0 }, { silent: true })}
-                onOpacity={(v) => layerSlider('sat', 'sat_opacity', v)}
-                onRotate={(v) => layerSlider('sat', 'sat_rot', v)}
-                onCalibrate={() => startCalibrate('sat')}
-                onMove={() => setMoveLayer(moveLayer === 'sat' ? null : 'sat')}
-                moving={moveLayer === 'sat'}
-                onClear={() => clearLayer('sat')}
-                actionLabel={layers.sat.image ? 'Re-fetch…' : 'Fetch…'}
-                onAction={() => setPanel('sat')}
-              />
-              <LayerRow
-                title="🖼 Imported image"
-                layer={layers.bg}
-                dims={dims.bg}
-                units={units}
-                calibrated={layers.bg.mpp > 0}
-                onToggleVisible={(v) => saveProject({ bg_visible: v ? 1 : 0 }, { silent: true })}
-                onOpacity={(v) => layerSlider('bg', 'bg_opacity', v)}
-                onRotate={(v) => layerSlider('bg', 'bg_rot', v)}
-                onCalibrate={() => startCalibrate('bg')}
-                onMove={() => setMoveLayer(moveLayer === 'bg' ? null : 'bg')}
-                moving={moveLayer === 'bg'}
-                onClear={() => clearLayer('bg')}
-                actionLabel={layers.bg.image ? 'Replace…' : 'Upload…'}
-                onAction={() => fileRef.current?.click()}
-              />
+              <div className="layers-list">
+                {imgLayers.length === 0 && <div className="empty small">No images yet — add a site plan or satellite below.</div>}
+                {imgLayers.map((im) => (
+                  <LayerRow
+                    key={im.id}
+                    title={`${im.kind === 'satellite' ? '🛰' : '🖼'} ${im.name || (im.kind === 'satellite' ? 'Satellite' : 'Image')}`}
+                    layer={im}
+                    dims={dims[im.id]}
+                    units={units}
+                    calibrated={im.mpp > 0}
+                    onToggleVisible={(v) => toggleLayerVisible(im, v)}
+                    onOpacity={(v) => layerSlider(im, 'opacity', v)}
+                    onRotate={(v) => layerSlider(im, 'rot', v)}
+                    onCalibrate={() => startCalibrate(im.id)}
+                    onMove={() => ((setRotateLayer(null)), setMoveLayer(moveLayer === im.id ? null : im.id))}
+                    moving={moveLayer === im.id}
+                    onRotateMode={() => ((setMoveLayer(null)), setRotateLayer(rotateLayer === im.id ? null : im.id))}
+                    rotating={rotateLayer === im.id}
+                    onDelete={() => deleteImageLayer(im.id)}
+                  />
+                ))}
+              </div>
+              <div className="layers-add">
+                <button className="btn small" onClick={() => fileRef.current?.click()}>＋ Add image</button>
+                <button className="btn small" onClick={() => setPanel('sat')}>＋ Add satellite</button>
+              </div>
               <input ref={fileRef} type="file" accept="image/*" hidden onChange={onUpload} />
               <p className="hint" style={{ margin: '6px 2px 0' }}>
-                Calibrate each image on its own, then both share the diagram scale. <strong>Rotate</strong> a
-                layer to align it (e.g. turn the satellite so the building squares up to north).
+                Add as many images as you like. Calibrate each on its own and they share the diagram scale.
+                Use <strong>Move</strong> and <strong>Rotate</strong> (then drag the canvas) to align a layer.
               </p>
             </div>
           )}
@@ -1397,7 +1459,7 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
             <div className="stage-popover scale-panel">
               {scalePoints.length < 2 ? (
                 <span>
-                  Calibrating <strong>{calibrateLayer === 'sat' ? 'satellite' : 'imported image'}</strong> — click{' '}
+                  Calibrating <strong>{imgById.get(calibrateLayer)?.name || 'image'}</strong> — click{' '}
                   {scalePoints.length === 0 ? 'the first' : 'the second'} point of a known distance on it.
                 </span>
               ) : (
@@ -1430,38 +1492,69 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
           <svg
             ref={svgRef}
             viewBox={`${originX} ${originY} ${vb.w} ${vb.h}`}
-            className={`bubble-svg ${scalePoints ? 'scaling' : ''} ${panMode || moveLayer ? 'panning' : ''}`}
+            className={`bubble-svg ${scalePoints ? 'scaling' : ''} ${panMode || moveLayer || rotateLayer ? 'panning' : ''}`}
             onPointerDown={onSvgPointerDown}
             onPointerMove={onMove}
             onPointerUp={onUp}
             onPointerLeave={onUp}
           >
-            {satR && layers.sat.visible && (
-              <image href={layers.sat.image} x={satR.x} y={satR.y} width={satR.w} height={satR.h} opacity={layers.sat.opacity} preserveAspectRatio="none" transform={imgTransform(satR)} className={moveLayer === 'sat' ? 'layer-active' : ''} />
-            )}
-            {bgR && layers.bg.visible && (
-              <image href={layers.bg.image} x={bgR.x} y={bgR.y} width={bgR.w} height={bgR.h} opacity={layers.bg.opacity} preserveAspectRatio="none" transform={imgTransform(bgR)} className={moveLayer === 'bg' ? 'layer-active' : ''} />
-            )}
+            {imgLayers.map((im) => {
+              if (!im.visible) return null;
+              const r = layerRect(im);
+              if (!r) return null;
+              const active = moveLayer === im.id || rotateLayer === im.id;
+              return (
+                <image
+                  key={im.id}
+                  href={im.image}
+                  x={r.x}
+                  y={r.y}
+                  width={r.w}
+                  height={r.h}
+                  opacity={im.opacity}
+                  preserveAspectRatio="none"
+                  transform={imgTransform(r)}
+                  className={active ? 'layer-active' : ''}
+                />
+              );
+            })}
 
-            {hulls &&
-              (() => {
-                const byGroup = new Map();
+            {(() => {
+              // Building hulls always show (when buildings exist); category hulls
+              // are optional via the ⬡ Categories toggle.
+              const out = [];
+              const addHulls = (keyFn, cls, withLabel) => {
+                const byG = new Map();
                 for (const o of instances) {
                   const n = nodes.get(o.key);
                   if (!n) continue;
-                  const g = groupKey(o.s);
-                  if (!byGroup.has(g)) byGroup.set(g, []);
-                  const r = radiusOf(o.s) + 26; // pad so the hull wraps softly around bubbles
+                  const g = keyFn(o.s);
+                  if (g == null) continue;
+                  if (!byG.has(g)) byG.set(g, []);
+                  const r = radiusOf(o.s) + hullPad;
                   for (let a = 0; a < Math.PI * 2; a += Math.PI / 4)
-                    byGroup.get(g).push({ x: n.x + Math.cos(a) * r, y: n.y + Math.sin(a) * r });
+                    byG.get(g).push({ x: n.x + Math.cos(a) * r, y: n.y + Math.sin(a) * r });
                 }
-                return [...byGroup.entries()].map(([g, pts]) => {
-                  const d = smoothHullPath(convexHull(pts));
-                  if (!d) return null;
-                  const color = PALETTE[groups.indexOf(g) % PALETTE.length];
-                  return <path key={g} d={d} className="group-hull" fill={color} stroke={color} />;
-                });
-              })()}
+                for (const [g, pts] of byG) {
+                  const hull = convexHull(pts);
+                  const d = smoothHullPath(hull);
+                  if (!d) continue;
+                  const color = colorForLabel(g);
+                  out.push(<path key={`${cls}:${g}`} d={d} className={`group-hull ${cls}`} fill={color} stroke={color} />);
+                  if (withLabel) {
+                    const top = hull.reduce((m, p) => (p.y < m.y ? p : m), hull[0]);
+                    out.push(
+                      <text key={`lbl:${g}`} x={top.x} y={top.y - 4} textAnchor="middle" className="hull-label" fill={color}>
+                        {g}
+                      </text>
+                    );
+                  }
+                }
+              };
+              if (hasBuildings) addHulls((s) => { const root = rootContainer(s, byId); return root ? root.name : null; }, 'building-hull', true);
+              if (hulls) addHulls((s) => s.department || 'General', 'cat-hull', false);
+              return out;
+            })()}
 
             {scalePoints &&
               scalePoints.map((p, i) => (
@@ -1558,9 +1651,9 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
               </g>
             )}
 
-            {(layers.sat.attribution || layers.bg.attribution) && (
+            {attributionLayer && (
               <text x={originX + vb.w - 8} y={originY + vb.h - 8} textAnchor="end" className="attribution">
-                {(layers.sat.visible && layers.sat.attribution) || (layers.bg.visible && layers.bg.attribution) || ''}
+                {attributionLayer.attribution}
               </text>
             )}
 
@@ -1647,7 +1740,9 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
           )}
 
           <div className="stage-hint">
-            {moveLayer
+            {rotateLayer
+              ? 'Rotating image — drag the canvas to turn it. Toggle Rotate off when done.'
+              : moveLayer
               ? 'Moving image layer — drag the canvas to reposition it.'
               : panMode
               ? 'Pan mode — drag the canvas. Toggle Pan off to edit bubbles.'
@@ -1662,6 +1757,7 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
 
       {split && (
         <aside className="diagram-rail">
+          <div className="rail-resizer" onPointerDown={startRailResize} title="Drag to resize the panel" />
           <section className="rail-section areas">
             <div className="rail-head">
               <h3>Areas</h3>
@@ -1699,14 +1795,22 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
           <section className="rail-section rel">
             <div className="rail-head">
               <h3>Relationships</h3>
-              <span className="muted">{adjacencies.length}</span>
+              <span className="muted">
+                {selectedSpace ? `${relList.length} · ${selectedSpace.name}` : adjacencies.length}
+              </span>
             </div>
-            {adjacencies.length === 0 ? (
-              <div className="empty small">Click two bubbles to link them.</div>
+            {selectedSpace && (
+              <div className="rel-filter">
+                Showing links for <strong>{selectedSpace.name}</strong>
+                <button className="btn small ghost" onClick={() => setSelected(null)}>show all</button>
+              </div>
+            )}
+            {relList.length === 0 ? (
+              <div className="empty small">{selectedSpace ? 'No links for this space yet — click another bubble to connect them.' : 'Click two bubbles to link them.'}</div>
             ) : (
               <table className="rail-rel">
                 <tbody>
-                  {adjacencies.map((l) => {
+                  {relList.map((l) => {
                     const a = byId.get(l.space_a);
                     const b = byId.get(l.space_b);
                     if (!a || !b) return null;
@@ -1739,49 +1843,36 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
   );
 }
 
-function LayerRow({ title, layer, dims, units, calibrated, onToggleVisible, onOpacity, onRotate, onCalibrate, onMove, moving, onClear, actionLabel, onAction }) {
-  const present = !!layer.image;
+function LayerRow({ title, layer, dims, units, calibrated, onToggleVisible, onOpacity, onRotate, onCalibrate, onMove, moving, onRotateMode, rotating, onDelete }) {
   let scaleNote = '';
-  if (present && calibrated && dims) {
+  if (calibrated && dims) {
     const realW = dims.w * layer.mpp;
     scaleNote = `${Math.round(realW).toLocaleString()} ${distUnit(units)} wide`;
   }
   return (
     <div className="layer-row">
       <label className="switch" title="Show or hide this layer">
-        <input type="checkbox" checked={!!layer.visible} disabled={!present} onChange={(e) => onToggleVisible(e.target.checked)} />
+        <input type="checkbox" checked={!!layer.visible} onChange={(e) => onToggleVisible(e.target.checked)} />
         {title}
       </label>
-      <span className={`layer-cal ${present ? (calibrated ? 'ok' : 'warn') : 'muted'}`}>
-        {present ? (calibrated ? scaleNote || 'calibrated' : 'not calibrated') : 'none'}
+      <span className={`layer-cal ${calibrated ? 'ok' : 'warn'}`}>
+        {calibrated ? scaleNote || 'calibrated' : 'not calibrated'}
       </span>
       <div className="layer-controls">
         <label className="opacity-label">
           Opacity
-          <input type="range" min="0.1" max="1" step="0.05" value={layer.opacity} disabled={!present} onChange={(e) => onOpacity(Number(e.target.value))} />
+          <input type="range" min="0.1" max="1" step="0.05" value={layer.opacity} onChange={(e) => onOpacity(Number(e.target.value))} />
         </label>
         <span className="rot-field" title="Rotation in degrees (clockwise)">
           ⟳
-          <input type="number" step="1" value={Math.round(layer.rot || 0)} disabled={!present} onChange={(e) => onRotate(((Number(e.target.value) % 360) + 360) % 360)} />°
+          <input type="number" step="1" value={Math.round(layer.rot || 0)} onChange={(e) => onRotate(((Number(e.target.value) % 360) + 360) % 360)} />°
         </span>
       </div>
       <div className="layer-actions">
-        <button className="btn small" onClick={onAction}>
-          {actionLabel}
-        </button>
-        {present && (
-          <>
-            <button className="btn small" onClick={onCalibrate}>
-              📏 Calibrate
-            </button>
-            <button className={`btn small ${moving ? 'primary' : ''}`} onClick={onMove}>
-              ✥ Move
-            </button>
-            <button className="btn small ghost danger" onClick={onClear}>
-              ✕
-            </button>
-          </>
-        )}
+        <button className="btn small" onClick={onCalibrate}>📏 Calibrate</button>
+        <button className={`btn small ${moving ? 'primary' : ''}`} onClick={onMove}>✥ Move</button>
+        <button className={`btn small ${rotating ? 'primary' : ''}`} onClick={onRotateMode} title="Rotate mode — then drag the canvas to turn this image">⟲ Rotate</button>
+        <button className="btn small ghost danger" onClick={onDelete}>✕</button>
       </div>
     </div>
   );

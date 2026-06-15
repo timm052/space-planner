@@ -12,6 +12,39 @@ import DriftChart from './DriftChart.jsx';
 
 const STATUS_LABEL = { on: 'On target', over: 'Over', under: 'Under', missing: 'Not measured' };
 
+// Target vs designed rollup table, grouped by category or building.
+function RollupTable({ title, head, rows, project }) {
+  return (
+    <>
+      <h3>{title}</h3>
+      <table className="table">
+        <thead>
+          <tr>
+            <th>{head}</th>
+            <th className="num">Target</th>
+            <th className="num">Designed</th>
+            <th className="num">Δ</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((d) => (
+            <tr key={d.department}>
+              <td>{d.department}</td>
+              <td className="num">{fmtArea(d.target, project.units)}</td>
+              <td className="num">{d.hasActual ? fmtArea(d.actual, project.units) : '—'}</td>
+              <td className="num">{d.pct != null ? fmtPct(d.pct) : '—'}</td>
+              <td>
+                <span className={`badge ${d.status}`}>{STATUS_LABEL[d.status]}</span>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </>
+  );
+}
+
 // Overlay two milestones to see which spaces grew or shrank between them.
 function SnapshotDiff({ project, spaces, snapshots }) {
   const leaves = leafSpaces(spaces);
@@ -108,7 +141,6 @@ function SnapshotDiff({ project, spaces, snapshots }) {
 }
 
 export default function Dashboard({ project, spaces, snapshots }) {
-  const [groupBy, setGroupBy] = useState('department');
   if (spaces.length === 0) {
     return <div className="empty">Define the brief first — add spaces in the Brief tab.</div>;
   }
@@ -121,7 +153,8 @@ export default function Dashboard({ project, spaces, snapshots }) {
   const variance = actual != null && target > 0 ? (actual - target) / target : null;
   const efficiency = latest && latest.gross_area > 0 ? snapshotNet(latest, spaces) / latest.gross_area : null;
 
-  const rollup = latest ? rollupBy(spaces, latest, project.tolerance, groupBy) : [];
+  const catRollup = latest ? rollupBy(spaces, latest, project.tolerance, 'department') : [];
+  const bldRollup = latest && hasBuildings ? rollupBy(spaces, latest, project.tolerance, 'building') : [];
   const statuses = latest ? leaves.map((s) => ({ space: s, ...spaceStatus(s, latest, project.tolerance) })) : [];
   const flagged = statuses.filter((s) => s.status === 'over' || s.status === 'under');
 
@@ -161,52 +194,16 @@ export default function Dashboard({ project, spaces, snapshots }) {
 
       {snapshots.length >= 2 && <SnapshotDiff project={project} spaces={spaces} snapshots={snapshots} />}
 
+      {latest && hasBuildings && (
+        <div className="card">
+          <RollupTable title={`By building · ${latest.label}`} head="Building" rows={bldRollup} project={project} />
+        </div>
+      )}
+
       {latest && (
         <div className="two-col">
           <div className="card">
-            <div className="card-head-row">
-              <h3>By {groupBy} · {latest.label}</h3>
-              {hasBuildings && (
-                <div className="seg">
-                  <button
-                    className={`seg-btn ${groupBy === 'department' ? 'active' : ''}`}
-                    onClick={() => setGroupBy('department')}
-                  >
-                    Department
-                  </button>
-                  <button
-                    className={`seg-btn ${groupBy === 'building' ? 'active' : ''}`}
-                    onClick={() => setGroupBy('building')}
-                  >
-                    Building
-                  </button>
-                </div>
-              )}
-            </div>
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>{groupBy === 'building' ? 'Building' : 'Department'}</th>
-                  <th className="num">Target</th>
-                  <th className="num">Designed</th>
-                  <th className="num">Δ</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rollup.map((d) => (
-                  <tr key={d.department}>
-                    <td>{d.department}</td>
-                    <td className="num">{fmtArea(d.target, project.units)}</td>
-                    <td className="num">{d.hasActual ? fmtArea(d.actual, project.units) : '—'}</td>
-                    <td className="num">{d.pct != null ? fmtPct(d.pct) : '—'}</td>
-                    <td>
-                      <span className={`badge ${d.status}`}>{STATUS_LABEL[d.status]}</span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <RollupTable title={`By category · ${latest.label}`} head="Category" rows={catRollup} project={project} />
           </div>
 
           <div className="card">
