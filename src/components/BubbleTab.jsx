@@ -4,6 +4,7 @@ import { fmtArea, areaToM2, distToMeters, distUnit, leafSpaces, rootContainer } 
 import { exportDiagramPdf } from '../pdfExport.js';
 import { useHistory } from '../useHistory.js';
 import { SCALE_PRESETS, ratioToScale, scaleToRatio, zoomAbout } from '../scale.js';
+import { convexHull, smoothHullPath, pinsOf, filterCss, IMAGE_FILTERS } from '../geometry.js';
 import HelpPanel from './HelpPanel.jsx';
 
 // Logical design canvas — the world anchor for spawning, gravity and image
@@ -18,75 +19,6 @@ const SAT_CANVAS = 768;
 // every non-pinned bubble's position and let the sim re-scatter them on return.
 // This module-level cache keeps the last layout per project for the session.
 const layoutCache = new Map(); // projectId → Map(instanceKey → {x,y})
-
-// Andrew's monotone-chain convex hull (counter-clockwise, no collinear points).
-function convexHull(points) {
-  if (points.length < 3) return points.slice();
-  const p = [...points].sort((a, b) => a.x - b.x || a.y - b.y);
-  const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
-  const lower = [];
-  for (const q of p) {
-    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], q) <= 0) lower.pop();
-    lower.push(q);
-  }
-  const upper = [];
-  for (let i = p.length - 1; i >= 0; i--) {
-    const q = p[i];
-    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], q) <= 0) upper.pop();
-    upper.push(q);
-  }
-  lower.pop();
-  upper.pop();
-  return lower.concat(upper);
-}
-
-// A soft, rounded closed path through a polygon's points (midpoint quadratics).
-function smoothHullPath(pts) {
-  const n = pts.length;
-  if (n < 3) return '';
-  const mid = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
-  let d = `M ${mid(pts[n - 1], pts[0]).x} ${mid(pts[n - 1], pts[0]).y} `;
-  for (let i = 0; i < n; i++) {
-    const cur = pts[i];
-    const m = mid(cur, pts[(i + 1) % n]);
-    d += `Q ${cur.x} ${cur.y} ${m.x} ${m.y} `;
-  }
-  return d + 'Z';
-}
-
-function pinsOf(s) {
-  if (s.pin_json) {
-    try {
-      return JSON.parse(s.pin_json) || {};
-    } catch {
-      return {};
-    }
-  }
-  if (s.pin_x != null) return { 0: { x: s.pin_x, y: s.pin_y } };
-  return {};
-}
-
-// Diagrammatic image filter presets (applied as CSS filters on screen and baked
-// into the PDF via canvas ctx.filter).
-const IMAGE_FILTERS = [
-  ['', 'None'],
-  ['grayscale', 'Grayscale'],
-  ['blueprint', 'Blueprint'],
-  ['faded', 'Faded'],
-  ['contrast', 'High contrast'],
-  ['ink', 'Ink / line'],
-];
-function filterCss(f) {
-  return (
-    {
-      grayscale: 'grayscale(1) contrast(1.1)',
-      blueprint: 'grayscale(1) brightness(0.85) sepia(1) hue-rotate(175deg) saturate(5) contrast(1.1)',
-      faded: 'saturate(0.5) contrast(0.82) brightness(1.1)',
-      contrast: 'contrast(1.6) brightness(1.05)',
-      ink: 'grayscale(1) contrast(2.2) brightness(1.15)',
-    }[f] || 'none'
-  );
-}
 
 // Bake rotation (clockwise deg) and/or a CSS filter into a data URL on a canvas
 // sized to the rotated bounding box — keeps the PDF export scale-accurate.
