@@ -6,7 +6,7 @@ import { useHistory } from '../useHistory.js';
 import { SCALE_PRESETS, ratioToScale, scaleToRatio, zoomAbout } from '../scale.js';
 import { convexHull, smoothHullPath, pinsOf, filterCss, IMAGE_FILTERS } from '../geometry.js';
 import { edgeGap, adjacencyScore, scoreBand } from '../adjacency.js';
-import { orderedLevels, levelRankMap, isoProject, ISO } from '../floors.js';
+import { orderedLevels, levelRankMap, ISO } from '../floors.js';
 import HelpPanel from './HelpPanel.jsx';
 
 // Logical design canvas — the world anchor for spawning, gravity and image
@@ -1318,32 +1318,80 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const levelVisible = (s) => !hasLevels || floorMode === 'all' || levelOf(s) === floorMode;
   const rankOf = (s) => levelRank.get(levelOf(s)) ?? 0;
 
-  // Build the isometric stacked scene: one flat tilted plane per floor (a
-  // parallelogram, no solid thickness), with bubbles/links projected onto it.
+  // Build the isometric stacked scene. The iso projection is expressed as an SVG
+  // matrix so a whole floor (plate, bubbles AND background images) can be tilted
+  // onto the plane in one transform — circles become ellipses, images warp to
+  // match. Floors share a common footprint and are vertically aligned, separated
+  // by a lift large enough to never overlap, with dashed corner guides tying the
+  // stack into one building (see the reference axonometric).
   function stackScene() {
     const anchor = { x: W / 2, y: H / 2 };
-    // Overlaid puts every floor on the ground plane (k = 0); offset raises them.
-    const planeK = (rank) => (floorMode === 'overlaid' ? 0 : rank);
-    // Recentre the offset stack vertically so it doesn't drift off the top.
-    const recenterY = floorMode === 'offset' ? ((levels.length - 1) * ISO.lift) / 2 : 0;
-    const proj = (x, y, rank) => {
-      const p = isoProject({ x, y }, planeK(rank), anchor);
-      return { x: p.x, y: p.y + recenterY };
+    const kx = ISO.kx;
+    const ky = ISO.ky;
+    // matrix(kx ky -kx ky e f0) maps a plan point to its iso position (ground plane).
+    const e = anchor.x - kx * anchor.x + kx * anchor.y;
+    const f0 = anchor.y - ky * anchor.x - ky * anchor.y;
+    const isoXY = (px, py) => ({ x: kx * px - kx * py + e, y: ky * px + ky * py + f0 });
+
+    // Per-floor content bounding box (raw node coords) and centre.
+    const PAD = 48;
+    const fb = new Map();
+    for (const o of instances) {
+      const lv = levelOf(o.s);
+      if (!levels.includes(lv)) continue;
+      const n = nodes.get(o.key);
+      if (!n) continue;
+      const r = radiusOf(o.s);
+      const b = fb.get(lv) || { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+      b.minX = Math.min(b.minX, n.x - r);
+      b.maxX = Math.max(b.maxX, n.x + r);
+      b.minY = Math.min(b.minY, n.y - r);
+      b.maxY = Math.max(b.maxY, n.y + r);
+      fb.set(lv, b);
+    }
+    // Common footprint = the largest floor, centred on the anchor; each floor's
+    // content is shifted so it sits inside this shared footprint.
+    let maxW = 1, maxH = 1;
+    for (const b of fb.values()) {
+      maxW = Math.max(maxW, b.maxX - b.minX);
+      maxH = Math.max(maxH, b.maxY - b.minY);
+    }
+    maxW += 2 * PAD;
+    maxH += 2 * PAD;
+    const foot = { x: anchor.x - maxW / 2, y: anchor.y - maxH / 2, w: maxW, h: maxH };
+    const offOf = (lv) => {
+      const b = fb.get(lv);
+      if (!b) return { x: 0, y: 0 };
+      return { x: anchor.x - (b.minX + b.maxX) / 2, y: anchor.y - (b.minY + b.maxY) / 2 };
     };
 
-    const posByKey = new Map();
+    // Lift between floors = projected footprint height + a gap, so they separate.
+    const footCorners = [
+      [foot.x, foot.y], [foot.x + foot.w, foot.y], [foot.x + foot.w, foot.y + foot.h], [foot.x, foot.y + foot.h],
+    ].map(([x, y]) => isoXY(x, y));
+    const projH = Math.max(...footCorners.map((c) => c.y)) - Math.min(...footCorners.map((c) => c.y));
+    const lift = floorMode === 'offset' ? projH + 70 : 0;
+    const recenter = ((levels.length - 1) * lift) / 2;
+    const liftYOf = (k) => recenter - k * lift;
+
+    // Screen centre of each bubble (for the screen-space link lines).
+    const screenPos = new Map();
     for (const o of instances) {
+      const lv = levelOf(o.s);
+      if (!levels.includes(lv)) continue;
       const n = nodes.get(o.key);
-      if (!n || !levels.includes(levelOf(o.s))) continue;
-      posByKey.set(o.key, { ...proj(n.x, n.y, rankOf(o.s)), r: radiusOf(o.s) });
+      if (!n) continue;
+      const off = offOf(lv);
+      const s = isoXY(n.x + off.x, n.y + off.y);
+      screenPos.set(o.key, { x: s.x, y: s.y + liftYOf(rankOf(o.s)) });
     }
-    const closestProjPair = (sa, sb) => {
+    const closestPairScreen = (sa, sb) => {
       let best = null;
       for (let i = 0; i < Math.max(1, sa.count || 1); i++) {
-        const a = posByKey.get(`${sa.id}:${i}`);
+        const a = screenPos.get(`${sa.id}:${i}`);
         if (!a) continue;
         for (let j = 0; j < Math.max(1, sb.count || 1); j++) {
-          const b = posByKey.get(`${sb.id}:${j}`);
+          const b = screenPos.get(`${sb.id}:${j}`);
           if (!b) continue;
           const d = Math.hypot(b.x - a.x, b.y - a.y);
           if (!best || d < best.d) best = { a, b, d };
@@ -1352,27 +1400,30 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       return best;
     };
 
-    const slabs = [];
-    for (const label of levels) {
+    const matrix = `matrix(${kx} ${ky} ${-kx} ${ky} ${e} ${f0})`;
+    const floors = levels.map((label) => {
       const k = levelRank.get(label);
-      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, any = false;
-      for (const o of instances) {
-        if (levelOf(o.s) !== label) continue;
-        const n = nodes.get(o.key);
-        if (!n) continue;
-        const r = radiusOf(o.s) + 32;
-        any = true;
-        minX = Math.min(minX, n.x - r);
-        maxX = Math.max(maxX, n.x + r);
-        minY = Math.min(minY, n.y - r);
-        maxY = Math.max(maxY, n.y + r);
-      }
-      if (!any) continue;
-      // Flat plane = the floor's plan rectangle projected to four iso corners.
-      const c = [proj(minX, minY, k), proj(maxX, minY, k), proj(maxX, maxY, k), proj(minX, maxY, k)];
-      slabs.push({ k, label, color: PALETTE[k % PALETTE.length], points: c.map((p) => `${p.x},${p.y}`).join(' '), labelAt: c[0] });
-    }
-    return { posByKey, closestProjPair, slabs };
+      return {
+        k,
+        label,
+        color: PALETTE[k % PALETTE.length],
+        off: offOf(label),
+        transform: `translate(0 ${liftYOf(k)}) ${matrix}`,
+        bubbles: instances.filter((o) => levelOf(o.s) === label),
+      };
+    });
+
+    // Ground-plane transform + offset, used to warp background images onto it.
+    const groundOff = offOf(levels[0]);
+    const groundTransform = `translate(0 ${liftYOf(0)}) ${matrix} translate(${groundOff.x} ${groundOff.y})`;
+
+    // Vertical corner guides spanning the stack (offset mode, >1 floor).
+    const topK = levels.length - 1;
+    const guides = lift > 0
+      ? footCorners.map((c) => ({ x: c.x, y1: c.y + liftYOf(0), y2: c.y + liftYOf(topK) }))
+      : [];
+
+    return { foot, floors, screenPos, closestPairScreen, guides, groundTransform };
   }
   const stack = stackMode ? stackScene() : null;
 
@@ -1671,27 +1722,43 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                 <feDisplacementMap in="SourceGraphic" in2="n" scale="5" xChannelSelector="R" yChannelSelector="G" />
               </filter>
             </defs>
-            {imgLayers.map((im) => {
-              if (!im.visible) return null;
-              const r = layerRect(im);
-              if (!r) return null;
-              const active = moveLayer === im.id || rotateLayer === im.id;
+            {(() => {
+              const imgs = imgLayers.map((im) => {
+                if (!im.visible) return null;
+                const r = layerRect(im);
+                if (!r) return null;
+                const active = moveLayer === im.id || rotateLayer === im.id;
+                return (
+                  <image
+                    key={im.id}
+                    href={im.image}
+                    x={r.x}
+                    y={r.y}
+                    width={r.w}
+                    height={r.h}
+                    opacity={im.opacity}
+                    preserveAspectRatio="none"
+                    transform={imgTransform(r)}
+                    style={im.filter ? { filter: filterCss(im.filter) } : undefined}
+                    className={active ? 'layer-active' : ''}
+                  />
+                );
+              });
+              // In the stacked view, warp the images onto the ground-floor plane
+              // and clip them to its footprint so they read as the site plan on
+              // that floor instead of a flat backdrop.
+              if (!stack) return imgs;
               return (
-                <image
-                  key={im.id}
-                  href={im.image}
-                  x={r.x}
-                  y={r.y}
-                  width={r.w}
-                  height={r.h}
-                  opacity={im.opacity}
-                  preserveAspectRatio="none"
-                  transform={imgTransform(r)}
-                  style={im.filter ? { filter: filterCss(im.filter) } : undefined}
-                  className={active ? 'layer-active' : ''}
-                />
+                <g transform={stack.groundTransform}>
+                  <defs>
+                    <clipPath id="ground-floor-clip">
+                      <rect x={stack.foot.x} y={stack.foot.y} width={stack.foot.w} height={stack.foot.h} rx="10" />
+                    </clipPath>
+                  </defs>
+                  <g clipPath="url(#ground-floor-clip)">{imgs}</g>
+                </g>
               );
-            })}
+            })()}
 
             {(() => {
               // Building hulls always show (when buildings exist); category hulls
@@ -1731,36 +1798,33 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
               return out;
             })()}
 
-            {/* Stacked isometric view: each floor is a flat tilted plane (a
-                parallelogram), raised onto its own plane ('offset') or all on the
-                ground plane ('overlaid'). Drawn ground → top so upper floors layer
-                on top. */}
+            {/* Stacked axonometric view. Dashed corner guides tie the floors into
+                one building; each floor is an iso-tilted group so its plate,
+                bubbles and the warped images foreshorten onto the plane. */}
             {stack &&
-              stack.slabs.map((slab) => {
-                const onFloor = instances.filter((o) => (levelRank.get(levelOf(o.s)) ?? 0) === slab.k);
-                const floorAdj = adjacencies.filter((l) => {
-                  const sa = byId.get(l.space_a), sb = byId.get(l.space_b);
-                  return sa && sb && rankOf(sa) === slab.k && rankOf(sb) === slab.k;
-                });
-                const bubbleOp = floorMode === 'overlaid' ? 0.22 : project.bubble_opacity ?? 0.32;
+              stack.guides.map((g, i) => (
+                <g key={`guide:${i}`} className="floor-guides">
+                  <line x1={g.x} y1={g.y1} x2={g.x} y2={g.y2} className="floor-guide" />
+                  <line x1={g.x - 7} y1={g.y1} x2={g.x + 7} y2={g.y1} className="floor-guide" />
+                  <line x1={g.x - 7} y1={g.y2} x2={g.x + 7} y2={g.y2} className="floor-guide" />
+                </g>
+              ))}
+            {stack &&
+              stack.floors.map((f) => {
+                const bubbleOp = floorMode === 'overlaid' ? 0.2 : project.bubble_opacity ?? 0.32;
                 return (
-                  <g key={`slab:${slab.label}`} className={`floor-plate-g ${floorMode}`}>
-                    <polygon points={slab.points} className="floor-plate" stroke={slab.color} />
-                    <text x={slab.labelAt.x} y={slab.labelAt.y - 8} className="floor-plate-label" fill={slab.color}>{slab.label}</text>
-                    {floorAdj.map((l) => {
-                      const pair = stack.closestProjPair(byId.get(l.space_a), byId.get(l.space_b));
-                      if (!pair) return null;
-                      return <line key={l.id} x1={pair.a.x} y1={pair.a.y} x2={pair.b.x} y2={pair.b.y} className={`link ${l.strength}`} />;
-                    })}
-                    {onFloor.map((o) => {
-                      const p = stack.posByKey.get(o.key);
-                      if (!p) return null;
-                      const r = p.r;
+                  <g key={`floor:${f.label}`} transform={f.transform} className={`floor-plane ${floorMode}`}>
+                    <rect x={stack.foot.x} y={stack.foot.y} width={stack.foot.w} height={stack.foot.h} rx="10" className="floor-plate" stroke={f.color} />
+                    <text x={stack.foot.x + 16} y={stack.foot.y + 30} className="floor-plate-label" fill={f.color}>{f.label}</text>
+                    {f.bubbles.map((o) => {
+                      const n = nodes.get(o.key);
+                      if (!n) return null;
+                      const r = radiusOf(o.s);
                       const box = shapeOf(o.s) === 'box';
                       const side = r * Math.sqrt(Math.PI);
                       return (
-                        <g key={o.key} transform={`translate(${p.x}, ${p.y})`} className="bubble stacked">
-                          <title>{o.s.name}{Math.max(1, o.s.count || 1) > 1 ? ` ${o.i + 1}` : ''} — {fmtArea(ea(o.s), units)} · {slab.label}</title>
+                        <g key={o.key} transform={`translate(${n.x + f.off.x}, ${n.y + f.off.y})`} className="bubble stacked">
+                          <title>{o.s.name}{Math.max(1, o.s.count || 1) > 1 ? ` ${o.i + 1}` : ''} — {fmtArea(ea(o.s), units)} · {f.label}</title>
                           {box ? (
                             <rect x={-side / 2} y={-side / 2} width={side} height={side} rx={Math.min(4, side / 8)} fill={colorOf(o.s)} fillOpacity={bubbleOp} stroke={colorOf(o.s)} strokeWidth={1.5} />
                           ) : (
@@ -1776,14 +1840,16 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                   </g>
                 );
               })}
-            {/* In offset mode, links between floors bridge the separated plates. */}
-            {stack && floorMode === 'offset' &&
+            {/* Links drawn in screen space so cross-floor connectors read clearly. */}
+            {stack &&
               adjacencies.map((l) => {
                 const sa = byId.get(l.space_a), sb = byId.get(l.space_b);
-                if (!sa || !sb || rankOf(sa) === rankOf(sb)) return null;
-                const pair = stack.closestProjPair(sa, sb);
+                if (!sa || !sb) return null;
+                const inter = rankOf(sa) !== rankOf(sb);
+                if (inter && floorMode !== 'offset') return null;
+                const pair = stack.closestPairScreen(sa, sb);
                 if (!pair) return null;
-                return <line key={`x:${l.id}`} x1={pair.a.x} y1={pair.a.y} x2={pair.b.x} y2={pair.b.y} className={`link ${l.strength} interfloor`} />;
+                return <line key={`sl:${l.id}`} x1={pair.a.x} y1={pair.a.y} x2={pair.b.x} y2={pair.b.y} className={`link ${l.strength}${inter ? ' interfloor' : ''}`} />;
               })}
 
             {scalePoints &&

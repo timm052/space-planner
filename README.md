@@ -53,9 +53,11 @@ milestone into a recorded snapshot measured against it:
   - **One bubble per room** — count 3 draws three clustered bubbles, each
     pinnable; adjacency links connect the closest pair of rooms.
   - **Floor view modes** — when the brief uses building levels, switch the
-    diagram between **all floors** together, **one floor at a time**, or the
-    floor plans as **flat isometric planes** — stacked apart (**offset**) or
-    **overlaid** on the same plane to compare footprints.
+    diagram between **all floors** together, **one floor at a time**, or a
+    **stacked axonometric** — each floor an isometric plane with its rooms (and
+    the site image, warped to match the perspective) lying on it, tied together
+    by dashed corner guides. Floors can be **offset** apart or **overlaid** on
+    one plane to compare footprints.
   - **Adjacency compliance score** — with a scale set, a toolbar badge grades how
     well the current layout honours the declared relationships (the weighted share
     of required/desired links whose bubbles are actually placed adjacent); click

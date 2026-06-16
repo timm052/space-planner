@@ -515,16 +515,17 @@ tr.editing td { background: rgba(240, 181, 63, 0.06); }
 /* ---------- floor view modes (per-level / stacked isometric) ---------- */
 .floors-active { color: var(--accent); }
 .bubble.stacked { cursor: default; }
-/* Flat 2D floor plate: each storey is its own plan on a translucent plate,
-   outlined in the floor's colour. Overlaid plates are extra-faint so the floors
-   underneath show through. */
+/* Stacked axonometric: each floor is an iso-tilted plane (the group transform
+   warps its plate, bubbles and images onto it). The plate is a translucent
+   rectangle outlined in the floor's colour; overlaid floors are extra-faint. */
 .floor-plate {
   fill: rgba(120, 145, 180, 0.06);
   stroke-width: 1.5;
   stroke-dasharray: 10 7;
-  opacity: 0.9;
 }
-.floor-plate-g.overlaid .floor-plate { fill: rgba(120, 145, 180, 0.04); opacity: 0.7; }
+.floor-plane.overlaid .floor-plate { fill: rgba(120, 145, 180, 0.035); }
+/* Dashed vertical guides at the footprint corners, tying the stack together. */
+.floor-guide { stroke: var(--faint); stroke-width: 1; stroke-dasharray: 4 5; opacity: 0.7; }
 .link.interfloor {
   stroke: var(--accent-2);
   stroke-width: 1.5;
