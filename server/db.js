@@ -183,61 +183,70 @@ export function seedIfEmpty() {
       `INSERT INTO projects (name, client, stage, units, grossing_target, tolerance)
        VALUES (?, ?, ?, ?, ?, ?)`
     )
-    .run('Riverside Community Library', 'City of Riverside', 'Design Development', 'm2', 0.72, 0.05);
+    .run('Greenfield Community Library', 'Town of Greenfield', 'Design Development', 'm2', 0.72, 0.05);
   const pid = proj.lastInsertRowid;
+  // A standard 1:500 drawing scale (metres per diagram unit = ratio × 0.0002646).
+  db.prepare('UPDATE projects SET display_scale = ? WHERE id = ?').run(500 * 0.0002646, pid);
 
   const insertSpace = db.prepare(
-    `INSERT INTO spaces (project_id, department, name, count, target_area, sort_order, parent_id, kind)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO spaces (project_id, department, name, count, target_area, sort_order, parent_id, kind, level)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
+  let order = 0;
+  const addSpace = (department, name, count, area, parentId, kind, level) =>
+    Number(insertSpace.run(pid, department, name, count, area, order++, parentId, kind, level).lastInsertRowid);
 
-  // One building containing the whole program, so hierarchy is demonstrable.
-  const buildingId = Number(
-    insertSpace.run(pid, 'Building', 'Main Library Building', 1, 0, 0, null, 'building').lastInsertRowid
-  );
+  // Two buildings, so the brief hierarchy and the diagram's building rollups,
+  // hulls and Areas "by building / level" mode all have something to show.
+  const mainId = addSpace('Building', 'Main Library', 1, 0, null, 'building', '');
+  const pavilionId = addSpace('Building', 'Community Pavilion', 1, 0, null, 'building', '');
 
+  // [department, name, count, targetEach, building, level]
   const brief = [
-    ['Public', 'Entrance Lobby & Foyer', 1, 120],
-    ['Public', 'Adult Collection Hall', 1, 450],
-    ['Public', "Children's Library", 1, 220],
-    ['Public', 'Teen Zone', 1, 90],
-    ['Public', 'Reading Room', 1, 160],
-    ['Community', 'Multipurpose Hall', 1, 200],
-    ['Community', 'Meeting Room', 3, 30],
-    ['Community', 'Maker Space', 1, 110],
-    ['Community', 'Café', 1, 80],
-    ['Staff', 'Open Office', 1, 95],
-    ['Staff', 'Workroom / Sorting', 1, 70],
-    ['Staff', 'Staff Lounge', 1, 40],
-    ['Support', 'Book Storage', 1, 85],
-    ['Support', 'IT / Server Room', 1, 20],
-    ['Support', 'Loading & Receiving', 1, 45],
+    ['Public', 'Entrance & Foyer', 1, 110, mainId, 'Ground Floor'],
+    ['Public', 'Welcome / Returns Desk', 1, 35, mainId, 'Ground Floor'],
+    ['Public', "Children's Library", 1, 200, mainId, 'Ground Floor'],
+    ['Public', 'Teen Zone', 1, 85, mainId, 'Ground Floor'],
+    ['Public', 'Café', 1, 75, mainId, 'Ground Floor'],
+    ['Staff', 'Open Office', 1, 90, mainId, 'Ground Floor'],
+    ['Staff', 'Workroom / Sorting', 1, 65, mainId, 'Ground Floor'],
+    ['Staff', 'Staff Lounge', 1, 38, mainId, 'Ground Floor'],
+    ['Support', 'Book Storage', 1, 80, mainId, 'Ground Floor'],
+    ['Support', 'IT / Server', 1, 18, mainId, 'Ground Floor'],
+    ['Support', 'Loading & Receiving', 1, 42, mainId, 'Ground Floor'],
+    ['Public', 'Adult Collection', 1, 380, mainId, 'First Floor'],
+    ['Public', 'Quiet Reading Room', 1, 140, mainId, 'First Floor'],
+    ['Community', 'Multipurpose Hall', 1, 180, pavilionId, 'Ground Floor'],
+    ['Community', 'Meeting Rooms', 3, 28, pavilionId, 'Ground Floor'],
+    ['Community', 'Maker Space', 1, 100, pavilionId, 'Ground Floor'],
   ];
-  const spaceIds = brief.map(([dept, name, cnt, area], i) => {
-    const r = insertSpace.run(pid, dept, name, cnt, area, i + 1, buildingId, 'space');
-    return Number(r.lastInsertRowid);
-  });
+  const spaceIds = brief.map(([dept, name, cnt, area, parentId, level]) =>
+    addSpace(dept, name, cnt, area, parentId, 'space', level)
+  );
 
-  // Adjacency relationships for the bubble diagram (indices into the brief above).
+  // Adjacencies for the bubble diagram (indices into `brief`). A satisfiable
+  // graph — no room carries more than two required links — so a settled layout
+  // can score well.
   const insertAdj = db.prepare(
     `INSERT INTO adjacencies (project_id, space_a, space_b, strength) VALUES (?, ?, ?, ?)`
   );
   const adjacencies = [
-    [0, 1, 'required'], // Lobby — Adult Collection
-    [0, 2, 'required'], // Lobby — Children's
-    [0, 5, 'required'], // Lobby — Multipurpose Hall
-    [0, 8, 'desired'], // Lobby — Café
-    [1, 4, 'required'], // Adult Collection — Reading Room
-    [1, 3, 'desired'], // Adult Collection — Teen Zone
+    [0, 1, 'required'], // Foyer — Welcome Desk
+    [0, 2, 'required'], // Foyer — Children's Library
+    [5, 6, 'required'], // Open Office — Workroom
+    [6, 8, 'required'], // Workroom — Book Storage
+    [8, 10, 'required'], // Book Storage — Loading
+    [11, 12, 'required'], // Adult Collection — Quiet Reading
+    [0, 4, 'desired'], // Foyer — Café
+    [0, 11, 'desired'], // Foyer — Adult Collection (upstairs)
+    [0, 13, 'desired'], // Foyer — Multipurpose Hall (pavilion)
     [2, 3, 'desired'], // Children's — Teen Zone
-    [3, 7, 'desired'], // Teen Zone — Maker Space
-    [5, 6, 'desired'], // Multipurpose — Meeting Rooms
-    [5, 8, 'desired'], // Multipurpose — Café
-    [9, 1, 'desired'], // Open Office — Adult Collection
-    [9, 10, 'required'], // Open Office — Workroom
-    [10, 12, 'required'], // Workroom — Book Storage
-    [12, 14, 'required'], // Book Storage — Loading
-    [13, 9, 'desired'], // IT — Open Office
+    [3, 15, 'desired'], // Teen Zone — Maker Space
+    [13, 14, 'desired'], // Multipurpose — Meeting Rooms
+    [13, 15, 'desired'], // Multipurpose — Maker Space
+    [13, 4, 'desired'], // Multipurpose — Café
+    [5, 7, 'desired'], // Open Office — Staff Lounge
+    [9, 5, 'desired'], // IT / Server — Open Office
   ];
   for (const [a, b, strength] of adjacencies) {
     const [lo, hi] = [spaceIds[a], spaceIds[b]].sort((x, y) => x - y);
@@ -251,25 +260,26 @@ export function seedIfEmpty() {
     `INSERT INTO snapshot_areas (snapshot_id, space_id, area) VALUES (?, ?, ?)`
   );
 
-  // Three milestones showing typical drift: concept generous, SD trimmed, DD drifting over on circulation-heavy spaces.
+  // Three milestones showing typical drift: concept generous, SD trimmed, DD
+  // with a few spaces drifting outside tolerance. Areas align to `brief` order.
   const milestones = [
     {
       label: 'Concept Design',
-      taken_at: '2026-02-10',
-      gross: 2580,
-      areas: [128, 470, 235, 95, 170, 210, 96, 118, 86, 100, 72, 42, 88, 20, 48],
+      taken_at: '2026-02-12',
+      gross: 2480,
+      areas: [116, 36, 208, 88, 78, 93, 67, 39, 83, 19, 44, 392, 146, 186, 86, 104],
     },
     {
       label: 'Schematic Design',
-      taken_at: '2026-04-02',
-      gross: 2495,
-      areas: [122, 455, 224, 88, 158, 202, 90, 112, 81, 96, 70, 39, 84, 19, 46],
+      taken_at: '2026-04-08',
+      gross: 2410,
+      areas: [112, 35, 201, 84, 75, 90, 65, 38, 80, 18, 42, 378, 140, 181, 84, 100],
     },
     {
       label: 'Design Development',
-      taken_at: '2026-06-01',
-      gross: 2540,
-      areas: [115, 438, 216, 82, 148, 196, 84, 104, 78, 92, 68, 36, 80, 21, 44],
+      taken_at: '2026-06-05',
+      gross: 2440,
+      areas: [108, 34, 196, 80, 72, 88, 63, 36, 78, 19, 46, 372, 150, 178, 82, 96],
     },
   ];
 

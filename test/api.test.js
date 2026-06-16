@@ -65,9 +65,9 @@ test('seed: GET /api/projects returns the demo project', async () => {
   assert.equal(status, 200);
   assert.ok(Array.isArray(body));
   assert.ok(body.length >= 1);
-  assert.ok(body.some((p) => p.name === 'Riverside Community Library'));
+  assert.ok(body.some((p) => p.name === 'Greenfield Community Library'));
   // list rows expose computed fields
-  const demo = body.find((p) => p.name === 'Riverside Community Library');
+  const demo = body.find((p) => p.name === 'Greenfield Community Library');
   assert.equal(typeof demo.space_count, 'number');
   assert.equal(typeof demo.target_net, 'number');
 });
