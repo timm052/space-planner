@@ -40,7 +40,7 @@ const SECTIONS = [
   {
     title: 'View & output',
     items: [
-      ['Floors', 'When the brief uses levels, the ▤ Floors menu switches between all floors together, one floor at a time, or a Stacked 3D view that layers the floors as isometric plates. Stacked view is read-only — pick a floor to edit.'],
+      ['Floors', 'When the brief uses levels, the ▤ Floors menu switches between all floors together, one floor at a time, or the floor plans stacked — offset apart, or overlaid on top of each other to compare footprints. Stacked views are read-only — pick a single floor to edit.'],
       ['Pan', 'The view is locked by default. Toggle Pan, then drag the canvas. Recentre returns to the middle.'],
       ['North', 'Drag the compass rose (top-right of the canvas) to set project north. Double-click it to reset to up.'],
       ['PDF', 'Export a scale-accurate PDF with the background images, scale bar, north arrow and a title block.'],

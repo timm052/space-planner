@@ -6,7 +6,7 @@ import { useHistory } from '../useHistory.js';
 import { SCALE_PRESETS, ratioToScale, scaleToRatio, zoomAbout } from '../scale.js';
 import { convexHull, smoothHullPath, pinsOf, filterCss, IMAGE_FILTERS } from '../geometry.js';
 import { edgeGap, adjacencyScore, scoreBand } from '../adjacency.js';
-import { orderedLevels, levelRankMap, isoProject, ISO } from '../floors.js';
+import { orderedLevels, levelRankMap, floorOffset, FLOOR_GAP } from '../floors.js';
 import HelpPanel from './HelpPanel.jsx';
 
 // Logical design canvas — the world anchor for spawning, gravity and image
@@ -230,7 +230,10 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const levelRank = useMemo(() => levelRankMap(levels), [levels]);
   const hasLevels = levels.length >= 2;
   // A previously-selected level may vanish (e.g. project change); fall back to all.
-  const floorMode = floorView === 'stack' || floorView === 'all' || levels.includes(floorView) ? floorView : 'all';
+  const floorMode =
+    floorView === 'offset' || floorView === 'overlaid' || floorView === 'all' || levels.includes(floorView)
+      ? floorView
+      : 'all';
   useEffect(() => setFloorView('all'), [project.id]);
 
   const ea = (s) => {
@@ -1303,26 +1306,47 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const unmetLinkIds = new Set(adjResult.unmet.map((l) => l.id));
   const showScore = effScale && adjacencies.length > 0;
 
-  // ---- Floor view: all together / one level / stacked isometric ----------
+  // ---- Floor view: all together / one level / stacked (flat 2D planes) ----
+  // Each floor stays a flat 2D plan; the stacked modes either lay the floors out
+  // with a vertical gap ('offset') or superimpose them ('overlaid').
   const levelOf = (s) => (s.level || '').trim();
-  const stackMode = hasLevels && floorMode === 'stack';
+  const stackMode = hasLevels && (floorMode === 'offset' || floorMode === 'overlaid');
   // In non-stack modes, levelVisible filters which storey is shown. The stacked
-  // view renders its own isometric scene below (stackScene), so the normal
-  // hull/link/bubble passes are skipped while it's active.
+  // view renders its own scene below (stackScene), so the normal hull/link/bubble
+  // passes are skipped while it's active.
   const levelVisible = (s) => !hasLevels || floorMode === 'all' || levelOf(s) === floorMode;
   const rankOf = (s) => levelRank.get(levelOf(s)) ?? 0;
 
-  // Build the isometric stacked scene: a tilted, lifted slab per floor with its
-  // bubbles projected onto the plane, links on each floor and between floors.
+  // Build the stacked scene: a flat rectangular plate per floor plus each floor's
+  // bubbles/links, shifted by the floor's offset (zero when overlaid).
   function stackScene() {
-    const anchor = { x: W / 2, y: H / 2 };
-    const proj = (x, y, k) => isoProject({ x, y }, k, anchor);
-    // Projected centre + radius per instance (used by bubbles and links).
+    // Per-floor plan bounding box.
+    const box = new Map();
+    for (const o of instances) {
+      const lv = levelOf(o.s);
+      if (!levels.includes(lv)) continue;
+      const n = nodes.get(o.key);
+      if (!n) continue;
+      const r = radiusOf(o.s) + 30;
+      const b = box.get(lv) || { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+      b.minX = Math.min(b.minX, n.x - r);
+      b.maxX = Math.max(b.maxX, n.x + r);
+      b.minY = Math.min(b.minY, n.y - r);
+      b.maxY = Math.max(b.maxY, n.y + r);
+      box.set(lv, b);
+    }
+    // Vertical spacing for 'offset' = tallest floor plus a gap, so floors never overlap.
+    let maxH = 0;
+    for (const b of box.values()) maxH = Math.max(maxH, b.maxY - b.minY);
+    const spacing = maxH + FLOOR_GAP;
+    const offForRank = (k) => floorOffset(k, floorMode, spacing, levels.length);
+
     const posByKey = new Map();
     for (const o of instances) {
       const n = nodes.get(o.key);
-      if (!n) continue;
-      posByKey.set(o.key, { ...proj(n.x, n.y, rankOf(o.s)), r: radiusOf(o.s), o });
+      if (!n || !levels.includes(levelOf(o.s))) continue;
+      const off = offForRank(rankOf(o.s));
+      posByKey.set(o.key, { x: n.x + off.x, y: n.y + off.y, r: radiusOf(o.s) });
     }
     const closestProjPair = (sa, sb) => {
       let best = null;
@@ -1339,33 +1363,23 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       return best;
     };
 
-    const slabs = []; // { k, label, top:[4 pts], sideR, sideL, content:[] }
+    const slabs = [];
     for (const label of levels) {
+      const b = box.get(label);
+      if (!b) continue;
       const k = levelRank.get(label);
-      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, any = false;
-      for (const o of instances) {
-        if (levelOf(o.s) !== label) continue;
-        const n = nodes.get(o.key);
-        if (!n) continue;
-        const r = radiusOf(o.s) + 34;
-        any = true;
-        minX = Math.min(minX, n.x - r);
-        maxX = Math.max(maxX, n.x + r);
-        minY = Math.min(minY, n.y - r);
-        maxY = Math.max(maxY, n.y + r);
-      }
-      if (!any) continue;
-      // Slab top face: the four plan-rect corners projected onto this floor.
-      const TL = proj(minX, minY, k), TR = proj(maxX, minY, k), BR = proj(maxX, maxY, k), BL = proj(minX, maxY, k);
-      const TH = ISO.thickness;
-      const down = (p) => `${p.x},${p.y + TH}`;
-      // Front-facing side faces hang off the two edges meeting the near corner (BR).
-      const sideR = `${TR.x},${TR.y} ${BR.x},${BR.y} ${down(BR)} ${down(TR)}`;
-      const sideL = `${BL.x},${BL.y} ${BR.x},${BR.y} ${down(BR)} ${down(BL)}`;
-      slabs.push({ k, label, topPts: `${TL.x},${TL.y} ${TR.x},${TR.y} ${BR.x},${BR.y} ${BL.x},${BL.y}`, sideR, sideL, labelAt: TL });
+      const off = offForRank(k);
+      slabs.push({
+        k,
+        label,
+        color: PALETTE[k % PALETTE.length],
+        x: b.minX + off.x,
+        y: b.minY + off.y,
+        w: b.maxX - b.minX,
+        h: b.maxY - b.minY,
+      });
     }
-
-    return { anchor, proj, posByKey, closestProjPair, slabs };
+    return { posByKey, closestProjPair, slabs };
   }
   const stack = stackMode ? stackScene() : null;
 
@@ -1515,14 +1529,15 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
               ▦ Matrix
             </button>
             {hasLevels && (
-              <label className={`scale-label ${floorMode !== 'all' ? 'floors-active' : ''}`} title="View all floors together, one floor at a time, or stacked in an isometric 3D layout.">
+              <label className={`scale-label ${floorMode !== 'all' ? 'floors-active' : ''}`} title="View all floors together, one floor at a time, or stack the floor plans — offset apart, or overlaid on top of each other.">
                 ▤ Floors
                 <select className="scale-select" value={floorMode} onChange={(e) => setFloorView(e.target.value)}>
                   <option value="all">All floors</option>
                   {levels.map((l) => (
                     <option key={l} value={l}>{l}</option>
                   ))}
-                  <option value="stack">Stacked 3D</option>
+                  <option value="offset">Stacked · offset</option>
+                  <option value="overlaid">Stacked · overlaid</option>
                 </select>
               </label>
             )}
@@ -1723,9 +1738,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
               return out;
             })()}
 
-            {/* Isometric stacked view: a tilted, lifted slab per floor with its
-                bubbles projected onto the plane. Drawn bottom floor → top so
-                higher slabs correctly occlude the floor below. */}
+            {/* Stacked view: each floor is a flat 2D plan on its own plate, laid
+                out with a gap ('offset') or superimposed ('overlaid'). Drawn
+                ground → top so upper floors sit on top. */}
             {stack &&
               stack.slabs.map((slab) => {
                 const onFloor = instances.filter((o) => (levelRank.get(levelOf(o.s)) ?? 0) === slab.k);
@@ -1733,12 +1748,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                   const sa = byId.get(l.space_a), sb = byId.get(l.space_b);
                   return sa && sb && rankOf(sa) === slab.k && rankOf(sb) === slab.k;
                 });
+                const bubbleOp = floorMode === 'overlaid' ? 0.22 : project.bubble_opacity ?? 0.32;
                 return (
-                  <g key={`slab:${slab.label}`}>
-                    <polygon points={slab.sideL} className="floor-slab-side" />
-                    <polygon points={slab.sideR} className="floor-slab-side front" />
-                    <polygon points={slab.topPts} className="floor-slab-top" />
-                    <text x={slab.labelAt.x} y={slab.labelAt.y - 8} className="floor-plate-label">{slab.label}</text>
+                  <g key={`slab:${slab.label}`} className={`floor-plate-g ${floorMode}`}>
+                    <rect x={slab.x} y={slab.y} width={slab.w} height={slab.h} rx="16" className="floor-plate" stroke={slab.color} />
+                    <text x={slab.x + 14} y={slab.y + 24} className="floor-plate-label" fill={slab.color}>{slab.label}</text>
                     {floorAdj.map((l) => {
                       const pair = stack.closestProjPair(byId.get(l.space_a), byId.get(l.space_b));
                       if (!pair) return null;
@@ -1750,14 +1764,13 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                       const r = p.r;
                       const box = shapeOf(o.s) === 'box';
                       const side = r * Math.sqrt(Math.PI);
-                      const op = project.bubble_opacity ?? 0.32;
                       return (
                         <g key={o.key} transform={`translate(${p.x}, ${p.y})`} className="bubble stacked">
                           <title>{o.s.name}{Math.max(1, o.s.count || 1) > 1 ? ` ${o.i + 1}` : ''} — {fmtArea(ea(o.s), units)} · {slab.label}</title>
                           {box ? (
-                            <rect x={-side / 2} y={-side / 2} width={side} height={side} rx={Math.min(4, side / 8)} fill={colorOf(o.s)} fillOpacity={op} stroke={colorOf(o.s)} strokeWidth={1.5} />
+                            <rect x={-side / 2} y={-side / 2} width={side} height={side} rx={Math.min(4, side / 8)} fill={colorOf(o.s)} fillOpacity={bubbleOp} stroke={colorOf(o.s)} strokeWidth={1.5} />
                           ) : (
-                            <circle r={r} fill={colorOf(o.s)} fillOpacity={op} stroke={colorOf(o.s)} strokeWidth={1.5} />
+                            <circle r={r} fill={colorOf(o.s)} fillOpacity={bubbleOp} stroke={colorOf(o.s)} strokeWidth={1.5} />
                           )}
                           <text textAnchor="middle" dy={r > 26 ? -2 : r > 13 ? 3 : r + 11} className="bubble-name" style={{ fontSize: Math.max(9, Math.min(14, r / 3.2)) }}>
                             {o.s.name}{Math.max(1, o.s.count || 1) > 1 ? ` ${o.i + 1}` : ''}
@@ -1769,8 +1782,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                   </g>
                 );
               })}
-            {/* Inter-floor links connect the planes, drawn above the slabs. */}
-            {stack &&
+            {/* In offset mode, links between floors bridge the separated plates. */}
+            {stack && floorMode === 'offset' &&
               adjacencies.map((l) => {
                 const sa = byId.get(l.space_a), sb = byId.get(l.space_b);
                 if (!sa || !sb || rankOf(sa) === rankOf(sb)) return null;
@@ -1908,8 +1921,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
 
           {hasLevels && floorMode !== 'all' && (
             <div className="floor-caption">
-              {floorMode === 'stack' ? '◳ Stacked floors' : `▤ ${floorMode}`}
-              {floorMode === 'stack' && <span className="floor-caption-sub">view only — switch to a floor to edit</span>}
+              {stackMode ? (floorMode === 'offset' ? '▤ Floors — offset' : '▤ Floors — overlaid') : `▤ ${floorMode}`}
+              {stackMode && <span className="floor-caption-sub">view only — switch to a single floor to edit</span>}
             </div>
           )}
 

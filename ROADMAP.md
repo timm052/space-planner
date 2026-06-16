@@ -37,8 +37,9 @@ The near-term core is now in place:
   required/desired relationships whose bubbles are placed adjacent (judged in
   metres once a scale is set), with one-click highlighting of the unmet links.
 - **Floor view modes** — for multi-level briefs the diagram switches between all
-  floors together, a single floor at a time, or a stacked isometric 3D view that
-  layers each floor as its own plate (pure helpers in `floors.js`, tested).
+  floors together, a single floor at a time, or the floor plans stacked as flat
+  2D plates — offset apart, or overlaid on top of one another to compare
+  footprints (pure helpers in `floors.js`, tested).
 
 ## Near term (rounding out the core)
 

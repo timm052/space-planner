@@ -515,21 +515,16 @@ tr.editing td { background: rgba(240, 181, 63, 0.06); }
 /* ---------- floor view modes (per-level / stacked isometric) ---------- */
 .floors-active { color: var(--accent); }
 .bubble.stacked { cursor: default; }
-/* Isometric floor slab: a translucent top face with darker side faces so each
-   storey reads as a solid plate floating above the one below. */
-.floor-slab-top {
-  fill: rgba(120, 145, 180, 0.10);
-  stroke: rgba(170, 190, 220, 0.35);
+/* Flat 2D floor plate: each storey is its own plan on a translucent plate,
+   outlined in the floor's colour. Overlaid plates are extra-faint so the floors
+   underneath show through. */
+.floor-plate {
+  fill: rgba(120, 145, 180, 0.06);
   stroke-width: 1.5;
-  stroke-linejoin: round;
+  stroke-dasharray: 10 7;
+  opacity: 0.9;
 }
-.floor-slab-side {
-  fill: rgba(10, 13, 19, 0.55);
-  stroke: rgba(170, 190, 220, 0.22);
-  stroke-width: 1;
-  stroke-linejoin: round;
-}
-.floor-slab-side.front { fill: rgba(20, 26, 36, 0.6); }
+.floor-plate-g.overlaid .floor-plate { fill: rgba(120, 145, 180, 0.04); opacity: 0.7; }
 .link.interfloor {
   stroke: var(--accent-2);
   stroke-width: 1.5;
@@ -537,7 +532,6 @@ tr.editing td { background: rgba(240, 181, 63, 0.06); }
   opacity: 0.55;
 }
 .floor-plate-label {
-  fill: var(--muted);
   font-size: 13px;
   font-weight: 700;
   letter-spacing: 0.04em;
