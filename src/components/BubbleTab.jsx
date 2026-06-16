@@ -75,7 +75,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const [hullPad, setHullPad] = useState(() => Number(localStorage.getItem('brieftrack.hullpad')) || 26);
   const [showMatrix, setShowMatrix] = useState(false);
   const [highlightGaps, setHighlightGaps] = useState(false); // flag unmet adjacencies on the diagram
-  const [floorView, setFloorView] = useState('all'); // 'all' | <level label> | 'stack'
+  const [floorView, setFloorView] = useState('all'); // 'all' | <level label> | 'offset' | 'overlaid'
+  const [stackGap, setStackGap] = useState(90); // vertical gap between stacked floors (px)
   const [railW, setRailW] = useState(() => Number(localStorage.getItem('brieftrack.railw')) || 340);
   const [areaMode, setAreaMode] = useState('category'); // Areas panel grouping
   const [collapsed, setCollapsed] = useState(() => new Set()); // collapsed Areas groups
@@ -1370,7 +1371,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       [foot.x, foot.y], [foot.x + foot.w, foot.y], [foot.x + foot.w, foot.y + foot.h], [foot.x, foot.y + foot.h],
     ].map(([x, y]) => isoXY(x, y));
     const projH = Math.max(...footCorners.map((c) => c.y)) - Math.min(...footCorners.map((c) => c.y));
-    const lift = floorMode === 'offset' ? projH + 70 : 0;
+    // Lift = the projected plate height (so floors don't overlap) plus the
+    // user-controlled gap. Overlaid keeps everything on one plane.
+    const lift = floorMode === 'offset' ? projH + stackGap : 0;
     const recenter = ((levels.length - 1) * lift) / 2;
     const liftYOf = (k) => recenter - k * lift;
 
@@ -1383,7 +1386,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       if (!n) continue;
       const off = offOf(lv);
       const s = isoXY(n.x + off.x, n.y + off.y);
-      screenPos.set(o.key, { x: s.x, y: s.y + liftYOf(rankOf(o.s)) });
+      screenPos.set(o.key, { x: s.x, y: s.y + liftYOf(rankOf(o.s)), r: radiusOf(o.s), o });
     }
     const closestPairScreen = (sa, sb) => {
       let best = null;
@@ -1423,7 +1426,12 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       ? footCorners.map((c) => ({ x: c.x, y1: c.y + liftYOf(0), y2: c.y + liftYOf(topK) }))
       : [];
 
-    return { foot, floors, screenPos, closestPairScreen, guides, groundTransform };
+    // Instances on a real floor, ground → top, for the billboarded sphere pass.
+    const ordered = instances
+      .filter((o) => levels.includes(levelOf(o.s)))
+      .sort((a, b) => (levelRank.get(levelOf(a.s)) ?? 0) - (levelRank.get(levelOf(b.s)) ?? 0));
+
+    return { foot, floors, screenPos, closestPairScreen, guides, groundTransform, ordered };
   }
   const stack = stackMode ? stackScene() : null;
 
@@ -1585,6 +1593,12 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                 </select>
               </label>
             )}
+            {hasLevels && floorMode === 'offset' && (
+              <label className="hull-size" title="Gap between stacked floors">
+                ⇕
+                <input type="range" min="0" max="500" step="10" value={stackGap} onChange={(e) => setStackGap(Number(e.target.value))} />
+              </label>
+            )}
             {showScore && (
               <button
                 className={`btn small adj-score ${scoreBand(adjResult.score) || ''} ${highlightGaps ? 'active' : ''}`}
@@ -1721,6 +1735,14 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                 <feTurbulence type="fractalNoise" baseFrequency="0.018" numOctaves="2" seed="7" result="n" />
                 <feDisplacementMap in="SourceGraphic" in2="n" scale="5" xChannelSelector="R" yChannelSelector="G" />
               </filter>
+              {/* Colour-independent shading overlaid on a coloured circle to make
+                  it read as a lit 3D sphere (highlight top-left, shaded rim). */}
+              <radialGradient id="sphere3d" cx="36%" cy="30%" r="75%">
+                <stop offset="0%" stopColor="rgba(255,255,255,0.9)" />
+                <stop offset="26%" stopColor="rgba(255,255,255,0.22)" />
+                <stop offset="60%" stopColor="rgba(0,0,0,0)" />
+                <stop offset="100%" stopColor="rgba(0,0,0,0.5)" />
+              </radialGradient>
             </defs>
             {(() => {
               const imgs = imgLayers.map((im) => {
@@ -1809,37 +1831,15 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                   <line x1={g.x - 7} y1={g.y2} x2={g.x + 7} y2={g.y2} className="floor-guide" />
                 </g>
               ))}
+            {/* Floor planes: just the iso-tilted plate + label (rooms are drawn as
+                billboarded 3D spheres on top, so they stay round). */}
             {stack &&
-              stack.floors.map((f) => {
-                const bubbleOp = floorMode === 'overlaid' ? 0.2 : project.bubble_opacity ?? 0.32;
-                return (
-                  <g key={`floor:${f.label}`} transform={f.transform} className={`floor-plane ${floorMode}`}>
-                    <rect x={stack.foot.x} y={stack.foot.y} width={stack.foot.w} height={stack.foot.h} rx="10" className="floor-plate" stroke={f.color} />
-                    <text x={stack.foot.x + 16} y={stack.foot.y + 30} className="floor-plate-label" fill={f.color}>{f.label}</text>
-                    {f.bubbles.map((o) => {
-                      const n = nodes.get(o.key);
-                      if (!n) return null;
-                      const r = radiusOf(o.s);
-                      const box = shapeOf(o.s) === 'box';
-                      const side = r * Math.sqrt(Math.PI);
-                      return (
-                        <g key={o.key} transform={`translate(${n.x + f.off.x}, ${n.y + f.off.y})`} className="bubble stacked">
-                          <title>{o.s.name}{Math.max(1, o.s.count || 1) > 1 ? ` ${o.i + 1}` : ''} — {fmtArea(ea(o.s), units)} · {f.label}</title>
-                          {box ? (
-                            <rect x={-side / 2} y={-side / 2} width={side} height={side} rx={Math.min(4, side / 8)} fill={colorOf(o.s)} fillOpacity={bubbleOp} stroke={colorOf(o.s)} strokeWidth={1.5} />
-                          ) : (
-                            <circle r={r} fill={colorOf(o.s)} fillOpacity={bubbleOp} stroke={colorOf(o.s)} strokeWidth={1.5} />
-                          )}
-                          <text textAnchor="middle" dy={r > 26 ? -2 : r > 13 ? 3 : r + 11} className="bubble-name" style={{ fontSize: Math.max(9, Math.min(14, r / 3.2)) }}>
-                            {o.s.name}{Math.max(1, o.s.count || 1) > 1 ? ` ${o.i + 1}` : ''}
-                          </text>
-                          {r > 26 && <text textAnchor="middle" dy={14} className="bubble-area">{fmtArea(ea(o.s), units)}</text>}
-                        </g>
-                      );
-                    })}
-                  </g>
-                );
-              })}
+              stack.floors.map((f) => (
+                <g key={`floor:${f.label}`} transform={f.transform} className={`floor-plane ${floorMode}`}>
+                  <rect x={stack.foot.x} y={stack.foot.y} width={stack.foot.w} height={stack.foot.h} rx="10" className="floor-plate" stroke={f.color} />
+                  <text x={stack.foot.x + 16} y={stack.foot.y + 30} className="floor-plate-label" fill={f.color}>{f.label}</text>
+                </g>
+              ))}
             {/* Links drawn in screen space so cross-floor connectors read clearly. */}
             {stack &&
               adjacencies.map((l) => {
@@ -1850,6 +1850,37 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                 const pair = stack.closestPairScreen(sa, sb);
                 if (!pair) return null;
                 return <line key={`sl:${l.id}`} x1={pair.a.x} y1={pair.a.y} x2={pair.b.x} y2={pair.b.y} className={`link ${l.strength}${inter ? ' interfloor' : ''}`} />;
+              })}
+            {/* Rooms as lit 3D spheres sitting on their floor plane. */}
+            {stack &&
+              stack.ordered.map((o) => {
+                const p = stack.screenPos.get(o.key);
+                if (!p) return null;
+                const r = p.r;
+                const box = shapeOf(o.s) === 'box';
+                const side = r * Math.sqrt(Math.PI);
+                const label = `${o.s.name}${Math.max(1, o.s.count || 1) > 1 ? ` ${o.i + 1}` : ''}`;
+                return (
+                  <g key={`sph:${o.key}`} transform={`translate(${p.x}, ${p.y})`} className="bubble stacked sphere">
+                    <title>{label} — {fmtArea(ea(o.s), units)}</title>
+                    <ellipse cx="0" cy={r * 0.62} rx={r * 0.92} ry={r * 0.26} className="sphere-shadow" />
+                    {box ? (
+                      <>
+                        <rect x={-side / 2} y={-side / 2} width={side} height={side} rx={Math.min(5, side / 8)} fill={colorOf(o.s)} />
+                        <rect x={-side / 2} y={-side / 2} width={side} height={side} rx={Math.min(5, side / 8)} fill="url(#sphere3d)" />
+                      </>
+                    ) : (
+                      <>
+                        <circle r={r} fill={colorOf(o.s)} />
+                        <circle r={r} fill="url(#sphere3d)" />
+                      </>
+                    )}
+                    <text textAnchor="middle" dy={r > 26 ? -2 : r > 13 ? 3 : r + 11} className="bubble-name" style={{ fontSize: Math.max(9, Math.min(14, r / 3.2)) }}>
+                      {label}
+                    </text>
+                    {r > 26 && <text textAnchor="middle" dy={14} className="bubble-area">{fmtArea(ea(o.s), units)}</text>}
+                  </g>
+                );
               })}
 
             {scalePoints &&

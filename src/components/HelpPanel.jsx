@@ -40,7 +40,7 @@ const SECTIONS = [
   {
     title: 'View & output',
     items: [
-      ['Floors', 'When the brief uses levels, the ▤ Floors menu switches between all floors together, one floor at a time, or a stacked axonometric — each floor an isometric plane with its rooms (and the site image, warped to match) lying on it, tied together by corner guides. Offset separates the floors; overlaid puts them on one plane to compare footprints. Stacked views are read-only — pick a single floor to edit.'],
+      ['Floors', 'When the brief uses levels, the ▤ Floors menu switches between all floors together, one floor at a time, or a stacked axonometric — each floor an isometric plane (with the site image warped onto it) and its rooms drawn as 3D spheres, tied together by corner guides. Offset separates the floors (drag the ⇕ slider to set the gap); overlaid puts them on one plane to compare footprints. Stacked views are read-only — pick a single floor to edit.'],
       ['Pan', 'The view is locked by default. Toggle Pan, then drag the canvas. Recentre returns to the middle.'],
       ['North', 'Drag the compass rose (top-right of the canvas) to set project north. Double-click it to reset to up.'],
       ['PDF', 'Export a scale-accurate PDF with the background images, scale bar, north arrow and a title block.'],

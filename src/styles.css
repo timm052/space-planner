@@ -526,6 +526,9 @@ tr.editing td { background: rgba(240, 181, 63, 0.06); }
 .floor-plane.overlaid .floor-plate { fill: rgba(120, 145, 180, 0.035); }
 /* Dashed vertical guides at the footprint corners, tying the stack together. */
 .floor-guide { stroke: var(--faint); stroke-width: 1; stroke-dasharray: 4 5; opacity: 0.7; }
+/* Soft contact shadow under each 3D-sphere room. */
+.sphere-shadow { fill: rgba(0, 0, 0, 0.3); }
+.bubble.sphere .bubble-name { fill: #fff; }
 .link.interfloor {
   stroke: var(--accent-2);
   stroke-width: 1.5;
