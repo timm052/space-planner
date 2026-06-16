@@ -54,8 +54,8 @@ milestone into a recorded snapshot measured against it:
     pinnable; adjacency links connect the closest pair of rooms.
   - **Floor view modes** — when the brief uses building levels, switch the
     diagram between **all floors** together, **one floor at a time**, or the
-    floor plans **stacked** — either **offset** apart or **overlaid** on top of
-    one another to compare footprints.
+    floor plans as **flat isometric planes** — stacked apart (**offset**) or
+    **overlaid** on the same plane to compare footprints.
   - **Adjacency compliance score** — with a scale set, a toolbar badge grades how
     well the current layout honours the declared relationships (the weighted share
     of required/desired links whose bubbles are actually placed adjacent); click
