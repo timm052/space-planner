@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { orderedLevels, levelRankMap, floorOffset } from '../src/floors.js';
+import { orderedLevels, levelRankMap, isoProject, ISO } from '../src/floors.js';
 
 const sp = (level, sort_order) => ({ level, sort_order });
 
@@ -31,24 +31,33 @@ test('levelRankMap assigns 0-based ranks in order', () => {
   assert.equal(rank.get('Second Floor'), 2);
 });
 
-test('floorOffset is zero for the overlaid arrangement (floors superimposed)', () => {
-  assert.deepEqual(floorOffset(0, 'overlaid', 200, 3), { x: 0, y: 0 });
-  assert.deepEqual(floorOffset(2, 'overlaid', 200, 3), { x: 0, y: 0 });
+test('isoProject leaves the anchor fixed on the ground floor', () => {
+  const anchor = { x: 100, y: 80 };
+  assert.deepEqual(isoProject(anchor, 0, anchor), { x: 100, y: 80 });
 });
 
-test('floorOffset separates floors vertically and centres the stack', () => {
-  // 3 floors, spacing 200 → recenter = (3-1)*200/2 = 200.
-  assert.deepEqual(floorOffset(0, 'offset', 200, 3), { x: 0, y: 200 }); // ground at the bottom
-  assert.deepEqual(floorOffset(1, 'offset', 200, 3), { x: 0, y: 0 }); // middle on the origin
-  assert.deepEqual(floorOffset(2, 'offset', 200, 3), { x: 0, y: -200 }); // top floor up
+test('isoProject rotates and foreshortens the plan about the anchor', () => {
+  const anchor = { x: 0, y: 0 };
+  // A point on the +x plan axis tilts down-right using kx, ky.
+  assert.deepEqual(isoProject({ x: 10, y: 0 }, 0, anchor), { x: 10 * ISO.kx, y: 10 * ISO.ky });
+  // Equal x and y collapses onto the vertical screen axis (dx - dy = 0).
+  const p = isoProject({ x: 10, y: 10 }, 0, anchor);
+  assert.equal(p.x, 0);
+  assert.equal(p.y, 20 * ISO.ky);
 });
 
-test('floorOffset keeps the gap exactly `spacing` between adjacent floors', () => {
-  const a = floorOffset(0, 'offset', 150, 2);
-  const b = floorOffset(1, 'offset', 150, 2);
-  assert.equal(a.y - b.y, 150);
+test('isoProject raises higher floors by k × lift', () => {
+  const anchor = { x: 0, y: 0 };
+  const ground = isoProject({ x: 4, y: 2 }, 0, anchor);
+  const first = isoProject({ x: 4, y: 2 }, 1, anchor);
+  assert.equal(first.x, ground.x); // same plan position, just lifted
+  assert.equal(ground.y - first.y, ISO.lift);
 });
 
-test('floorOffset defaults a single level to no vertical shift', () => {
-  assert.deepEqual(floorOffset(0, 'offset', 200, 1), { x: 0, y: 0 });
+test('isoProject honours custom geometry', () => {
+  const anchor = { x: 0, y: 0 };
+  assert.deepEqual(isoProject({ x: 10, y: 0 }, 2, anchor, { kx: 1, ky: 0.5, lift: 100 }), {
+    x: 10,
+    y: 10 * 0.5 - 200,
+  });
 });

@@ -23,17 +23,21 @@ export function levelRankMap(levels) {
   return new Map(levels.map((l, i) => [l, i]));
 }
 
-// Vertical gap left between stacked floor plates in the "offset" arrangement.
-export const FLOOR_GAP = 56;
+// Isometric geometry for the stacked views. Each floor stays a flat plane (no
+// solid thickness); the plane is tilted into an isometric parallelogram and, in
+// the offset arrangement, raised by `lift` per storey so the floors stack.
+//  kx, ky — horizontal / vertical foreshortening of the tilted plane
+//  lift   — screen rise per floor in the offset arrangement
+export const ISO = { kx: 0.82, ky: 0.46, lift: 250 };
 
-// Screen offset for a floor at height-rank `k`, keeping each floor a flat 2D
-// plan (no projection/rotation):
-//   'offset'   → floors separate vertically by `spacing`, ground at the bottom,
-//                centred about the origin (top floor up, ground floor down).
-//   'overlaid' → every floor shares the same position (drawn translucently, on
-//                top of one another) so footprints can be compared.
-export function floorOffset(k, mode, spacing, levelCount = 1) {
-  if (mode !== 'offset') return { x: 0, y: 0 };
-  const recenter = ((levelCount - 1) * spacing) / 2;
-  return { x: 0, y: recenter - k * spacing };
+// Project a plan point onto floor `k`'s isometric plane, tilted about `anchor`
+// (which maps to itself, keeping the scene centred): the plan is rotated 45° and
+// vertically foreshortened, then the floor is raised by k × lift.
+export function isoProject(p, k = 0, anchor = { x: 0, y: 0 }, opts = ISO) {
+  const dx = p.x - anchor.x;
+  const dy = p.y - anchor.y;
+  return {
+    x: anchor.x + (dx - dy) * opts.kx,
+    y: anchor.y + (dx + dy) * opts.ky - k * opts.lift,
+  };
 }

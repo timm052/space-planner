@@ -6,7 +6,7 @@ import { useHistory } from '../useHistory.js';
 import { SCALE_PRESETS, ratioToScale, scaleToRatio, zoomAbout } from '../scale.js';
 import { convexHull, smoothHullPath, pinsOf, filterCss, IMAGE_FILTERS } from '../geometry.js';
 import { edgeGap, adjacencyScore, scoreBand } from '../adjacency.js';
-import { orderedLevels, levelRankMap, floorOffset, FLOOR_GAP } from '../floors.js';
+import { orderedLevels, levelRankMap, isoProject, ISO } from '../floors.js';
 import HelpPanel from './HelpPanel.jsx';
 
 // Logical design canvas — the world anchor for spawning, gravity and image
@@ -1306,47 +1306,36 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const unmetLinkIds = new Set(adjResult.unmet.map((l) => l.id));
   const showScore = effScale && adjacencies.length > 0;
 
-  // ---- Floor view: all together / one level / stacked (flat 2D planes) ----
-  // Each floor stays a flat 2D plan; the stacked modes either lay the floors out
-  // with a vertical gap ('offset') or superimpose them ('overlaid').
+  // ---- Floor view: all together / one level / stacked isometric planes ----
+  // Each floor is a flat plane shown isometrically. 'offset' raises each storey
+  // onto its own plane (a stacked 3D look); 'overlaid' puts them all on the same
+  // plane (superimposed) to compare footprints.
   const levelOf = (s) => (s.level || '').trim();
   const stackMode = hasLevels && (floorMode === 'offset' || floorMode === 'overlaid');
   // In non-stack modes, levelVisible filters which storey is shown. The stacked
-  // view renders its own scene below (stackScene), so the normal hull/link/bubble
-  // passes are skipped while it's active.
+  // view renders its own isometric scene below (stackScene), so the normal
+  // hull/link/bubble passes are skipped while it's active.
   const levelVisible = (s) => !hasLevels || floorMode === 'all' || levelOf(s) === floorMode;
   const rankOf = (s) => levelRank.get(levelOf(s)) ?? 0;
 
-  // Build the stacked scene: a flat rectangular plate per floor plus each floor's
-  // bubbles/links, shifted by the floor's offset (zero when overlaid).
+  // Build the isometric stacked scene: one flat tilted plane per floor (a
+  // parallelogram, no solid thickness), with bubbles/links projected onto it.
   function stackScene() {
-    // Per-floor plan bounding box.
-    const box = new Map();
-    for (const o of instances) {
-      const lv = levelOf(o.s);
-      if (!levels.includes(lv)) continue;
-      const n = nodes.get(o.key);
-      if (!n) continue;
-      const r = radiusOf(o.s) + 30;
-      const b = box.get(lv) || { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
-      b.minX = Math.min(b.minX, n.x - r);
-      b.maxX = Math.max(b.maxX, n.x + r);
-      b.minY = Math.min(b.minY, n.y - r);
-      b.maxY = Math.max(b.maxY, n.y + r);
-      box.set(lv, b);
-    }
-    // Vertical spacing for 'offset' = tallest floor plus a gap, so floors never overlap.
-    let maxH = 0;
-    for (const b of box.values()) maxH = Math.max(maxH, b.maxY - b.minY);
-    const spacing = maxH + FLOOR_GAP;
-    const offForRank = (k) => floorOffset(k, floorMode, spacing, levels.length);
+    const anchor = { x: W / 2, y: H / 2 };
+    // Overlaid puts every floor on the ground plane (k = 0); offset raises them.
+    const planeK = (rank) => (floorMode === 'overlaid' ? 0 : rank);
+    // Recentre the offset stack vertically so it doesn't drift off the top.
+    const recenterY = floorMode === 'offset' ? ((levels.length - 1) * ISO.lift) / 2 : 0;
+    const proj = (x, y, rank) => {
+      const p = isoProject({ x, y }, planeK(rank), anchor);
+      return { x: p.x, y: p.y + recenterY };
+    };
 
     const posByKey = new Map();
     for (const o of instances) {
       const n = nodes.get(o.key);
       if (!n || !levels.includes(levelOf(o.s))) continue;
-      const off = offForRank(rankOf(o.s));
-      posByKey.set(o.key, { x: n.x + off.x, y: n.y + off.y, r: radiusOf(o.s) });
+      posByKey.set(o.key, { ...proj(n.x, n.y, rankOf(o.s)), r: radiusOf(o.s) });
     }
     const closestProjPair = (sa, sb) => {
       let best = null;
@@ -1365,19 +1354,23 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
 
     const slabs = [];
     for (const label of levels) {
-      const b = box.get(label);
-      if (!b) continue;
       const k = levelRank.get(label);
-      const off = offForRank(k);
-      slabs.push({
-        k,
-        label,
-        color: PALETTE[k % PALETTE.length],
-        x: b.minX + off.x,
-        y: b.minY + off.y,
-        w: b.maxX - b.minX,
-        h: b.maxY - b.minY,
-      });
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, any = false;
+      for (const o of instances) {
+        if (levelOf(o.s) !== label) continue;
+        const n = nodes.get(o.key);
+        if (!n) continue;
+        const r = radiusOf(o.s) + 32;
+        any = true;
+        minX = Math.min(minX, n.x - r);
+        maxX = Math.max(maxX, n.x + r);
+        minY = Math.min(minY, n.y - r);
+        maxY = Math.max(maxY, n.y + r);
+      }
+      if (!any) continue;
+      // Flat plane = the floor's plan rectangle projected to four iso corners.
+      const c = [proj(minX, minY, k), proj(maxX, minY, k), proj(maxX, maxY, k), proj(minX, maxY, k)];
+      slabs.push({ k, label, color: PALETTE[k % PALETTE.length], points: c.map((p) => `${p.x},${p.y}`).join(' '), labelAt: c[0] });
     }
     return { posByKey, closestProjPair, slabs };
   }
@@ -1738,9 +1731,10 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
               return out;
             })()}
 
-            {/* Stacked view: each floor is a flat 2D plan on its own plate, laid
-                out with a gap ('offset') or superimposed ('overlaid'). Drawn
-                ground → top so upper floors sit on top. */}
+            {/* Stacked isometric view: each floor is a flat tilted plane (a
+                parallelogram), raised onto its own plane ('offset') or all on the
+                ground plane ('overlaid'). Drawn ground → top so upper floors layer
+                on top. */}
             {stack &&
               stack.slabs.map((slab) => {
                 const onFloor = instances.filter((o) => (levelRank.get(levelOf(o.s)) ?? 0) === slab.k);
@@ -1751,8 +1745,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                 const bubbleOp = floorMode === 'overlaid' ? 0.22 : project.bubble_opacity ?? 0.32;
                 return (
                   <g key={`slab:${slab.label}`} className={`floor-plate-g ${floorMode}`}>
-                    <rect x={slab.x} y={slab.y} width={slab.w} height={slab.h} rx="16" className="floor-plate" stroke={slab.color} />
-                    <text x={slab.x + 14} y={slab.y + 24} className="floor-plate-label" fill={slab.color}>{slab.label}</text>
+                    <polygon points={slab.points} className="floor-plate" stroke={slab.color} />
+                    <text x={slab.labelAt.x} y={slab.labelAt.y - 8} className="floor-plate-label" fill={slab.color}>{slab.label}</text>
                     {floorAdj.map((l) => {
                       const pair = stack.closestProjPair(byId.get(l.space_a), byId.get(l.space_b));
                       if (!pair) return null;
