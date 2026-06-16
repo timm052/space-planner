@@ -36,6 +36,9 @@ The near-term core is now in place:
 - **Adjacency compliance score** — a toolbar badge grading the weighted share of
   required/desired relationships whose bubbles are placed adjacent (judged in
   metres once a scale is set), with one-click highlighting of the unmet links.
+- **Floor view modes** — for multi-level briefs the diagram switches between all
+  floors together, a single floor at a time, or a stacked isometric 3D view that
+  layers each floor as its own plate (pure helpers in `floors.js`, tested).
 
 ## Near term (rounding out the core)
 
@@ -68,8 +71,10 @@ The near-term core is now in place:
   and feeding the score into auto-layout as an objective.
 - **Design options / scenarios** — branch a project's layout into A/B options and
   compare them side by side (areas, adjacency score, drift) for option studies.
-- **Stacking diagram** — a vertical by-level view (the `level` column already
-  exists) showing department area per floor, complementing the plan-view bubbles.
+- **Stacking diagram — next steps** — the diagram now has floor view modes (all /
+  per-level / stacked isometric, see Shipped); extend with a true vertical
+  by-level *area* chart (department area per floor) and editable layouts in the
+  stacked view.
 - **Import area schedules** — parse a Revit/IFC or spreadsheet export straight
   into a milestone (the milestone model is keyed by space, so a column mapping
   UI is enough).

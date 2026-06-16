@@ -6,6 +6,7 @@ import { useHistory } from '../useHistory.js';
 import { SCALE_PRESETS, ratioToScale, scaleToRatio, zoomAbout } from '../scale.js';
 import { convexHull, smoothHullPath, pinsOf, filterCss, IMAGE_FILTERS } from '../geometry.js';
 import { edgeGap, adjacencyScore, scoreBand } from '../adjacency.js';
+import { orderedLevels, levelRankMap, stackOffset } from '../floors.js';
 import HelpPanel from './HelpPanel.jsx';
 
 // Logical design canvas — the world anchor for spawning, gravity and image
@@ -15,6 +16,7 @@ const W = 900;
 const H = 620;
 const PALETTE = ['#e8b04b', '#5b9dd9', '#4cc38a', '#c678dd', '#e5707a', '#56b6c2', '#d19a66', '#98c379', '#7aa2f7', '#f7768e'];
 const SAT_CANVAS = 768;
+const ZERO_OFF = { x: 0, y: 0 };
 
 // BubbleTab unmounts when you leave the Diagram tab, which would otherwise lose
 // every non-pinned bubble's position and let the sim re-scatter them on return.
@@ -74,6 +76,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const [hullPad, setHullPad] = useState(() => Number(localStorage.getItem('brieftrack.hullpad')) || 26);
   const [showMatrix, setShowMatrix] = useState(false);
   const [highlightGaps, setHighlightGaps] = useState(false); // flag unmet adjacencies on the diagram
+  const [floorView, setFloorView] = useState('all'); // 'all' | <level label> | 'stack'
   const [railW, setRailW] = useState(() => Number(localStorage.getItem('brieftrack.railw')) || 340);
   const [areaMode, setAreaMode] = useState('category'); // Areas panel grouping
   const [collapsed, setCollapsed] = useState(() => new Set()); // collapsed Areas groups
@@ -222,6 +225,14 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       ),
     [leaves]
   );
+
+  // Storey labels present in the program, ground → up. Drives the floor switcher.
+  const levels = useMemo(() => orderedLevels(leaves), [leaves]);
+  const levelRank = useMemo(() => levelRankMap(levels), [levels]);
+  const hasLevels = levels.length >= 2;
+  // A previously-selected level may vanish (e.g. project change); fall back to all.
+  const floorMode = floorView === 'stack' || floorView === 'all' || levels.includes(floorView) ? floorView : 'all';
+  useEffect(() => setFloorView('all'), [project.id]);
 
   const ea = (s) => {
     const draft = drafts[s.id];
@@ -1293,6 +1304,39 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const unmetLinkIds = new Set(adjResult.unmet.map((l) => l.id));
   const showScore = effScale && adjacencies.length > 0;
 
+  // ---- Floor view: all together / one level / stacked isometric ----------
+  const levelOf = (s) => (s.level || '').trim();
+  const stackMode = hasLevels && floorMode === 'stack';
+  const levelVisible = (s) => !hasLevels || floorMode === 'all' || stackMode || levelOf(s) === floorMode;
+  const offOf = (s) => (stackMode ? stackOffset(levelOf(s), levelRank) : ZERO_OFF);
+  // Floor "slabs" drawn behind each level's bubbles in stacked mode.
+  const floorPlates = stackMode
+    ? levels
+        .map((label) => {
+          let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, any = false;
+          for (const o of instances) {
+            if (levelOf(o.s) !== label) continue;
+            const n = nodes.get(o.key);
+            if (!n) continue;
+            const off = stackOffset(label, levelRank);
+            const r = radiusOf(o.s);
+            any = true;
+            minX = Math.min(minX, n.x + off.x - r);
+            maxX = Math.max(maxX, n.x + off.x + r);
+            minY = Math.min(minY, n.y + off.y - r);
+            maxY = Math.max(maxY, n.y + off.y + r);
+          }
+          if (!any) return null;
+          const pad = 30;
+          return { label, x: minX - pad, y: minY - pad, w: maxX - minX + 2 * pad, h: maxY - minY + 2 * pad };
+        })
+        .filter(Boolean)
+    : [];
+  // In stacked mode draw lower floors first so upper floors layer on top.
+  const renderInstances = stackMode
+    ? [...instances].sort((a, b) => (levelRank.get(levelOf(a.s)) ?? 0) - (levelRank.get(levelOf(b.s)) ?? 0))
+    : instances;
+
   function scaleLabelFor(S) {
     const ratio = scaleToRatio(S);
     const preset = presets.find(([r]) => Math.abs(r - ratio) / r < 0.02);
@@ -1438,6 +1482,18 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
             <button className={`btn small ${showMatrix ? 'on' : ''}`} onClick={() => setShowMatrix(true)} title="Edit relationships as an adjacency matrix.">
               ▦ Matrix
             </button>
+            {hasLevels && (
+              <label className={`scale-label ${floorMode !== 'all' ? 'floors-active' : ''}`} title="View all floors together, one floor at a time, or stacked in an isometric 3D layout.">
+                ▤ Floors
+                <select className="scale-select" value={floorMode} onChange={(e) => setFloorView(e.target.value)}>
+                  <option value="all">All floors</option>
+                  {levels.map((l) => (
+                    <option key={l} value={l}>{l}</option>
+                  ))}
+                  <option value="stack">Stacked 3D</option>
+                </select>
+              </label>
+            )}
             {showScore && (
               <button
                 className={`btn small adj-score ${scoreBand(adjResult.score) || ''} ${highlightGaps ? 'active' : ''}`}
@@ -1604,14 +1660,16 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
               const addHulls = (keyFn, cls, withLabel) => {
                 const byG = new Map();
                 for (const o of instances) {
+                  if (!levelVisible(o.s)) continue;
                   const n = nodes.get(o.key);
                   if (!n) continue;
                   const g = keyFn(o.s);
                   if (g == null) continue;
                   if (!byG.has(g)) byG.set(g, []);
+                  const off = offOf(o.s);
                   const r = radiusOf(o.s) + hullPad;
                   for (let a = 0; a < Math.PI * 2; a += Math.PI / 4)
-                    byG.get(g).push({ x: n.x + Math.cos(a) * r, y: n.y + Math.sin(a) * r });
+                    byG.get(g).push({ x: n.x + off.x + Math.cos(a) * r, y: n.y + off.y + Math.sin(a) * r });
                 }
                 for (const [g, pts] of byG) {
                   const hull = convexHull(pts);
@@ -1629,10 +1687,18 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                   }
                 }
               };
-              if (hasBuildings) addHulls((s) => { const root = rootContainer(s, byId); return root ? root.name : null; }, 'building-hull', true);
-              if (hulls) addHulls((s) => s.department || 'General', 'cat-hull', false);
+              if (!stackMode && hasBuildings) addHulls((s) => { const root = rootContainer(s, byId); return root ? root.name : null; }, 'building-hull', true);
+              if (!stackMode && hulls) addHulls((s) => s.department || 'General', 'cat-hull', false);
               return out;
             })()}
+
+            {/* Stacked-mode floor slabs (drawn behind the links/bubbles). */}
+            {floorPlates.map((p) => (
+              <g key={`plate:${p.label}`} className="floor-plate-g">
+                <rect x={p.x} y={p.y} width={p.w} height={p.h} rx="14" className="floor-plate" />
+                <text x={p.x + 12} y={p.y + 22} className="floor-plate-label">{p.label}</text>
+              </g>
+            ))}
 
             {scalePoints &&
               scalePoints.map((p, i) => (
@@ -1649,26 +1715,31 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
               const sa = byId.get(l.space_a);
               const sb = byId.get(l.space_b);
               if (!sa || !sb) return null;
+              if (!levelVisible(sa) || !levelVisible(sb)) return null;
               const pair = closestPair(sa, sb);
               if (!pair) return null;
+              const oa = offOf(sa);
+              const ob = offOf(sb);
               return (
                 <g key={l.id} className="link-hit" onClick={() => onLinkClick(l)}>
-                  <line x1={pair.a.x} y1={pair.a.y} x2={pair.b.x} y2={pair.b.y} className="link-hitarea" />
+                  <line x1={pair.a.x + oa.x} y1={pair.a.y + oa.y} x2={pair.b.x + ob.x} y2={pair.b.y + ob.y} className="link-hitarea" />
                   <line
-                    x1={pair.a.x}
-                    y1={pair.a.y}
-                    x2={pair.b.x}
-                    y2={pair.b.y}
+                    x1={pair.a.x + oa.x}
+                    y1={pair.a.y + oa.y}
+                    x2={pair.b.x + ob.x}
+                    y2={pair.b.y + ob.y}
                     className={`link ${l.strength}${highlightGaps && unmetLinkIds.has(l.id) ? ' unmet' : ''}`}
                   />
                 </g>
               );
             })}
 
-            {instances.map((o) => {
+            {renderInstances.map((o) => {
               const n = nodes.get(o.key);
               if (!n) return null;
               const { s, i } = o;
+              if (!levelVisible(s)) return null;
+              const off = offOf(s);
               const r = radiusOf(s);
               const isSel = selected === s.id && (Math.max(1, s.count || 1) === 1 || selectedInst === i);
               const pinned = !!instPin(s, i);
@@ -1688,9 +1759,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                   key={o.key}
                   data-space-id={s.id}
                   data-instance={i}
-                  className={`bubble ${isSel ? 'selected' : ''} ${inMulti ? 'multi' : ''}`}
-                  transform={`translate(${n.x}, ${n.y})`}
-                  onPointerDown={(e) => onBubbleDown(e, o)}
+                  className={`bubble ${isSel ? 'selected' : ''} ${inMulti ? 'multi' : ''} ${stackMode ? 'stacked' : ''}`}
+                  transform={`translate(${n.x + off.x}, ${n.y + off.y})`}
+                  onPointerDown={stackMode ? undefined : (e) => onBubbleDown(e, o)}
                   onPointerEnter={() => (hoverRef.current = { space: s, idx: i })}
                   onPointerLeave={() => (hoverRef.current?.space.id === s.id && hoverRef.current?.idx === i ? (hoverRef.current = null) : null)}
                 >
@@ -1756,6 +1827,13 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
               />
             )}
           </svg>
+
+          {hasLevels && floorMode !== 'all' && (
+            <div className="floor-caption">
+              {floorMode === 'stack' ? '◳ Stacked floors' : `▤ ${floorMode}`}
+              {floorMode === 'stack' && <span className="floor-caption-sub">view only — switch to a floor to edit</span>}
+            </div>
+          )}
 
           <NorthRose deg={project.north_deg || 0} onSet={setNorth} />
 
