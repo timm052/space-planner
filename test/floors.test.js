@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { orderedLevels, levelRankMap, stackOffset, STACK } from '../src/floors.js';
+import { orderedLevels, levelRankMap, isoProject, ISO } from '../src/floors.js';
 
 const sp = (level, sort_order) => ({ level, sort_order });
 
@@ -31,20 +31,33 @@ test('levelRankMap assigns 0-based ranks in order', () => {
   assert.equal(rank.get('Second Floor'), 2);
 });
 
-test('stackOffset lifts higher floors up and shifts them right', () => {
-  const rank = levelRankMap(['Ground Floor', 'First Floor']);
-  assert.deepEqual(stackOffset('Ground Floor', rank), { x: 0, y: 0 });
-  assert.deepEqual(stackOffset('First Floor', rank), { x: STACK.shift, y: -STACK.lift });
+test('isoProject leaves the anchor fixed on the ground floor', () => {
+  const anchor = { x: 100, y: 80 };
+  assert.deepEqual(isoProject(anchor, 0, anchor), { x: 100, y: 80 });
 });
 
-test('stackOffset trims the label and falls unknown levels to the ground plane', () => {
-  const rank = levelRankMap(['Ground Floor', 'First Floor']);
-  assert.deepEqual(stackOffset('  First Floor  ', rank), { x: STACK.shift, y: -STACK.lift });
-  assert.deepEqual(stackOffset('Roof', rank), { x: 0, y: 0 });
-  assert.deepEqual(stackOffset('', rank), { x: 0, y: 0 });
+test('isoProject rotates and foreshortens the plan about the anchor', () => {
+  const anchor = { x: 0, y: 0 };
+  // A point on the +x plan axis tilts down-right; the iso x/y use kx, ky.
+  assert.deepEqual(isoProject({ x: 10, y: 0 }, 0, anchor), { x: 10 * ISO.kx, y: 10 * ISO.ky });
+  // Equal x and y collapses onto the vertical screen axis (dx - dy = 0).
+  const p = isoProject({ x: 10, y: 10 }, 0, anchor);
+  assert.equal(p.x, 0);
+  assert.equal(p.y, 20 * ISO.ky);
 });
 
-test('stackOffset honours custom geometry', () => {
-  const rank = levelRankMap(['G', 'F']);
-  assert.deepEqual(stackOffset('F', rank, { lift: 100, shift: 10 }), { x: 10, y: -100 });
+test('isoProject raises higher floors by k × lift', () => {
+  const anchor = { x: 0, y: 0 };
+  const ground = isoProject({ x: 4, y: 2 }, 0, anchor);
+  const first = isoProject({ x: 4, y: 2 }, 1, anchor);
+  assert.equal(first.x, ground.x); // same plan position, just lifted
+  assert.equal(ground.y - first.y, ISO.lift);
+});
+
+test('isoProject honours custom geometry', () => {
+  const anchor = { x: 0, y: 0 };
+  assert.deepEqual(isoProject({ x: 10, y: 0 }, 2, anchor, { kx: 1, ky: 0.5, lift: 100 }), {
+    x: 10,
+    y: 10 * 0.5 - 200,
+  });
 });

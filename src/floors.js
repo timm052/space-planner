@@ -23,14 +23,21 @@ export function levelRankMap(levels) {
   return new Map(levels.map((l, i) => [l, i]));
 }
 
-// Default stacked-view geometry: each floor lifts up and shifts slightly right.
-export const STACK = { lift: 210, shift: 55 };
+// Isometric projection geometry for the stacked view.
+//  kx, ky    — horizontal / vertical foreshortening of the tilted floor plane
+//  lift      — screen rise per floor (the gap between stacked slabs)
+//  thickness — drawn slab depth, giving each floor solidity
+export const ISO = { kx: 0.82, ky: 0.46, lift: 250, thickness: 18 };
 
-// Screen-space offset for a level in the stacked view. Ground (rank 0) sits at
-// the origin; higher floors lift up (−y) and shift right (+x). Unknown levels
-// fall to the ground plane.
-export function stackOffset(level, rankMap, opts = STACK) {
-  const k = rankMap.get((level || '').trim()) ?? 0;
-  const dy = k * opts.lift;
-  return { x: k * opts.shift, y: dy === 0 ? 0 : -dy };
+// Project a plan point onto floor `k`'s isometric plane. The plan is tilted
+// about `anchor` (which maps to itself, keeping the scene centred): rotated 45°
+// and vertically foreshortened, then each floor is raised by k × lift so the
+// floors stack with real height between them.
+export function isoProject(p, k = 0, anchor = { x: 0, y: 0 }, opts = ISO) {
+  const dx = p.x - anchor.x;
+  const dy = p.y - anchor.y;
+  return {
+    x: anchor.x + (dx - dy) * opts.kx,
+    y: anchor.y + (dx + dy) * opts.ky - k * opts.lift,
+  };
 }

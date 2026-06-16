@@ -6,7 +6,7 @@ import { useHistory } from '../useHistory.js';
 import { SCALE_PRESETS, ratioToScale, scaleToRatio, zoomAbout } from '../scale.js';
 import { convexHull, smoothHullPath, pinsOf, filterCss, IMAGE_FILTERS } from '../geometry.js';
 import { edgeGap, adjacencyScore, scoreBand } from '../adjacency.js';
-import { orderedLevels, levelRankMap, stackOffset } from '../floors.js';
+import { orderedLevels, levelRankMap, isoProject, ISO } from '../floors.js';
 import HelpPanel from './HelpPanel.jsx';
 
 // Logical design canvas — the world anchor for spawning, gravity and image
@@ -16,7 +16,6 @@ const W = 900;
 const H = 620;
 const PALETTE = ['#e8b04b', '#5b9dd9', '#4cc38a', '#c678dd', '#e5707a', '#56b6c2', '#d19a66', '#98c379', '#7aa2f7', '#f7768e'];
 const SAT_CANVAS = 768;
-const ZERO_OFF = { x: 0, y: 0 };
 
 // BubbleTab unmounts when you leave the Diagram tab, which would otherwise lose
 // every non-pinned bubble's position and let the sim re-scatter them on return.
@@ -1307,35 +1306,68 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   // ---- Floor view: all together / one level / stacked isometric ----------
   const levelOf = (s) => (s.level || '').trim();
   const stackMode = hasLevels && floorMode === 'stack';
-  const levelVisible = (s) => !hasLevels || floorMode === 'all' || stackMode || levelOf(s) === floorMode;
-  const offOf = (s) => (stackMode ? stackOffset(levelOf(s), levelRank) : ZERO_OFF);
-  // Floor "slabs" drawn behind each level's bubbles in stacked mode.
-  const floorPlates = stackMode
-    ? levels
-        .map((label) => {
-          let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, any = false;
-          for (const o of instances) {
-            if (levelOf(o.s) !== label) continue;
-            const n = nodes.get(o.key);
-            if (!n) continue;
-            const off = stackOffset(label, levelRank);
-            const r = radiusOf(o.s);
-            any = true;
-            minX = Math.min(minX, n.x + off.x - r);
-            maxX = Math.max(maxX, n.x + off.x + r);
-            minY = Math.min(minY, n.y + off.y - r);
-            maxY = Math.max(maxY, n.y + off.y + r);
-          }
-          if (!any) return null;
-          const pad = 30;
-          return { label, x: minX - pad, y: minY - pad, w: maxX - minX + 2 * pad, h: maxY - minY + 2 * pad };
-        })
-        .filter(Boolean)
-    : [];
-  // In stacked mode draw lower floors first so upper floors layer on top.
-  const renderInstances = stackMode
-    ? [...instances].sort((a, b) => (levelRank.get(levelOf(a.s)) ?? 0) - (levelRank.get(levelOf(b.s)) ?? 0))
-    : instances;
+  // In non-stack modes, levelVisible filters which storey is shown. The stacked
+  // view renders its own isometric scene below (stackScene), so the normal
+  // hull/link/bubble passes are skipped while it's active.
+  const levelVisible = (s) => !hasLevels || floorMode === 'all' || levelOf(s) === floorMode;
+  const rankOf = (s) => levelRank.get(levelOf(s)) ?? 0;
+
+  // Build the isometric stacked scene: a tilted, lifted slab per floor with its
+  // bubbles projected onto the plane, links on each floor and between floors.
+  function stackScene() {
+    const anchor = { x: W / 2, y: H / 2 };
+    const proj = (x, y, k) => isoProject({ x, y }, k, anchor);
+    // Projected centre + radius per instance (used by bubbles and links).
+    const posByKey = new Map();
+    for (const o of instances) {
+      const n = nodes.get(o.key);
+      if (!n) continue;
+      posByKey.set(o.key, { ...proj(n.x, n.y, rankOf(o.s)), r: radiusOf(o.s), o });
+    }
+    const closestProjPair = (sa, sb) => {
+      let best = null;
+      for (let i = 0; i < Math.max(1, sa.count || 1); i++) {
+        const a = posByKey.get(`${sa.id}:${i}`);
+        if (!a) continue;
+        for (let j = 0; j < Math.max(1, sb.count || 1); j++) {
+          const b = posByKey.get(`${sb.id}:${j}`);
+          if (!b) continue;
+          const d = Math.hypot(b.x - a.x, b.y - a.y);
+          if (!best || d < best.d) best = { a, b, d };
+        }
+      }
+      return best;
+    };
+
+    const slabs = []; // { k, label, top:[4 pts], sideR, sideL, content:[] }
+    for (const label of levels) {
+      const k = levelRank.get(label);
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, any = false;
+      for (const o of instances) {
+        if (levelOf(o.s) !== label) continue;
+        const n = nodes.get(o.key);
+        if (!n) continue;
+        const r = radiusOf(o.s) + 34;
+        any = true;
+        minX = Math.min(minX, n.x - r);
+        maxX = Math.max(maxX, n.x + r);
+        minY = Math.min(minY, n.y - r);
+        maxY = Math.max(maxY, n.y + r);
+      }
+      if (!any) continue;
+      // Slab top face: the four plan-rect corners projected onto this floor.
+      const TL = proj(minX, minY, k), TR = proj(maxX, minY, k), BR = proj(maxX, maxY, k), BL = proj(minX, maxY, k);
+      const TH = ISO.thickness;
+      const down = (p) => `${p.x},${p.y + TH}`;
+      // Front-facing side faces hang off the two edges meeting the near corner (BR).
+      const sideR = `${TR.x},${TR.y} ${BR.x},${BR.y} ${down(BR)} ${down(TR)}`;
+      const sideL = `${BL.x},${BL.y} ${BR.x},${BR.y} ${down(BR)} ${down(BL)}`;
+      slabs.push({ k, label, topPts: `${TL.x},${TL.y} ${TR.x},${TR.y} ${BR.x},${BR.y} ${BL.x},${BL.y}`, sideR, sideL, labelAt: TL });
+    }
+
+    return { anchor, proj, posByKey, closestProjPair, slabs };
+  }
+  const stack = stackMode ? stackScene() : null;
 
   function scaleLabelFor(S) {
     const ratio = scaleToRatio(S);
@@ -1666,10 +1698,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                   const g = keyFn(o.s);
                   if (g == null) continue;
                   if (!byG.has(g)) byG.set(g, []);
-                  const off = offOf(o.s);
                   const r = radiusOf(o.s) + hullPad;
                   for (let a = 0; a < Math.PI * 2; a += Math.PI / 4)
-                    byG.get(g).push({ x: n.x + off.x + Math.cos(a) * r, y: n.y + off.y + Math.sin(a) * r });
+                    byG.get(g).push({ x: n.x + Math.cos(a) * r, y: n.y + Math.sin(a) * r });
                 }
                 for (const [g, pts] of byG) {
                   const hull = convexHull(pts);
@@ -1692,13 +1723,61 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
               return out;
             })()}
 
-            {/* Stacked-mode floor slabs (drawn behind the links/bubbles). */}
-            {floorPlates.map((p) => (
-              <g key={`plate:${p.label}`} className="floor-plate-g">
-                <rect x={p.x} y={p.y} width={p.w} height={p.h} rx="14" className="floor-plate" />
-                <text x={p.x + 12} y={p.y + 22} className="floor-plate-label">{p.label}</text>
-              </g>
-            ))}
+            {/* Isometric stacked view: a tilted, lifted slab per floor with its
+                bubbles projected onto the plane. Drawn bottom floor → top so
+                higher slabs correctly occlude the floor below. */}
+            {stack &&
+              stack.slabs.map((slab) => {
+                const onFloor = instances.filter((o) => (levelRank.get(levelOf(o.s)) ?? 0) === slab.k);
+                const floorAdj = adjacencies.filter((l) => {
+                  const sa = byId.get(l.space_a), sb = byId.get(l.space_b);
+                  return sa && sb && rankOf(sa) === slab.k && rankOf(sb) === slab.k;
+                });
+                return (
+                  <g key={`slab:${slab.label}`}>
+                    <polygon points={slab.sideL} className="floor-slab-side" />
+                    <polygon points={slab.sideR} className="floor-slab-side front" />
+                    <polygon points={slab.topPts} className="floor-slab-top" />
+                    <text x={slab.labelAt.x} y={slab.labelAt.y - 8} className="floor-plate-label">{slab.label}</text>
+                    {floorAdj.map((l) => {
+                      const pair = stack.closestProjPair(byId.get(l.space_a), byId.get(l.space_b));
+                      if (!pair) return null;
+                      return <line key={l.id} x1={pair.a.x} y1={pair.a.y} x2={pair.b.x} y2={pair.b.y} className={`link ${l.strength}`} />;
+                    })}
+                    {onFloor.map((o) => {
+                      const p = stack.posByKey.get(o.key);
+                      if (!p) return null;
+                      const r = p.r;
+                      const box = shapeOf(o.s) === 'box';
+                      const side = r * Math.sqrt(Math.PI);
+                      const op = project.bubble_opacity ?? 0.32;
+                      return (
+                        <g key={o.key} transform={`translate(${p.x}, ${p.y})`} className="bubble stacked">
+                          <title>{o.s.name}{Math.max(1, o.s.count || 1) > 1 ? ` ${o.i + 1}` : ''} — {fmtArea(ea(o.s), units)} · {slab.label}</title>
+                          {box ? (
+                            <rect x={-side / 2} y={-side / 2} width={side} height={side} rx={Math.min(4, side / 8)} fill={colorOf(o.s)} fillOpacity={op} stroke={colorOf(o.s)} strokeWidth={1.5} />
+                          ) : (
+                            <circle r={r} fill={colorOf(o.s)} fillOpacity={op} stroke={colorOf(o.s)} strokeWidth={1.5} />
+                          )}
+                          <text textAnchor="middle" dy={r > 26 ? -2 : r > 13 ? 3 : r + 11} className="bubble-name" style={{ fontSize: Math.max(9, Math.min(14, r / 3.2)) }}>
+                            {o.s.name}{Math.max(1, o.s.count || 1) > 1 ? ` ${o.i + 1}` : ''}
+                          </text>
+                          {r > 26 && <text textAnchor="middle" dy={14} className="bubble-area">{fmtArea(ea(o.s), units)}</text>}
+                        </g>
+                      );
+                    })}
+                  </g>
+                );
+              })}
+            {/* Inter-floor links connect the planes, drawn above the slabs. */}
+            {stack &&
+              adjacencies.map((l) => {
+                const sa = byId.get(l.space_a), sb = byId.get(l.space_b);
+                if (!sa || !sb || rankOf(sa) === rankOf(sb)) return null;
+                const pair = stack.closestProjPair(sa, sb);
+                if (!pair) return null;
+                return <line key={`x:${l.id}`} x1={pair.a.x} y1={pair.a.y} x2={pair.b.x} y2={pair.b.y} className={`link ${l.strength} interfloor`} />;
+              })}
 
             {scalePoints &&
               scalePoints.map((p, i) => (
@@ -1711,35 +1790,34 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
               <line x1={scalePoints[0].x} y1={scalePoints[0].y} x2={scalePoints[1].x} y2={scalePoints[1].y} className="scale-line" />
             )}
 
-            {adjacencies.map((l) => {
-              const sa = byId.get(l.space_a);
-              const sb = byId.get(l.space_b);
-              if (!sa || !sb) return null;
-              if (!levelVisible(sa) || !levelVisible(sb)) return null;
-              const pair = closestPair(sa, sb);
-              if (!pair) return null;
-              const oa = offOf(sa);
-              const ob = offOf(sb);
-              return (
-                <g key={l.id} className="link-hit" onClick={() => onLinkClick(l)}>
-                  <line x1={pair.a.x + oa.x} y1={pair.a.y + oa.y} x2={pair.b.x + ob.x} y2={pair.b.y + ob.y} className="link-hitarea" />
-                  <line
-                    x1={pair.a.x + oa.x}
-                    y1={pair.a.y + oa.y}
-                    x2={pair.b.x + ob.x}
-                    y2={pair.b.y + ob.y}
-                    className={`link ${l.strength}${highlightGaps && unmetLinkIds.has(l.id) ? ' unmet' : ''}`}
-                  />
-                </g>
-              );
-            })}
+            {!stackMode &&
+              adjacencies.map((l) => {
+                const sa = byId.get(l.space_a);
+                const sb = byId.get(l.space_b);
+                if (!sa || !sb) return null;
+                if (!levelVisible(sa) || !levelVisible(sb)) return null;
+                const pair = closestPair(sa, sb);
+                if (!pair) return null;
+                return (
+                  <g key={l.id} className="link-hit" onClick={() => onLinkClick(l)}>
+                    <line x1={pair.a.x} y1={pair.a.y} x2={pair.b.x} y2={pair.b.y} className="link-hitarea" />
+                    <line
+                      x1={pair.a.x}
+                      y1={pair.a.y}
+                      x2={pair.b.x}
+                      y2={pair.b.y}
+                      className={`link ${l.strength}${highlightGaps && unmetLinkIds.has(l.id) ? ' unmet' : ''}`}
+                    />
+                  </g>
+                );
+              })}
 
-            {renderInstances.map((o) => {
+            {!stackMode &&
+              instances.map((o) => {
               const n = nodes.get(o.key);
               if (!n) return null;
               const { s, i } = o;
               if (!levelVisible(s)) return null;
-              const off = offOf(s);
               const r = radiusOf(s);
               const isSel = selected === s.id && (Math.max(1, s.count || 1) === 1 || selectedInst === i);
               const pinned = !!instPin(s, i);
@@ -1759,9 +1837,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                   key={o.key}
                   data-space-id={s.id}
                   data-instance={i}
-                  className={`bubble ${isSel ? 'selected' : ''} ${inMulti ? 'multi' : ''} ${stackMode ? 'stacked' : ''}`}
-                  transform={`translate(${n.x + off.x}, ${n.y + off.y})`}
-                  onPointerDown={stackMode ? undefined : (e) => onBubbleDown(e, o)}
+                  className={`bubble ${isSel ? 'selected' : ''} ${inMulti ? 'multi' : ''}`}
+                  transform={`translate(${n.x}, ${n.y})`}
+                  onPointerDown={(e) => onBubbleDown(e, o)}
                   onPointerEnter={() => (hoverRef.current = { space: s, idx: i })}
                   onPointerLeave={() => (hoverRef.current?.space.id === s.id && hoverRef.current?.idx === i ? (hoverRef.current = null) : null)}
                 >
