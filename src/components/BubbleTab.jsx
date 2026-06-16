@@ -76,7 +76,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const [showMatrix, setShowMatrix] = useState(false);
   const [highlightGaps, setHighlightGaps] = useState(false); // flag unmet adjacencies on the diagram
   const [floorView, setFloorView] = useState('all'); // 'all' | <level label> | 'offset' | 'overlaid'
-  const [stackGap, setStackGap] = useState(90); // vertical gap between stacked floors (px)
+  const [floorGap, setFloorGap] = useState(0.6); // floor spacing as a fraction of plate height
   const [railW, setRailW] = useState(() => Number(localStorage.getItem('brieftrack.railw')) || 340);
   const [areaMode, setAreaMode] = useState('category'); // Areas panel grouping
   const [collapsed, setCollapsed] = useState(() => new Set()); // collapsed Areas groups
@@ -1371,9 +1371,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       [foot.x, foot.y], [foot.x + foot.w, foot.y], [foot.x + foot.w, foot.y + foot.h], [foot.x, foot.y + foot.h],
     ].map(([x, y]) => isoXY(x, y));
     const projH = Math.max(...footCorners.map((c) => c.y)) - Math.min(...footCorners.map((c) => c.y));
-    // Lift = the projected plate height (so floors don't overlap) plus the
-    // user-controlled gap. Overlaid keeps everything on one plane.
-    const lift = floorMode === 'offset' ? projH + stackGap : 0;
+    // Lift between floors as a fraction of the plate height: < 1 overlaps the
+    // floors into a tight stack, > 1 separates them. Overlaid keeps one plane.
+    const lift = floorMode === 'offset' ? Math.max(24, projH * floorGap) : 0;
     const recenter = ((levels.length - 1) * lift) / 2;
     const liftYOf = (k) => recenter - k * lift;
 
@@ -1594,9 +1594,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
               </label>
             )}
             {hasLevels && floorMode === 'offset' && (
-              <label className="hull-size" title="Gap between stacked floors">
+              <label className="hull-size" title="Spacing between stacked floors">
                 ⇕
-                <input type="range" min="0" max="500" step="10" value={stackGap} onChange={(e) => setStackGap(Number(e.target.value))} />
+                <input type="range" min="0.2" max="1.3" step="0.05" value={floorGap} onChange={(e) => setFloorGap(Number(e.target.value))} />
               </label>
             )}
             {showScore && (
