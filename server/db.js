@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const dataDir = path.join(__dirname, '..', 'data');
+// Tests (and any embedding shell) can point the DB at an isolated directory.
+const dataDir = process.env.BRIEFTRACK_DB_DIR || path.join(__dirname, '..', 'data');
 fs.mkdirSync(dataDir, { recursive: true });
 
 export const db = new DatabaseSync(path.join(dataDir, 'brieftrack.db'));
@@ -64,6 +65,24 @@ db.exec(`
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
   );
+
+  -- Background image layers (multiple per project). Each is calibrated on its
+  -- own via mpp (metres per natural pixel) and shares the diagram scale.
+  CREATE TABLE IF NOT EXISTS images (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    kind TEXT DEFAULT 'custom',        -- 'custom' | 'satellite'
+    name TEXT DEFAULT '',
+    image TEXT NOT NULL,               -- data URL
+    mpp REAL,                          -- metres per natural pixel (null until calibrated)
+    opacity REAL DEFAULT 0.6,
+    visible INTEGER DEFAULT 1,
+    x REAL DEFAULT 0,
+    y REAL DEFAULT 0,
+    rot REAL DEFAULT 0,
+    sort_order INTEGER DEFAULT 0,
+    attribution TEXT
+  );
 `);
 
 // Additive migrations for databases created before these columns existed.
@@ -99,6 +118,31 @@ ensureColumn('projects', 'sat_visible', 'sat_visible INTEGER DEFAULT 1');
 ensureColumn('projects', 'sat_x', 'sat_x REAL DEFAULT 0');
 ensureColumn('projects', 'sat_y', 'sat_y REAL DEFAULT 0');
 ensureColumn('projects', 'north_deg', 'north_deg REAL DEFAULT 0'); // project north, clockwise from up
+ensureColumn('projects', 'category_colors', 'category_colors TEXT'); // JSON map: category/building label → custom colour
+ensureColumn('projects', 'images_migrated', 'images_migrated INTEGER DEFAULT 0'); // legacy bg_/sat_ → images rows done
+
+// One-time migration: fold the legacy single satellite + custom layers into the
+// new multi-image `images` table so existing projects keep their backgrounds.
+function migrateImages() {
+  const projs = db.prepare('SELECT * FROM projects WHERE images_migrated = 0').all();
+  if (projs.length === 0) return;
+  const ins = db.prepare(
+    `INSERT INTO images (project_id, kind, name, image, mpp, opacity, visible, x, y, rot, sort_order, attribution)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+  const done = db.prepare('UPDATE projects SET images_migrated = 1 WHERE id = ?');
+  for (const p of projs) {
+    let order = 0;
+    if (p.sat_image) {
+      ins.run(p.id, 'satellite', 'Satellite', p.sat_image, p.sat_mpp ?? null, p.sat_opacity ?? 0.55, p.sat_visible == null ? 1 : p.sat_visible, p.sat_x || 0, p.sat_y || 0, p.sat_rot || 0, order++, p.sat_attribution ?? null);
+    }
+    if (p.bg_image) {
+      ins.run(p.id, 'custom', 'Imported image', p.bg_image, p.bg_mpp ?? null, p.bg_opacity ?? 0.5, p.bg_visible == null ? 1 : p.bg_visible, p.bg_x || 0, p.bg_y || 0, p.bg_rot || 0, order++, p.bg_attribution ?? null);
+    }
+    done.run(p.id);
+  }
+}
+migrateImages();
 ensureColumn('projects', 'bg_rot', 'bg_rot REAL DEFAULT 0'); // custom image rotation, degrees CW
 ensureColumn('projects', 'sat_rot', 'sat_rot REAL DEFAULT 0'); // satellite rotation, degrees CW
 
@@ -106,6 +150,19 @@ ensureColumn('projects', 'sat_rot', 'sat_rot REAL DEFAULT 0'); // satellite rota
 ensureColumn('spaces', 'parent_id', 'parent_id INTEGER');
 ensureColumn('spaces', 'kind', "kind TEXT DEFAULT 'space'"); // 'space' | 'building' | 'group'
 ensureColumn('spaces', 'shape', "shape TEXT DEFAULT 'bubble'"); // 'bubble' | 'box'
+ensureColumn('spaces', 'image', 'image TEXT'); // per-space reference image (data URL)
+// How a space relates to its children: 'group' = pure grouping container (sums
+// children, no own area, default/legacy), 'within' = a real space whose children
+// sit inside its own area (children excluded from totals), 'attached' = a real
+// space whose children are separate areas that move with it on the diagram.
+ensureColumn('spaces', 'child_mode', "child_mode TEXT DEFAULT 'group'");
+ensureColumn('spaces', 'level', "level TEXT DEFAULT ''"); // building level / storey label
+
+// Per-image diagrammatic filter preset (''|grayscale|blueprint|faded|contrast|ink).
+ensureColumn('images', 'filter', "filter TEXT DEFAULT ''");
+
+// Bubble rendering style: 'solid' (default) | 'outline' | 'sketch'.
+ensureColumn('projects', 'bubble_style', "bubble_style TEXT DEFAULT 'solid'");
 
 const DEFAULT_SETTINGS = {
   default_units: 'm2',
@@ -126,61 +183,70 @@ export function seedIfEmpty() {
       `INSERT INTO projects (name, client, stage, units, grossing_target, tolerance)
        VALUES (?, ?, ?, ?, ?, ?)`
     )
-    .run('Riverside Community Library', 'City of Riverside', 'Design Development', 'm2', 0.72, 0.05);
+    .run('Greenfield Community Library', 'Town of Greenfield', 'Design Development', 'm2', 0.72, 0.05);
   const pid = proj.lastInsertRowid;
+  // A standard 1:500 drawing scale (metres per diagram unit = ratio × 0.0002646).
+  db.prepare('UPDATE projects SET display_scale = ? WHERE id = ?').run(500 * 0.0002646, pid);
 
   const insertSpace = db.prepare(
-    `INSERT INTO spaces (project_id, department, name, count, target_area, sort_order, parent_id, kind)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO spaces (project_id, department, name, count, target_area, sort_order, parent_id, kind, level)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
+  let order = 0;
+  const addSpace = (department, name, count, area, parentId, kind, level) =>
+    Number(insertSpace.run(pid, department, name, count, area, order++, parentId, kind, level).lastInsertRowid);
 
-  // One building containing the whole program, so hierarchy is demonstrable.
-  const buildingId = Number(
-    insertSpace.run(pid, 'Building', 'Main Library Building', 1, 0, 0, null, 'building').lastInsertRowid
-  );
+  // Two buildings, so the brief hierarchy and the diagram's building rollups,
+  // hulls and Areas "by building / level" mode all have something to show.
+  const mainId = addSpace('Building', 'Main Library', 1, 0, null, 'building', '');
+  const pavilionId = addSpace('Building', 'Community Pavilion', 1, 0, null, 'building', '');
 
+  // [department, name, count, targetEach, building, level]
   const brief = [
-    ['Public', 'Entrance Lobby & Foyer', 1, 120],
-    ['Public', 'Adult Collection Hall', 1, 450],
-    ['Public', "Children's Library", 1, 220],
-    ['Public', 'Teen Zone', 1, 90],
-    ['Public', 'Reading Room', 1, 160],
-    ['Community', 'Multipurpose Hall', 1, 200],
-    ['Community', 'Meeting Room', 3, 30],
-    ['Community', 'Maker Space', 1, 110],
-    ['Community', 'Café', 1, 80],
-    ['Staff', 'Open Office', 1, 95],
-    ['Staff', 'Workroom / Sorting', 1, 70],
-    ['Staff', 'Staff Lounge', 1, 40],
-    ['Support', 'Book Storage', 1, 85],
-    ['Support', 'IT / Server Room', 1, 20],
-    ['Support', 'Loading & Receiving', 1, 45],
+    ['Public', 'Entrance & Foyer', 1, 110, mainId, 'Ground Floor'],
+    ['Public', 'Welcome / Returns Desk', 1, 35, mainId, 'Ground Floor'],
+    ['Public', "Children's Library", 1, 200, mainId, 'Ground Floor'],
+    ['Public', 'Teen Zone', 1, 85, mainId, 'Ground Floor'],
+    ['Public', 'Café', 1, 75, mainId, 'Ground Floor'],
+    ['Staff', 'Open Office', 1, 90, mainId, 'Ground Floor'],
+    ['Staff', 'Workroom / Sorting', 1, 65, mainId, 'Ground Floor'],
+    ['Staff', 'Staff Lounge', 1, 38, mainId, 'Ground Floor'],
+    ['Support', 'Book Storage', 1, 80, mainId, 'Ground Floor'],
+    ['Support', 'IT / Server', 1, 18, mainId, 'Ground Floor'],
+    ['Support', 'Loading & Receiving', 1, 42, mainId, 'Ground Floor'],
+    ['Public', 'Adult Collection', 1, 380, mainId, 'First Floor'],
+    ['Public', 'Quiet Reading Room', 1, 140, mainId, 'First Floor'],
+    ['Community', 'Multipurpose Hall', 1, 180, pavilionId, 'Ground Floor'],
+    ['Community', 'Meeting Rooms', 3, 28, pavilionId, 'Ground Floor'],
+    ['Community', 'Maker Space', 1, 100, pavilionId, 'Ground Floor'],
   ];
-  const spaceIds = brief.map(([dept, name, cnt, area], i) => {
-    const r = insertSpace.run(pid, dept, name, cnt, area, i + 1, buildingId, 'space');
-    return Number(r.lastInsertRowid);
-  });
+  const spaceIds = brief.map(([dept, name, cnt, area, parentId, level]) =>
+    addSpace(dept, name, cnt, area, parentId, 'space', level)
+  );
 
-  // Adjacency relationships for the bubble diagram (indices into the brief above).
+  // Adjacencies for the bubble diagram (indices into `brief`). A satisfiable
+  // graph — no room carries more than two required links — so a settled layout
+  // can score well.
   const insertAdj = db.prepare(
     `INSERT INTO adjacencies (project_id, space_a, space_b, strength) VALUES (?, ?, ?, ?)`
   );
   const adjacencies = [
-    [0, 1, 'required'], // Lobby — Adult Collection
-    [0, 2, 'required'], // Lobby — Children's
-    [0, 5, 'required'], // Lobby — Multipurpose Hall
-    [0, 8, 'desired'], // Lobby — Café
-    [1, 4, 'required'], // Adult Collection — Reading Room
-    [1, 3, 'desired'], // Adult Collection — Teen Zone
+    [0, 1, 'required'], // Foyer — Welcome Desk
+    [0, 2, 'required'], // Foyer — Children's Library
+    [5, 6, 'required'], // Open Office — Workroom
+    [6, 8, 'required'], // Workroom — Book Storage
+    [8, 10, 'required'], // Book Storage — Loading
+    [11, 12, 'required'], // Adult Collection — Quiet Reading
+    [0, 4, 'desired'], // Foyer — Café
+    [0, 11, 'desired'], // Foyer — Adult Collection (upstairs)
+    [0, 13, 'desired'], // Foyer — Multipurpose Hall (pavilion)
     [2, 3, 'desired'], // Children's — Teen Zone
-    [3, 7, 'desired'], // Teen Zone — Maker Space
-    [5, 6, 'desired'], // Multipurpose — Meeting Rooms
-    [5, 8, 'desired'], // Multipurpose — Café
-    [9, 1, 'desired'], // Open Office — Adult Collection
-    [9, 10, 'required'], // Open Office — Workroom
-    [10, 12, 'required'], // Workroom — Book Storage
-    [12, 14, 'required'], // Book Storage — Loading
-    [13, 9, 'desired'], // IT — Open Office
+    [3, 15, 'desired'], // Teen Zone — Maker Space
+    [13, 14, 'desired'], // Multipurpose — Meeting Rooms
+    [13, 15, 'desired'], // Multipurpose — Maker Space
+    [13, 4, 'desired'], // Multipurpose — Café
+    [5, 7, 'desired'], // Open Office — Staff Lounge
+    [9, 5, 'desired'], // IT / Server — Open Office
   ];
   for (const [a, b, strength] of adjacencies) {
     const [lo, hi] = [spaceIds[a], spaceIds[b]].sort((x, y) => x - y);
@@ -194,25 +260,26 @@ export function seedIfEmpty() {
     `INSERT INTO snapshot_areas (snapshot_id, space_id, area) VALUES (?, ?, ?)`
   );
 
-  // Three milestones showing typical drift: concept generous, SD trimmed, DD drifting over on circulation-heavy spaces.
+  // Three milestones showing typical drift: concept generous, SD trimmed, DD
+  // with a few spaces drifting outside tolerance. Areas align to `brief` order.
   const milestones = [
     {
       label: 'Concept Design',
-      taken_at: '2026-02-10',
-      gross: 2580,
-      areas: [128, 470, 235, 95, 170, 210, 96, 118, 86, 100, 72, 42, 88, 20, 48],
+      taken_at: '2026-02-12',
+      gross: 2480,
+      areas: [116, 36, 208, 88, 78, 93, 67, 39, 83, 19, 44, 392, 146, 186, 86, 104],
     },
     {
       label: 'Schematic Design',
-      taken_at: '2026-04-02',
-      gross: 2495,
-      areas: [122, 455, 224, 88, 158, 202, 90, 112, 81, 96, 70, 39, 84, 19, 46],
+      taken_at: '2026-04-08',
+      gross: 2410,
+      areas: [112, 35, 201, 84, 75, 90, 65, 38, 80, 18, 42, 378, 140, 181, 84, 100],
     },
     {
       label: 'Design Development',
-      taken_at: '2026-06-01',
-      gross: 2540,
-      areas: [115, 438, 216, 82, 148, 196, 84, 104, 78, 92, 68, 36, 80, 21, 44],
+      taken_at: '2026-06-05',
+      gross: 2440,
+      areas: [108, 34, 196, 80, 72, 88, 63, 36, 78, 19, 46, 372, 150, 178, 82, 96],
     },
   ];
 

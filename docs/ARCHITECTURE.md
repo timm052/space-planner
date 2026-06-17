@@ -31,12 +31,12 @@ The whole thing is **single-user and local** by design (see §2).
 | Choice | Why |
 | --- | --- |
 | **React 18 + Vite** | Fast SPA dev; no framework lock-in. The diagram is the complex part and benefits from React's declarative SVG rendering plus imperative refs for the animation loop. |
-| **Express REST API** | Tiny, boring, well-understood. The frontend/back split keeps the door open for multi-user later without rewriting the client. |
+| **Express REST API** | Tiny, boring, well-understood. The clean frontend/back split keeps the client unchanged when the backend is later embedded in a desktop shell (Tauri/Electron). |
 | **`node:sqlite` (built-in)** | Zero native compilation, zero external DB. Requires Node ≥ 22.5. A single-file DB matches the single-user, local nature. |
 | **No ORM** | Hand-written prepared statements in `server/index.js`. The schema is small; an ORM would be overhead. |
 | **No chart library** | The drift chart and the entire bubble diagram are hand-rolled SVG. We need pixel/coordinate control (true-scale geometry, custom force layout) that chart libs fight against. |
 | **`jspdf` (client-side)** | The PDF is drawn from the same diagram-unit coordinates the screen uses, so "what you see is what prints" and scale accuracy is exact. Drawing primitives (not a canvas screenshot) keeps it crisp and vector. |
-| **Images as base64 data URLs in the project row** | Simplest possible storage for a single-user app — no blob store, no file paths, survives DB copy. **This is the main thing to change for multi-user/scale** (see ROADMAP). |
+| **Images as base64 data URLs in the project row** | Simplest possible storage for a single-user, local app — no blob store, no file paths, survives DB copy. For very large image sets, on-disk files alongside the DB would be better (a natural fit once packaged as a desktop app; see ROADMAP). |
 | **Server-side proxies for geocode + tiles** | Keeps the browser canvas same-origin (untainted, so `toDataURL` works) and needs no API keys. |
 
 ---
@@ -305,8 +305,14 @@ a `.page` wrapper, the diagram renders full-bleed (`.project-content.full`).
 
 ## 9. Notes for AI agents
 
-- **Always run `npm run build` after edits** — it's the fastest correctness
-  gate. Then verify scale/alignment behaviour in the running app.
+- **Run `npm test` and `npm run build` after edits** — the fastest correctness
+  gates. `npm test` (Node's built-in runner via `tsx` for JSX) covers the pure
+  helpers in `compute.js`/`scale.js`, the full REST surface against an isolated
+  temp DB (`BRIEFTRACK_DB_DIR`), and the prop-driven React views rendered to
+  static markup (`react-dom/server`). Add a case there when you change domain
+  math, an endpoint, or a view. Note: `tsx` transforms JSX with the *classic*
+  runtime, so component tests set `globalThis.React` before rendering. Then
+  verify scale/alignment in the running app.
 - The API server does **not** hot-reload; **restart it** after touching
   `server/*` (the preview launcher restart re-runs migrations).
 - `compute.js` changes ripple into Dashboard, CSV, and the diagram — verify

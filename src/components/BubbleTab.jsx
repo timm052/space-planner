@@ -2,6 +2,11 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api.js';
 import { fmtArea, areaToM2, distToMeters, distUnit, leafSpaces, rootContainer } from '../compute.js';
 import { exportDiagramPdf } from '../pdfExport.js';
+import { useHistory } from '../useHistory.js';
+import { SCALE_PRESETS, ratioToScale, scaleToRatio, zoomAbout } from '../scale.js';
+import { convexHull, smoothHullPath, pinsOf, filterCss, IMAGE_FILTERS } from '../geometry.js';
+import { edgeGap, adjacencyScore, scoreBand } from '../adjacency.js';
+import { orderedLevels, levelRankMap, ISO } from '../floors.js';
 import HelpPanel from './HelpPanel.jsx';
 
 // Logical design canvas — the world anchor for spawning, gravity and image
@@ -12,29 +17,14 @@ const H = 620;
 const PALETTE = ['#e8b04b', '#5b9dd9', '#4cc38a', '#c678dd', '#e5707a', '#56b6c2', '#d19a66', '#98c379', '#7aa2f7', '#f7768e'];
 const SAT_CANVAS = 768;
 
-const M_PER_UNIT_PER_RATIO = 0.0002646;
-const SCALE_PRESETS = {
-  m2: [[100, '1:100'], [200, '1:200'], [500, '1:500'], [1000, '1:1000'], [2000, '1:2000']],
-  ft2: [[96, '1/8″=1′'], [192, '1/16″=1′'], [240, '1″=20′'], [600, '1″=50′'], [1200, '1″=100′']],
-};
-const ratioToScale = (ratio) => ratio * M_PER_UNIT_PER_RATIO;
-const scaleToRatio = (scale) => Math.round(scale / M_PER_UNIT_PER_RATIO);
+// BubbleTab unmounts when you leave the Diagram tab, which would otherwise lose
+// every non-pinned bubble's position and let the sim re-scatter them on return.
+// This module-level cache keeps the last layout per project for the session.
+const layoutCache = new Map(); // projectId → Map(instanceKey → {x,y})
 
-function pinsOf(s) {
-  if (s.pin_json) {
-    try {
-      return JSON.parse(s.pin_json) || {};
-    } catch {
-      return {};
-    }
-  }
-  if (s.pin_x != null) return { 0: { x: s.pin_x, y: s.pin_y } };
-  return {};
-}
-
-// Rotate an image data URL by `deg` (clockwise) onto a canvas sized to its
-// rotated bounding box — used to bake rotation into the PDF export.
-function bakeRotation(dataUrl, deg) {
+// Bake rotation (clockwise deg) and/or a CSS filter into a data URL on a canvas
+// sized to the rotated bounding box — keeps the PDF export scale-accurate.
+function bakeImage(dataUrl, deg, filter) {
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
@@ -47,6 +37,7 @@ function bakeRotation(dataUrl, deg) {
       c.width = cw;
       c.height = ch;
       const ctx = c.getContext('2d');
+      if (filter && filter !== 'none') ctx.filter = filter;
       ctx.translate(cw / 2, ch / 2);
       ctx.rotate(rad);
       ctx.drawImage(img, -w / 2, -h / 2);
@@ -57,15 +48,16 @@ function bakeRotation(dataUrl, deg) {
   });
 }
 
-export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
+export default function BubbleTab({ project, spaces, adjacencies, images = [], onChanged }) {
   const [selected, setSelected] = useState(null);
   const [selectedInst, setSelectedInst] = useState(0); // which instance of the selected space
   const [, setTick] = useState(0);
   const [error, setError] = useState(null);
   const [scalePoints, setScalePoints] = useState(null);
   const [scaleDistance, setScaleDistance] = useState('');
-  const [calibrateLayer, setCalibrateLayer] = useState(null);
-  const [moveLayer, setMoveLayer] = useState(null);
+  const [calibrateLayer, setCalibrateLayer] = useState(null); // image id being calibrated
+  const [moveLayer, setMoveLayer] = useState(null); // image id being moved
+  const [rotateLayer, setRotateLayer] = useState(null); // image id being rotated by mouse
   const [panel, setPanel] = useState(null); // 'layers' | 'sat' | null
   const [satQuery, setSatQuery] = useState('');
   const [satZoom, setSatZoom] = useState(18);
@@ -75,8 +67,22 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
   const [colorBy, setColorBy] = useState('department');
   const [drafts, setDrafts] = useState({});
   const [panMode, setPanMode] = useState(false);
+  const [multi, setMulti] = useState(() => new Set()); // selected instance keys for batch ops
+  const [catDraft, setCatDraft] = useState(''); // batch category/department assignment input
+  const [localColors, setLocalColors] = useState({}); // optimistic category colour overrides
+  const [marquee, setMarquee] = useState(null); // { x0,y0,x1,y1 } in svg coords while selecting
+  const [hulls, setHulls] = useState(() => localStorage.getItem('brieftrack.hulls') === '1');
+  const [hullPad, setHullPad] = useState(() => Number(localStorage.getItem('brieftrack.hullpad')) || 26);
+  const [showMatrix, setShowMatrix] = useState(false);
+  const [highlightGaps, setHighlightGaps] = useState(false); // flag unmet adjacencies on the diagram
+  const [floorView, setFloorView] = useState('all'); // 'all' | <level label> | 'offset' | 'overlaid'
+  const [floorGap, setFloorGap] = useState(0.6); // floor spacing as a fraction of plate height
+  const [stackImages, setStackImages] = useState(true); // show warped site images in the stacked view
+  const [railW, setRailW] = useState(() => Number(localStorage.getItem('brieftrack.railw')) || 340);
+  const [areaMode, setAreaMode] = useState('category'); // Areas panel grouping
+  const [collapsed, setCollapsed] = useState(() => new Set()); // collapsed Areas groups
   const [view, setViewState] = useState({ x: project.view_x || 0, y: project.view_y || 0 });
-  const [dims, setDims] = useState({ bg: null, sat: null });
+  const [dims, setDims] = useState({}); // image id → { w, h } natural pixel size
   const [vb, setVb] = useState({ w: W, h: H }); // visible viewBox size = container pixels
 
   const viewRef = useRef(view);
@@ -86,10 +92,13 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
   };
   const draftTimers = useRef(new Map());
   const nodesRef = useRef(new Map());
-  const alphaRef = useRef(1);
+  // Start idle if we have a cached layout to restore (avoids a re-scatter on
+  // tab return); otherwise energise so the first layout settles.
+  const alphaRef = useRef(layoutCache.has(project.id) ? 0 : 1);
   const dragRef = useRef(null);
   const panRef = useRef(null);
   const layerMoveRef = useRef(null);
+  const rotateRef = useRef(null); // { id, startAngle, startRot } while rotating an image by mouse
   const svgRef = useRef(null);
   const stageRef = useRef(null);
   const lastClickRef = useRef({ key: null, t: 0 });
@@ -98,97 +107,42 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
   const debouncers = useRef({});
   const migratedRef = useRef(false);
   const hoverRef = useRef(null); // { space, idx } currently under the cursor
+  const marqueeRef = useRef(null); // { sx, sy, additive } while drag-selecting
+  const adjRef = useRef(adjacencies); // latest adjacencies, for history closures
+  adjRef.current = adjacencies;
+
+  const history = useHistory();
+  // Reset history + optimistic colours when switching projects.
+  useEffect(() => {
+    history.clear();
+    setLocalColors({});
+  }, [project.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const units = project.units;
   const simEnabled = !!project.sim_enabled;
 
-  // ---------- image layers ----------
-  const layers = useMemo(
-    () => ({
-      sat: {
-        kind: 'sat',
-        image: project.sat_image,
-        mpp: project.sat_mpp,
-        opacity: project.sat_opacity ?? 0.55,
-        visible: project.sat_visible == null ? 1 : project.sat_visible,
-        x: project.sat_x || 0,
-        y: project.sat_y || 0,
-        rot: project.sat_rot || 0,
-        attribution: project.sat_attribution,
-      },
-      bg: {
-        kind: 'bg',
-        image: project.bg_image,
-        mpp: project.bg_mpp,
-        opacity: project.bg_opacity ?? 0.5,
-        visible: project.bg_visible == null ? 1 : project.bg_visible,
-        x: project.bg_x || 0,
-        y: project.bg_y || 0,
-        rot: project.bg_rot || 0,
-        attribution: project.bg_attribution,
-      },
-    }),
-    [project]
-  );
+  // ---------- image layers (multiple, ordered bottom→top) ----------
+  // Copy so optimistic move/rotate/opacity edits can mutate in place between
+  // refetches (the `images` prop is stable until onChanged re-fetches).
+  const imgLayers = useMemo(() => (images || []).map((im) => ({ ...im })), [images]);
+  const imgById = useMemo(() => new Map(imgLayers.map((im) => [im.id, im])), [imgLayers]);
 
-  const primary = layers.sat.image && layers.sat.visible ? 'sat' : layers.bg.image && layers.bg.visible ? 'bg' : null;
-  const primaryDims = primary ? dims[primary] : null;
-  const fitScale =
-    primary && primaryDims && layers[primary].mpp > 0 ? (primaryDims.w * layers[primary].mpp) / W : null;
+  // Scale auto-fit uses the first visible, calibrated image.
+  const primaryImg = imgLayers.find((im) => im.visible && im.mpp > 0 && dims[im.id]);
+  const fitScale = primaryImg ? (dims[primaryImg.id].w * primaryImg.mpp) / W : null;
   const displayScale = project.display_scale > 0 ? project.display_scale : null;
   const effScale = displayScale ?? fitScale;
 
-  // ---------- legacy single-layer → dual-layer migration (once) ----------
+  // Measure natural image sizes (once per image).
   useEffect(() => {
-    if (migratedRef.current) return;
-    if (project.bg_scale > 0 && project.bg_mpp == null && project.sat_mpp == null && project.bg_image) {
-      migratedRef.current = true;
+    for (const im of imgLayers) {
+      if (dims[im.id]) continue;
       const img = new Image();
-      img.onload = async () => {
-        const realW = project.bg_scale * W;
-        const mpp = realW / img.naturalWidth;
-        const isSat = /esri|imagery/i.test(project.bg_attribution || '');
-        try {
-          if (isSat) {
-            await api.updateProject(project.id, {
-              sat_image: project.bg_image,
-              sat_mpp: mpp,
-              sat_attribution: project.bg_attribution,
-              sat_opacity: project.bg_opacity ?? 0.55,
-              sat_visible: 1,
-              bg_image: null,
-              bg_scale: null,
-              bg_attribution: null,
-            });
-          } else {
-            await api.updateProject(project.id, { bg_mpp: mpp, bg_scale: null });
-          }
-          onChanged();
-        } catch {
-          /* non-fatal */
-        }
-      };
-      img.src = project.bg_image;
-    } else {
-      migratedRef.current = true;
+      img.onload = () => setDims((d) => ({ ...d, [im.id]: { w: img.naturalWidth, h: img.naturalHeight } }));
+      img.src = im.image;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project.id]);
-
-  // Measure natural image sizes.
-  useEffect(() => {
-    for (const kind of ['bg', 'sat']) {
-      const src = layers[kind].image;
-      if (!src) {
-        setDims((d) => (d[kind] ? { ...d, [kind]: null } : d));
-        continue;
-      }
-      const img = new Image();
-      img.onload = () => setDims((d) => ({ ...d, [kind]: { w: img.naturalWidth, h: img.naturalHeight } }));
-      img.src = src;
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [layers.bg.image, layers.sat.image]);
+  }, [imgLayers]);
 
   // Track the canvas size so the diagram fills the available space.
   useEffect(() => {
@@ -204,17 +158,16 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
     return () => ro.disconnect();
   }, []);
 
-  // Placement rectangle (in diagram units) for a layer.
-  function layerRect(kind) {
-    const l = layers[kind];
-    const nd = dims[kind];
-    if (!l.image || !nd) return null;
+  // Placement rectangle (in diagram units) for an image layer.
+  function layerRect(im) {
+    const nd = im && dims[im.id];
+    if (!im || !nd) return null;
     const aspect = nd.h / nd.w;
-    const wU = l.mpp > 0 && effScale ? (nd.w * l.mpp) / effScale : W;
+    const wU = im.mpp > 0 && effScale ? (nd.w * im.mpp) / effScale : W;
     const hU = wU * aspect;
-    const cx = W / 2 + l.x;
-    const cy = H / 2 + l.y;
-    return { x: cx - wU / 2, y: cy - hU / 2, w: wU, h: hU, cx, cy, rot: l.rot || 0, opacity: l.opacity, dataUrl: l.image };
+    const cx = W / 2 + (im.x || 0);
+    const cy = H / 2 + (im.y || 0);
+    return { x: cx - wU / 2, y: cy - hU / 2, w: wU, h: hU, cx, cy, rot: im.rot || 0, opacity: im.opacity, dataUrl: im.image };
   }
 
   // ---------- spaces / instances (leaves only) ----------
@@ -230,7 +183,41 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
     return s.department || 'General';
   };
   const groups = [...new Set(leaves.map(groupKey))];
-  const colorOf = (s) => PALETTE[groups.indexOf(groupKey(s)) % PALETTE.length];
+  // All department names (the categories), regardless of the current colour mode.
+  const departments = [...new Set(leaves.map((s) => s.department || 'General'))];
+
+  // Custom category/building colours: persisted JSON map merged with optimistic edits.
+  const savedColors = useMemo(() => {
+    try {
+      return JSON.parse(project.category_colors || '{}') || {};
+    } catch {
+      return {};
+    }
+  }, [project.category_colors]);
+  const effColors = { ...savedColors, ...localColors };
+  const colorForLabel = (label) => {
+    if (effColors[label]) return effColors[label];
+    const i = groups.indexOf(label);
+    if (i >= 0) return PALETTE[i % PALETTE.length];
+    // Stable fallback for labels outside the current colour grouping (e.g. a
+    // building name while colouring by category).
+    let h = 0;
+    for (let k = 0; k < label.length; k++) h = (h * 31 + label.charCodeAt(k)) | 0;
+    return PALETTE[Math.abs(h) % PALETTE.length];
+  };
+  const colorOf = (s) => colorForLabel(groupKey(s));
+
+  function setCategoryColor(label, color) {
+    setLocalColors((m) => {
+      const next = { ...m, [label]: color };
+      clearTimeout(debouncers.current.catcolor);
+      debouncers.current.catcolor = setTimeout(
+        () => saveProject({ category_colors: JSON.stringify({ ...savedColors, ...next }) }, { silent: true }),
+        250
+      );
+      return next;
+    });
+  }
 
   const instances = useMemo(
     () =>
@@ -239,6 +226,17 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
       ),
     [leaves]
   );
+
+  // Storey labels present in the program, ground → up. Drives the floor switcher.
+  const levels = useMemo(() => orderedLevels(leaves), [leaves]);
+  const levelRank = useMemo(() => levelRankMap(levels), [levels]);
+  const hasLevels = levels.length >= 2;
+  // A previously-selected level may vanish (e.g. project change); fall back to all.
+  const floorMode =
+    floorView === 'offset' || floorView === 'overlaid' || floorView === 'all' || levels.includes(floorView)
+      ? floorView
+      : 'all';
+  useEffect(() => setFloorView('all'), [project.id]);
 
   const ea = (s) => {
     const draft = drafts[s.id];
@@ -283,44 +281,111 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [spaces]);
 
+  // Global shortcuts: undo/redo, clear selection, delete the multi-selection.
+  useEffect(() => {
+    function onKey(e) {
+      if (e.target.matches?.('input, select, textarea')) return;
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        e.shiftKey ? history.redo() : history.undo();
+      } else if (mod && e.key.toLowerCase() === 'y') {
+        e.preventDefault();
+        history.redo();
+      } else if (e.key === 'Escape') {
+        if (multi.size) setMulti(new Set());
+        setSelected(null);
+      } else if ((e.key === 'Delete' || e.key === 'Backspace') && multi.size) {
+        e.preventDefault();
+        multiDelete();
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [multi]);
+
   const shapeOf = (s) => (s.shape === 'box' ? 'box' : 'bubble');
-  function toggleShape(space) {
-    api.updateSpace(space.id, { shape: shapeOf(space) === 'box' ? 'bubble' : 'box' }).then(onChanged).catch((e) => setError(e.message));
+
+  // Apply field updates to a space and refetch. Returns a promise.
+  async function applySpace(id, fields) {
+    await api.updateSpace(id, fields);
+    onChanged();
   }
-  async function convertAll(shape) {
+  // Apply now and push an undo/redo entry capturing the previous values.
+  async function commitSpace(space, fields, label) {
+    const before = {};
+    for (const k of Object.keys(fields)) before[k] = space[k] ?? null;
+    history.record({ label, undo: () => applySpace(space.id, before), redo: () => applySpace(space.id, fields) });
     setError(null);
     try {
-      for (const s of leaves) if (shapeOf(s) !== shape) await api.updateSpace(s.id, { shape });
+      await applySpace(space.id, fields);
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+  // Batch the same kind of change across many spaces as one undoable step.
+  async function commitMany(changes, label) {
+    if (changes.length === 0) return;
+    const run = (pick) => async () => {
+      for (const c of changes) await api.updateSpace(c.id, pick(c));
       onChanged();
+    };
+    history.record({ label, undo: run((c) => c.before), redo: run((c) => c.after) });
+    setError(null);
+    try {
+      await run((c) => c.after)();
     } catch (e) {
       setError(e.message);
     }
   }
 
-  // Keep simulation nodes in sync with the leaves (per instance).
+  function toggleShape(space) {
+    commitSpace(space, { shape: shapeOf(space) === 'box' ? 'bubble' : 'box' }, 'shape');
+  }
+  async function convertAll(shape) {
+    const changes = leaves
+      .filter((s) => shapeOf(s) !== shape)
+      .map((s) => ({ id: s.id, before: { shape: shapeOf(s) }, after: { shape } }));
+    await commitMany(changes, 'convert all');
+  }
+
+  // Keep simulation nodes in sync with the leaves (per instance). New nodes seed
+  // from a pin, then the saved layout cache, then a spawn ring; only genuinely
+  // new (uncached, unpinned) nodes re-energise the sim.
   useEffect(() => {
     const nodes = nodesRef.current;
+    const cache = layoutCache.get(project.id);
     const keys = new Set(instances.map((o) => o.key));
-    let changed = false;
-    for (const key of [...nodes.keys()]) if (!keys.has(key)) (nodes.delete(key), (changed = true));
+    let newSpawn = false;
+    for (const key of [...nodes.keys()]) if (!keys.has(key)) nodes.delete(key);
     instances.forEach((o, idx) => {
-      if (!nodes.has(o.key)) {
-        const pin = pinsOf(o.s)[o.i] ?? null;
+      if (nodes.has(o.key)) return;
+      const pin = pinsOf(o.s)[o.i] ?? null;
+      const cached = cache?.get(o.key);
+      if (pin) nodes.set(o.key, { x: pin.x, y: pin.y, vx: 0, vy: 0 });
+      else if (cached) nodes.set(o.key, { x: cached.x, y: cached.y, vx: 0, vy: 0 });
+      else {
         const angle = (idx / Math.max(instances.length, 1)) * Math.PI * 2;
-        nodes.set(o.key, {
-          x: pin ? pin.x : W / 2 + Math.cos(angle) * 190 + o.i * 9,
-          y: pin ? pin.y : H / 2 + Math.sin(angle) * 150 + o.i * 9,
-          vx: 0,
-          vy: 0,
-        });
-        changed = true;
+        nodes.set(o.key, { x: W / 2 + Math.cos(angle) * 190 + o.i * 9, y: H / 2 + Math.sin(angle) * 150 + o.i * 9, vx: 0, vy: 0 });
+        newSpawn = true;
       }
     });
     pinOverride.current.clear();
-    if (changed) alphaRef.current = 1;
+    if (newSpawn) alphaRef.current = 1;
     setTick((t) => t + 1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [spaces]);
+
+  // Persist the current layout when leaving the tab / switching projects.
+  useEffect(() => {
+    const pid = project.id;
+    return () => {
+      const m = new Map();
+      for (const [k, n] of nodesRef.current) m.set(k, { x: n.x, y: n.y });
+      layoutCache.set(pid, m);
+    };
+  }, [project.id]);
 
   useEffect(() => {
     alphaRef.current = Math.max(alphaRef.current, 0.6);
@@ -348,7 +413,10 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
   // Force simulation.
   useEffect(() => {
     let raf;
-    const held = (key) => dragRef.current?.key === key;
+    const held = (key) => {
+      const d = dragRef.current;
+      return !!d && (d.key === key || (d.groupSet != null && d.groupSet.has(key)));
+    };
     const fixedInst = (o) => held(o.key) || !!instPin(o.s, o.i);
 
     const simulate = (alpha) => {
@@ -473,23 +541,56 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
   }
 
   // ---------- pointer handling ----------
+  const angleDeg = (cx, cy, p) => (Math.atan2(p.y - cy, p.x - cx) * 180) / Math.PI;
+
   function onSvgPointerDown(e) {
     if (scalePoints) return onSvgScaleClick(e);
-    if (moveLayer) {
-      const l = layers[moveLayer];
-      layerMoveRef.current = { kind: moveLayer, sx: e.clientX, sy: e.clientY, lx: l.x, ly: l.y };
+    if (rotateLayer) {
+      const im = imgById.get(rotateLayer);
+      if (im) {
+        const c = toSvgCoords(e);
+        rotateRef.current = { id: rotateLayer, startAngle: angleDeg(W / 2 + (im.x || 0), H / 2 + (im.y || 0), c), startRot: im.rot || 0 };
+      }
       return;
     }
-    if (panMode && !dragRef.current) panRef.current = { sx: e.clientX, sy: e.clientY, vx: view.x, vy: view.y };
+    if (moveLayer) {
+      const im = imgById.get(moveLayer);
+      if (im) layerMoveRef.current = { id: moveLayer, sx: e.clientX, sy: e.clientY, lx: im.x || 0, ly: im.y || 0 };
+      return;
+    }
+    if (panMode) {
+      if (!dragRef.current) panRef.current = { sx: e.clientX, sy: e.clientY, vx: view.x, vy: view.y };
+      return;
+    }
+    // Empty-canvas drag = marquee multi-select (a bubble press sets dragRef first).
+    if (!dragRef.current) {
+      const p = toSvgCoords(e);
+      marqueeRef.current = { sx: p.x, sy: p.y, additive: e.shiftKey };
+      setMarquee({ x0: p.x, y0: p.y, x1: p.x, y1: p.y });
+    }
   }
 
   function onMove(e) {
     const rect = svgRef.current.getBoundingClientRect();
     if (layerMoveRef.current) {
       const m = layerMoveRef.current;
-      layers[m.kind].x = m.lx + ((e.clientX - m.sx) * vb.w) / rect.width;
-      layers[m.kind].y = m.ly + ((e.clientY - m.sy) * vb.h) / rect.height;
-      setTick((t) => t + 1);
+      const im = imgById.get(m.id);
+      if (im) {
+        im.x = m.lx + ((e.clientX - m.sx) * vb.w) / rect.width;
+        im.y = m.ly + ((e.clientY - m.sy) * vb.h) / rect.height;
+        setTick((t) => t + 1);
+      }
+      return;
+    }
+    if (rotateRef.current) {
+      const rr = rotateRef.current;
+      const im = imgById.get(rr.id);
+      if (im) {
+        const c = toSvgCoords(e);
+        const ang = angleDeg(W / 2 + (im.x || 0), H / 2 + (im.y || 0), c);
+        im.rot = (((rr.startRot + (ang - rr.startAngle)) % 360) + 360) % 360;
+        setTick((t) => t + 1);
+      }
       return;
     }
     if (panRef.current) {
@@ -499,21 +600,55 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
       });
       return;
     }
+    if (marqueeRef.current) {
+      const p = toSvgCoords(e);
+      setMarquee((m) => (m ? { ...m, x1: p.x, y1: p.y } : m));
+      return;
+    }
     if (!dragRef.current) return;
-    const node = nodesRef.current.get(dragRef.current.key);
-    if (!node) return;
+    const drag = dragRef.current;
     const { x, y } = toSvgCoords(e);
-    dragRef.current.moved += Math.hypot(x - node.x, y - node.y);
+    if (drag.starts) {
+      // Group drag: translate every selected node by the same delta.
+      const dx = x - drag.anchor.x;
+      const dy = y - drag.anchor.y;
+      drag.moved = Math.hypot(dx, dy);
+      for (const s of drag.starts) {
+        const n = nodesRef.current.get(s.key);
+        if (n) ((n.x = s.x + dx), (n.y = s.y + dy));
+      }
+      setTick((t) => t + 1);
+      return;
+    }
+    const node = nodesRef.current.get(drag.key);
+    if (!node) return;
+    drag.moved += Math.hypot(x - node.x, y - node.y);
     node.x = x;
     node.y = y;
     setTick((t) => t + 1);
   }
 
   async function onUp() {
+    if (marqueeRef.current) {
+      finishMarquee();
+      return;
+    }
     if (layerMoveRef.current) {
       const m = layerMoveRef.current;
       layerMoveRef.current = null;
-      await saveProject({ [`${m.kind}_x`]: layers[m.kind].x, [`${m.kind}_y`]: layers[m.kind].y }, { silent: true });
+      const im = imgById.get(m.id);
+      if (im) {
+        try { await api.updateImage(m.id, { x: im.x, y: im.y }); onChanged(); } catch (e) { setError(e.message); }
+      }
+      return;
+    }
+    if (rotateRef.current) {
+      const rr = rotateRef.current;
+      rotateRef.current = null;
+      const im = imgById.get(rr.id);
+      if (im) {
+        try { await api.updateImage(rr.id, { rot: im.rot }); onChanged(); } catch (e) { setError(e.message); }
+      }
       return;
     }
     if (panRef.current) {
@@ -525,6 +660,11 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
     dragRef.current = null;
     alphaRef.current = Math.max(alphaRef.current, 0.3);
     if (!drag) return;
+    if (drag.starts) {
+      // Group drag: pin every moved bubble where it was dropped (one undo step).
+      if (drag.moved >= 6) await pinKeys(drag.starts.map((s) => s.key));
+      return;
+    }
     const space = byId.get(drag.spaceId);
     if (!space) return;
     if (drag.moved >= 6) {
@@ -536,13 +676,38 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
   }
 
   function onBubbleDown(e, o) {
-    if (scalePoints || panMode || moveLayer) return;
+    if (scalePoints || panMode || moveLayer || rotateLayer) return;
+    if (e.shiftKey) {
+      // Shift-click toggles a bubble in the multi-selection (no drag, no marquee).
+      e.stopPropagation();
+      toggleMulti(o.key);
+      return;
+    }
     try {
       e.target.setPointerCapture?.(e.pointerId);
     } catch {
       /* synthetic pointer */
     }
-    dragRef.current = { key: o.key, spaceId: o.s.id, idx: o.i, moved: 0 };
+    // Drag moves a group when: the bubble is in a multi-selection, OR it's an
+    // 'attached' parent (then its children move with it).
+    let groupKeys = null;
+    if (multi.has(o.key) && multi.size > 1) groupKeys = [...multi];
+    else if (o.s.child_mode === 'attached' && spaces.some((x) => x.parent_id === o.s.id)) {
+      const keys = descendantInstanceKeys(o.s.id);
+      if (keys.length > 1) groupKeys = keys;
+    }
+    let starts = null, anchor = null, groupSet = null;
+    if (groupKeys) {
+      anchor = toSvgCoords(e);
+      groupSet = new Set(groupKeys);
+      starts = groupKeys
+        .map((k) => {
+          const n = nodesRef.current.get(k);
+          return n ? { key: k, x: n.x, y: n.y } : null;
+        })
+        .filter(Boolean);
+    }
+    dragRef.current = { key: o.key, spaceId: o.s.id, idx: o.i, moved: 0, starts, anchor, groupSet };
   }
 
   function commitView(v) {
@@ -551,15 +716,17 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
   }
 
   async function savePin(space, idx, pinned) {
-    setError(null);
     const key = `${space.id}:${idx}`;
     const node = nodesRef.current.get(key);
     const pins = { ...pinsOf(space) };
+    if (pinned && node) ((pins[idx] = { x: node.x, y: node.y }), pinOverride.current.set(key, pins[idx]));
+    else ((delete pins[idx]), pinOverride.current.set(key, null));
+    const before = { pin_json: space.pin_json ?? null, pin_x: space.pin_x ?? null, pin_y: space.pin_y ?? null };
+    const after = { pin_json: JSON.stringify(pins), pin_x: null, pin_y: null };
+    history.record({ label: pinned ? 'pin' : 'unpin', undo: () => applySpace(space.id, before), redo: () => applySpace(space.id, after) });
+    setError(null);
     try {
-      if (pinned && node) ((pins[idx] = { x: node.x, y: node.y }), pinOverride.current.set(key, pins[idx]));
-      else ((delete pins[idx]), pinOverride.current.set(key, null));
-      await api.updateSpace(space.id, { pin_json: JSON.stringify(pins), pin_x: null, pin_y: null });
-      onChanged();
+      await applySpace(space.id, after);
     } catch (err) {
       setError(err.message);
     }
@@ -567,7 +734,6 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
 
   // Pin/unpin every instance of a space at once (so a multiplied space stays put).
   async function savePinAll(space, pinned) {
-    setError(null);
     const count = Math.max(1, space.count || 1);
     const pins = {};
     for (let i = 0; i < count; i++) {
@@ -579,12 +745,177 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
         pinOverride.current.set(key, null);
       }
     }
+    const before = { pin_json: space.pin_json ?? null, pin_x: space.pin_x ?? null, pin_y: space.pin_y ?? null };
+    const after = { pin_json: JSON.stringify(pins), pin_x: null, pin_y: null };
+    history.record({ label: pinned ? 'pin all' : 'unpin all', undo: () => applySpace(space.id, before), redo: () => applySpace(space.id, after) });
+    setError(null);
     try {
-      await api.updateSpace(space.id, { pin_json: JSON.stringify(pins), pin_x: null, pin_y: null });
-      onChanged();
+      await applySpace(space.id, after);
     } catch (err) {
       setError(err.message);
     }
+  }
+
+  // ---------- multi-select (marquee + shift-click) ----------
+  function toggleMulti(key) {
+    setMulti((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+  const multiList = () =>
+    [...multi]
+      .map((k) => {
+        const [id, i] = k.split(':');
+        return { id: Number(id), i: Number(i), space: byId.get(Number(id)) };
+      })
+      .filter((o) => o.space);
+
+  function finishMarquee() {
+    const m = marqueeRef.current;
+    const box = marquee;
+    marqueeRef.current = null;
+    setMarquee(null);
+    if (!box || !m) return;
+    const minX = Math.min(box.x0, box.x1), maxX = Math.max(box.x0, box.x1);
+    const minY = Math.min(box.y0, box.y1), maxY = Math.max(box.y0, box.y1);
+    // A near-zero drag is a click on empty canvas → clear selection.
+    if (maxX - minX < 4 && maxY - minY < 4) {
+      if (!m.additive) (setMulti(new Set()), setSelected(null));
+      return;
+    }
+    const hit = new Set(m.additive ? multi : []);
+    for (const o of instances) {
+      const n = nodesRef.current.get(o.key);
+      if (n && n.x >= minX && n.x <= maxX && n.y >= minY && n.y <= maxY) hit.add(o.key);
+    }
+    setMulti(hit);
+  }
+
+  async function multiPin(pinned) {
+    const bySpace = new Map();
+    for (const { id, i, space } of multiList()) {
+      if (!bySpace.has(id)) bySpace.set(id, { space, idxs: [] });
+      bySpace.get(id).idxs.push(i);
+    }
+    const changes = [];
+    for (const { space, idxs } of bySpace.values()) {
+      const before = { pin_json: space.pin_json ?? null, pin_x: space.pin_x ?? null, pin_y: space.pin_y ?? null };
+      const pins = { ...pinsOf(space) };
+      for (const i of idxs) {
+        if (pinned) {
+          const n = nodesRef.current.get(`${space.id}:${i}`);
+          if (n) pins[i] = { x: n.x, y: n.y };
+        } else delete pins[i];
+      }
+      changes.push({ id: space.id, before, after: { pin_json: JSON.stringify(pins), pin_x: null, pin_y: null } });
+    }
+    await commitMany(changes, pinned ? 'pin selection' : 'unpin selection');
+  }
+  // Instance keys for a space and all its (leaf) descendants — used to drag an
+  // 'attached' parent together with its children.
+  function descendantInstanceKeys(spaceId) {
+    const ids = new Set([spaceId]);
+    let added = true;
+    while (added) {
+      added = false;
+      for (const s of spaces) {
+        if (s.parent_id != null && ids.has(s.parent_id) && !ids.has(s.id)) (ids.add(s.id), (added = true));
+      }
+    }
+    return instances.filter((o) => ids.has(o.s.id)).map((o) => o.key);
+  }
+  // Pin a set of instance keys at their current positions, in one undo step.
+  async function pinKeys(keys) {
+    const bySpace = new Map();
+    for (const k of keys) {
+      const [id, i] = k.split(':');
+      const sp = byId.get(Number(id));
+      if (!sp) continue;
+      if (!bySpace.has(sp.id)) bySpace.set(sp.id, { space: sp, idxs: [] });
+      bySpace.get(sp.id).idxs.push(Number(i));
+    }
+    const changes = [];
+    for (const { space, idxs } of bySpace.values()) {
+      const before = { pin_json: space.pin_json ?? null, pin_x: space.pin_x ?? null, pin_y: space.pin_y ?? null };
+      const pins = { ...pinsOf(space) };
+      for (const i of idxs) {
+        const n = nodesRef.current.get(`${space.id}:${i}`);
+        if (n) pins[i] = { x: n.x, y: n.y };
+      }
+      changes.push({ id: space.id, before, after: { pin_json: JSON.stringify(pins), pin_x: null, pin_y: null } });
+    }
+    await commitMany(changes, 'move group');
+  }
+
+  async function multiShape(shape) {
+    const ids = [...new Set(multiList().map((o) => o.id))];
+    const changes = ids.map((id) => ({ id, before: { shape: shapeOf(byId.get(id)) }, after: { shape } }));
+    await commitMany(changes, 'shape selection');
+  }
+  // Assign the selected bubbles to a category (department) — typing a new name
+  // creates it. Colour by department to see the grouping update.
+  async function multiSetCategory(name) {
+    const dept = name.trim();
+    if (!dept) return;
+    const ids = [...new Set(multiList().map((o) => o.id))];
+    const changes = ids
+      .map((id) => ({ id, before: { department: byId.get(id).department }, after: { department: dept } }))
+      .filter((c) => c.before.department !== c.after.department);
+    await commitMany(changes, 'set category');
+    setCatDraft('');
+  }
+  async function multiDelete() {
+    const ids = [...new Set(multiList().map((o) => o.id))];
+    if (ids.length === 0) return;
+    if (!window.confirm(`Delete ${ids.length} space${ids.length > 1 ? 's' : ''} from the brief? Their recorded areas and links are removed too.`)) return;
+    setError(null);
+    try {
+      for (const id of ids) await api.deleteSpace(id);
+      setMulti(new Set());
+      history.clear(); // deletions invalidate recorded closures referencing these spaces
+      onChanged();
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+  function toggleHulls() {
+    setHulls((v) => {
+      localStorage.setItem('brieftrack.hulls', v ? '0' : '1');
+      return !v;
+    });
+  }
+  function setHullSize(v) {
+    setHullPad(v);
+    localStorage.setItem('brieftrack.hullpad', String(v));
+  }
+  function toggleCollapse(key) {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+  }
+  function setBubbleStyle(v) {
+    saveProject({ bubble_style: v });
+  }
+  // Drag the rail's left edge to resize it (persisted).
+  function startRailResize(e) {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = railW;
+    const clamp = (w) => Math.max(260, Math.min(680, w));
+    const onMove = (ev) => setRailW(clamp(startW + (startX - ev.clientX)));
+    const onUp = (ev) => {
+      const w = clamp(startW + (startX - ev.clientX));
+      localStorage.setItem('brieftrack.railw', String(w));
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
   }
 
   async function handleBubbleClick(spaceId, idx = 0) {
@@ -595,33 +926,42 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
       if (selectedInst !== idx) return setSelectedInst(idx);
       return setSelected(null);
     }
+    await cyclePair(selected, spaceId);
+    setSelected(null);
+  }
+
+  // findPair reads the latest adjacencies via a ref so history closures stay
+  // correct after a refetch reassigns adjacency ids.
+  const findPair = (a, b) =>
+    adjRef.current.find((l) => (l.space_a === a && l.space_b === b) || (l.space_a === b && l.space_b === a));
+
+  // Drive a pair to a target strength: null (none) | 'desired' | 'required'.
+  async function setPair(a, b, target) {
+    const existing = findPair(a, b);
+    if (target == null) {
+      if (existing) await api.deleteAdjacency(existing.id);
+    } else if (!existing) {
+      await api.createAdjacency(project.id, { space_a: a, space_b: b, strength: target });
+    } else if (existing.strength !== target) {
+      await api.updateAdjacency(existing.id, { strength: target });
+    }
+    onChanged();
+  }
+
+  async function cyclePair(a, b) {
+    const cur = findPair(a, b)?.strength ?? null;
+    const next = cur == null ? 'desired' : cur === 'desired' ? 'required' : null;
+    history.record({ label: 'link', undo: () => setPair(a, b, cur), redo: () => setPair(a, b, next) });
+    setError(null);
     try {
-      await cyclePair(selected, spaceId);
-      setSelected(null);
-      onChanged();
+      await setPair(a, b, next);
     } catch (err) {
       setError(err.message);
     }
-  }
-
-  const findPair = (a, b) =>
-    adjacencies.find((l) => (l.space_a === a && l.space_b === b) || (l.space_a === b && l.space_b === a));
-
-  async function cyclePair(a, b) {
-    const existing = findPair(a, b);
-    if (!existing) await api.createAdjacency(project.id, { space_a: a, space_b: b, strength: 'desired' });
-    else if (existing.strength === 'desired') await api.updateAdjacency(existing.id, { strength: 'required' });
-    else await api.deleteAdjacency(existing.id);
   }
 
   async function onLinkClick(l) {
-    setError(null);
-    try {
-      await cyclePair(l.space_a, l.space_b);
-      onChanged();
-    } catch (err) {
-      setError(err.message);
-    }
+    await cyclePair(l.space_a, l.space_b);
   }
 
   async function saveProject(fields, { silent } = {}) {
@@ -641,29 +981,60 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
     if (!file) return;
     if (file.size > 12 * 1024 * 1024) return setError('Image is too large (12 MB max).');
     const reader = new FileReader();
-    reader.onload = () =>
-      saveProject({ bg_image: reader.result, bg_mpp: null, bg_visible: 1, bg_x: 0, bg_y: 0, bg_rot: 0, bg_attribution: null });
+    reader.onload = async () => {
+      setError(null);
+      try {
+        await api.createImage(project.id, {
+          kind: 'custom',
+          name: (file.name || 'Imported image').replace(/\.[^.]+$/, ''),
+          image: reader.result,
+          opacity: 0.6,
+          visible: 1,
+        });
+        setPanel('layers');
+        onChanged();
+      } catch (err) {
+        setError(err.message);
+      }
+    };
     reader.readAsDataURL(file);
   }
 
-  function layerSlider(kind, field, v) {
+  // Optimistically update an image field, then debounce-save it.
+  function layerSlider(im, field, v) {
     setError(null);
-    const prop = field.endsWith('_opacity') ? 'opacity' : field.endsWith('_rot') ? 'rot' : field;
-    layers[kind][prop] = v; // optimistic
+    im[field] = v;
     setTick((t) => t + 1);
-    clearTimeout(debouncers.current[field]);
-    debouncers.current[field] = setTimeout(() => saveProject({ [field]: v }, { silent: true }), 250);
+    const key = `img${im.id}_${field}`;
+    clearTimeout(debouncers.current[key]);
+    debouncers.current[key] = setTimeout(
+      () => api.updateImage(im.id, { [field]: v }).then(onChanged).catch((e) => setError(e.message)),
+      250
+    );
   }
 
-  function clearLayer(kind) {
-    if (kind === 'bg') saveProject({ bg_image: null, bg_mpp: null, bg_attribution: null, bg_x: 0, bg_y: 0, bg_rot: 0 });
-    else saveProject({ sat_image: null, sat_mpp: null, sat_attribution: null, sat_x: 0, sat_y: 0, sat_rot: 0 });
+  function toggleLayerVisible(im, v) {
+    api.updateImage(im.id, { visible: v ? 1 : 0 }).then(onChanged).catch((e) => setError(e.message));
   }
 
-  function startCalibrate(kind) {
+  async function deleteImageLayer(id) {
+    setError(null);
+    try {
+      await api.deleteImage(id);
+      if (moveLayer === id) setMoveLayer(null);
+      if (rotateLayer === id) setRotateLayer(null);
+      if (calibrateLayer === id) (setCalibrateLayer(null), setScalePoints(null));
+      onChanged();
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
+  function startCalibrate(id) {
     setPanel(null);
     setMoveLayer(null);
-    setCalibrateLayer(kind);
+    setRotateLayer(null);
+    setCalibrateLayer(id);
     setScalePoints([]);
     setScaleDistance('');
   }
@@ -677,16 +1048,21 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
     const [a, b] = scalePoints;
     const dUnits = Math.hypot(b.x - a.x, b.y - a.y);
     const meters = distToMeters(Number(scaleDistance), units);
-    const kind = calibrateLayer;
-    const rect = layerRect(kind);
-    const nd = dims[kind];
+    const im = imgById.get(calibrateLayer);
+    const rect = layerRect(im);
+    const nd = im && dims[im.id];
     if (!(meters > 0) || dUnits < 2 || !rect || !nd) return setError('Pick two points and enter a positive distance.');
     const naturalPx = (dUnits / rect.w) * nd.w;
     const mpp = meters / naturalPx;
     setScalePoints(null);
     setScaleDistance('');
     setCalibrateLayer(null);
-    await saveProject({ [`${kind}_mpp`]: mpp });
+    try {
+      await api.updateImage(im.id, { mpp });
+      onChanged();
+    } catch (e) {
+      setError(e.message);
+    }
   }
 
   async function fetchSatellite(e) {
@@ -720,17 +1096,16 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
         for (let ty = Math.floor(y0 / 256); ty * 256 < y0 + SAT_CANVAS; ty++) jobs.push(loadTile(tx, ty));
       for (const { img, tx, ty } of await Promise.all(jobs)) ctx.drawImage(img, tx * 256 - x0, ty * 256 - y0);
       const metersPerPixel = (156543.03392 * Math.cos(latR)) / 2 ** z;
-      await api.updateProject(project.id, {
-        sat_image: canvas.toDataURL('image/jpeg', 0.85),
-        sat_mpp: metersPerPixel,
-        sat_attribution: `Imagery © Esri World Imagery · ${loc.display}`,
-        sat_opacity: project.sat_opacity ?? 0.55,
-        sat_visible: 1,
-        sat_x: 0,
-        sat_y: 0,
-        sat_rot: 0,
+      await api.createImage(project.id, {
+        kind: 'satellite',
+        name: 'Satellite',
+        image: canvas.toDataURL('image/jpeg', 0.85),
+        mpp: metersPerPixel,
+        attribution: `Imagery © Esri World Imagery · ${loc.display}`,
+        opacity: 0.55,
+        visible: 1,
       });
-      setPanel(null);
+      setPanel('layers');
       onChanged();
     } catch (err) {
       setError(err.message);
@@ -749,7 +1124,7 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
     if (Math.abs(f - 1) > 1e-9) {
       // Uniform zoom about the viewport centre keeps bubbles aligned with images.
       const A = { x: viewRef.current.x + W / 2, y: viewRef.current.y + H / 2 };
-      const tx = (p) => ({ x: A.x + (p.x - A.x) * f, y: A.y + (p.y - A.y) * f });
+      const tx = (p) => zoomAbout(p, A, f);
       for (const n of nodesRef.current.values()) {
         const t = tx(n);
         n.x = t.x;
@@ -766,13 +1141,14 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
         }
         pinUpdates.push({ id: s.id, pin_json: JSON.stringify(np) });
       }
-      for (const kind of ['bg', 'sat']) {
-        const c = tx({ x: W / 2 + (project[`${kind}_x`] || 0), y: H / 2 + (project[`${kind}_y`] || 0) });
-        fields[`${kind}_x`] = c.x - W / 2;
-        fields[`${kind}_y`] = c.y - H / 2;
-      }
+      // Image layers zoom about the same anchor so they stay aligned with bubbles.
+      const imageUpdates = imgLayers.map((im) => {
+        const c = tx({ x: W / 2 + (im.x || 0), y: H / 2 + (im.y || 0) });
+        return { id: im.id, x: c.x - W / 2, y: c.y - H / 2 };
+      });
       try {
         for (const u of pinUpdates) await api.updateSpace(u.id, { pin_json: u.pin_json, pin_x: null, pin_y: null });
+        for (const u of imageUpdates) await api.updateImage(u.id, { x: u.x, y: u.y });
       } catch (err) {
         setError(err.message);
       }
@@ -787,11 +1163,17 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
   function onAreaDraft(space, value) {
     setDrafts((d) => ({ ...d, [space.id]: value }));
     clearTimeout(draftTimers.current.get(space.id));
+    const before = space.target_area;
     draftTimers.current.set(
       space.id,
       setTimeout(async () => {
         const area = Number(value);
-        if (!(area > 0)) return;
+        if (!(area > 0) || area === before) return;
+        history.record({
+          label: 'area',
+          undo: () => applySpace(space.id, { target_area: before }),
+          redo: () => applySpace(space.id, { target_area: area }),
+        });
         try {
           await api.updateSpace(space.id, { target_area: area });
           setDrafts((d) => {
@@ -846,16 +1228,17 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
     const bounds = { minX: minX - pad, minY: minY - pad, maxX: maxX + pad, maxY: maxY + pad };
 
     const sceneLayers = [];
-    for (const k of ['sat', 'bg']) {
-      if (!(layers[k].image && layers[k].visible)) continue;
-      const r = layerRect(k);
+    for (const im of imgLayers) {
+      if (!im.visible) continue;
+      const r = layerRect(im);
       if (!r) continue;
-      if (!r.rot) {
+      const fcss = filterCss(im.filter);
+      if (!r.rot && (!im.filter || fcss === 'none')) {
         sceneLayers.push({ dataUrl: r.dataUrl, x: r.x, y: r.y, w: r.w, h: r.h, opacity: r.opacity });
         continue;
       }
-      // Bake rotation into the image so the PDF stays scale-accurate.
-      const baked = await bakeRotation(r.dataUrl, r.rot);
+      // Bake rotation + filter into the image so the PDF stays scale-accurate.
+      const baked = await bakeImage(r.dataUrl, r.rot, fcss);
       if (!baked) continue;
       const unitsPerPx = r.w / baked.naturalW;
       const bw = baked.canvasW * unitsPerPx;
@@ -881,6 +1264,7 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
         layers: sceneLayers,
         links,
         bubbles,
+        bubbleStyle,
         scale: effScale ? { ratioLabel, scaleBar: scaleBar ? { lenUnits: scaleBar.len, label: scaleBar.label } : null } : null,
         north: { deg: project.north_deg || 0 },
         title: {
@@ -905,6 +1289,153 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
   const nodes = nodesRef.current;
   const presets = SCALE_PRESETS[units === 'ft2' ? 'ft2' : 'm2'];
 
+  // Adjacency compliance — how well the current layout honours the declared
+  // relationships. Needs a real scale (gaps are judged in metres), so it's only
+  // meaningful when effScale is set. Recomputed each render as the sim moves nodes.
+  const adjLinks = effScale
+    ? adjacencies
+        .map((l) => {
+          const sa = byId.get(l.space_a);
+          const sb = byId.get(l.space_b);
+          if (!sa || !sb) return null;
+          const pair = closestPair(sa, sb);
+          if (!pair) return null;
+          return { id: l.id, strength: l.strength, gap: edgeGap(pair.d, radiusOf(sa), radiusOf(sb)) * effScale };
+        })
+        .filter(Boolean)
+    : [];
+  const adjResult = adjacencyScore(adjLinks);
+  const unmetLinkIds = new Set(adjResult.unmet.map((l) => l.id));
+  const showScore = effScale && adjacencies.length > 0;
+
+  // ---- Floor view: all together / one level / stacked isometric planes ----
+  // Each floor is a flat plane shown isometrically. 'offset' raises each storey
+  // onto its own plane (a stacked 3D look); 'overlaid' puts them all on the same
+  // plane (superimposed) to compare footprints.
+  const levelOf = (s) => (s.level || '').trim();
+  const stackMode = hasLevels && (floorMode === 'offset' || floorMode === 'overlaid');
+  // In non-stack modes, levelVisible filters which storey is shown. The stacked
+  // view renders its own isometric scene below (stackScene), so the normal
+  // hull/link/bubble passes are skipped while it's active.
+  const levelVisible = (s) => !hasLevels || floorMode === 'all' || levelOf(s) === floorMode;
+  const rankOf = (s) => levelRank.get(levelOf(s)) ?? 0;
+
+  // Build the isometric stacked scene. The iso projection is expressed as an SVG
+  // matrix so a whole floor (plate, bubbles AND background images) can be tilted
+  // onto the plane in one transform — circles become ellipses, images warp to
+  // match. Floors share a common footprint and are vertically aligned, separated
+  // by a lift large enough to never overlap, with dashed corner guides tying the
+  // stack into one building (see the reference axonometric).
+  function stackScene() {
+    const anchor = { x: W / 2, y: H / 2 };
+    const kx = ISO.kx;
+    const ky = ISO.ky;
+    // matrix(kx ky -kx ky e f0) maps a plan point to its iso position (ground plane).
+    const e = anchor.x - kx * anchor.x + kx * anchor.y;
+    const f0 = anchor.y - ky * anchor.x - ky * anchor.y;
+    const isoXY = (px, py) => ({ x: kx * px - kx * py + e, y: ky * px + ky * py + f0 });
+
+    // Per-floor content bounding box (raw node coords) and centre.
+    const PAD = 48;
+    const fb = new Map();
+    for (const o of instances) {
+      const lv = levelOf(o.s);
+      if (!levels.includes(lv)) continue;
+      const n = nodes.get(o.key);
+      if (!n) continue;
+      const r = radiusOf(o.s);
+      const b = fb.get(lv) || { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+      b.minX = Math.min(b.minX, n.x - r);
+      b.maxX = Math.max(b.maxX, n.x + r);
+      b.minY = Math.min(b.minY, n.y - r);
+      b.maxY = Math.max(b.maxY, n.y + r);
+      fb.set(lv, b);
+    }
+    // Common footprint = the largest floor, centred on the anchor; each floor's
+    // content is shifted so it sits inside this shared footprint.
+    let maxW = 1, maxH = 1;
+    for (const b of fb.values()) {
+      maxW = Math.max(maxW, b.maxX - b.minX);
+      maxH = Math.max(maxH, b.maxY - b.minY);
+    }
+    maxW += 2 * PAD;
+    maxH += 2 * PAD;
+    const foot = { x: anchor.x - maxW / 2, y: anchor.y - maxH / 2, w: maxW, h: maxH };
+    const offOf = (lv) => {
+      const b = fb.get(lv);
+      if (!b) return { x: 0, y: 0 };
+      return { x: anchor.x - (b.minX + b.maxX) / 2, y: anchor.y - (b.minY + b.maxY) / 2 };
+    };
+
+    // Lift between floors = projected footprint height + a gap, so they separate.
+    const footCorners = [
+      [foot.x, foot.y], [foot.x + foot.w, foot.y], [foot.x + foot.w, foot.y + foot.h], [foot.x, foot.y + foot.h],
+    ].map(([x, y]) => isoXY(x, y));
+    const projH = Math.max(...footCorners.map((c) => c.y)) - Math.min(...footCorners.map((c) => c.y));
+    // Lift between floors as a fraction of the plate height: < 1 overlaps the
+    // floors into a tight stack, > 1 separates them. Overlaid keeps one plane.
+    const lift = floorMode === 'offset' ? Math.max(24, projH * floorGap) : 0;
+    const recenter = ((levels.length - 1) * lift) / 2;
+    const liftYOf = (k) => recenter - k * lift;
+
+    // Screen centre of each bubble (for the screen-space link lines).
+    const screenPos = new Map();
+    for (const o of instances) {
+      const lv = levelOf(o.s);
+      if (!levels.includes(lv)) continue;
+      const n = nodes.get(o.key);
+      if (!n) continue;
+      const off = offOf(lv);
+      const s = isoXY(n.x + off.x, n.y + off.y);
+      screenPos.set(o.key, { x: s.x, y: s.y + liftYOf(rankOf(o.s)), r: radiusOf(o.s), o });
+    }
+    const closestPairScreen = (sa, sb) => {
+      let best = null;
+      for (let i = 0; i < Math.max(1, sa.count || 1); i++) {
+        const a = screenPos.get(`${sa.id}:${i}`);
+        if (!a) continue;
+        for (let j = 0; j < Math.max(1, sb.count || 1); j++) {
+          const b = screenPos.get(`${sb.id}:${j}`);
+          if (!b) continue;
+          const d = Math.hypot(b.x - a.x, b.y - a.y);
+          if (!best || d < best.d) best = { a, b, d };
+        }
+      }
+      return best;
+    };
+
+    const matrix = `matrix(${kx} ${ky} ${-kx} ${ky} ${e} ${f0})`;
+    const floors = levels.map((label) => {
+      const k = levelRank.get(label);
+      return {
+        k,
+        label,
+        color: PALETTE[k % PALETTE.length],
+        off: offOf(label),
+        transform: `translate(0 ${liftYOf(k)}) ${matrix}`,
+        bubbles: instances.filter((o) => levelOf(o.s) === label),
+      };
+    });
+
+    // Ground-plane transform + offset, used to warp background images onto it.
+    const groundOff = offOf(levels[0]);
+    const groundTransform = `translate(0 ${liftYOf(0)}) ${matrix} translate(${groundOff.x} ${groundOff.y})`;
+
+    // Vertical corner guides spanning the stack (offset mode, >1 floor).
+    const topK = levels.length - 1;
+    const guides = lift > 0
+      ? footCorners.map((c) => ({ x: c.x, y1: c.y + liftYOf(0), y2: c.y + liftYOf(topK) }))
+      : [];
+
+    // Instances on a real floor, ground → top, for the billboarded sphere pass.
+    const ordered = instances
+      .filter((o) => levels.includes(levelOf(o.s)))
+      .sort((a, b) => (levelRank.get(levelOf(a.s)) ?? 0) - (levelRank.get(levelOf(b.s)) ?? 0));
+
+    return { foot, floors, screenPos, closestPairScreen, guides, groundTransform, ordered };
+  }
+  const stack = stackMode ? stackScene() : null;
+
   function scaleLabelFor(S) {
     const ratio = scaleToRatio(S);
     const preset = presets.find(([r]) => Math.abs(r - ratio) / r < 0.02);
@@ -922,14 +1453,49 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
 
   const scaleValue = displayScale ? String(scaleToRatio(displayScale)) : 'auto';
   const viewMoved = Math.abs(view.x) > 0.5 || Math.abs(view.y) > 0.5;
-  const bgR = layerRect('bg');
-  const satR = layerRect('sat');
-  const hasImage = layers.bg.image || layers.sat.image;
+  const hasImage = imgLayers.length > 0;
+  const attributionLayer = imgLayers.find((im) => im.visible && im.attribution);
   const imgTransform = (r) => (r.rot ? `rotate(${r.rot} ${r.cx} ${r.cy})` : undefined);
+  const bubbleStyle = project.bubble_style || 'solid';
+  const selectedSpace = selected != null ? byId.get(selected) : null;
+  // When a space is selected, the Relationships panel narrows to its links.
+  const relList = selectedSpace ? adjacencies.filter((l) => l.space_a === selected || l.space_b === selected) : adjacencies;
+
+  // Areas panel: building → level → spaces (for the building display mode).
+  const areaTree = (() => {
+    const m = new Map();
+    for (const s of leaves) {
+      const root = rootContainer(s, byId);
+      const b = root ? root.name : 'Unassigned';
+      const lvl = s.level || '';
+      if (!m.has(b)) m.set(b, new Map());
+      const lm = m.get(b);
+      if (!lm.has(lvl)) lm.set(lvl, []);
+      lm.get(lvl).push(s);
+    }
+    return m;
+  })();
+  const areaRow = (s) => (
+    <div key={s.id} className={`split-row ${selected === s.id ? 'selected' : ''}`} onClick={() => setSelected(selected === s.id ? null : s.id)}>
+      <span className="split-name" title={s.name}>
+        {anyPinned(s) && <span className="split-pin">◉</span>}
+        {s.name}
+        {s.count > 1 ? ` ×${s.count}` : ''}
+      </span>
+      <input type="number" min="0.1" step="any" value={drafts[s.id] ?? s.target_area} onChange={(e) => onAreaDraft(s, e.target.value)} onClick={(e) => e.stopPropagation()} />
+      <span className="split-total">{fmtArea((s.count || 1) * ea(s), units)}</span>
+    </div>
+  );
 
   return (
-    <div className={`diagram-layout ${split ? '' : 'norail'}`}>
+    <div
+      className={`diagram-layout ${split ? '' : 'norail'}`}
+      style={{ '--rail-w': `${railW}px` }}
+    >
       {showHelp && <HelpPanel onClose={() => setShowHelp(false)} />}
+      {showMatrix && (
+        <MatrixPanel leaves={leaves} adjacencies={adjacencies} colorOf={colorOf} onCycle={cyclePair} onClose={() => setShowMatrix(false)} />
+      )}
 
       <div className="diagram-main">
         <div className="diagram-toolbar">
@@ -938,14 +1504,23 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
               <input type="checkbox" checked={simEnabled} onChange={(e) => saveProject({ sim_enabled: e.target.checked ? 1 : 0 })} />
               Auto-layout
             </label>
-            <button className={`btn small ${panMode ? 'primary' : ''}`} onClick={() => ((setPanMode((v) => !v)), setMoveLayer(null))} title="Pan the canvas to reposition the view.">
-              {panMode ? '🖐 Panning' : '🔒 Pan'}
+            <button className={`btn small ${panMode ? 'on' : ''}`} onClick={() => (setPanMode((v) => !v), setMoveLayer(null), setRotateLayer(null))} title="Toggle panning — drag the canvas to move the view.">
+              ✋ Pan
             </button>
             {viewMoved && (
               <button className="btn small ghost" onClick={() => ((setView({ x: 0, y: 0 })), commitView({ x: 0, y: 0 }))} title="Recentre the view">
                 ⌖ Recentre
               </button>
             )}
+          </div>
+          <div className="toolbar-sep" />
+          <div className="toolbar-group">
+            <button className="btn small ghost" onClick={history.undo} disabled={!history.canUndo} title={history.canUndo ? `Undo ${history.undoLabel} (Ctrl+Z)` : 'Nothing to undo'}>
+              ↶ Undo
+            </button>
+            <button className="btn small ghost" onClick={history.redo} disabled={!history.canRedo} title={history.canRedo ? `Redo ${history.redoLabel} (Ctrl+Shift+Z)` : 'Nothing to redo'}>
+              ↷ Redo
+            </button>
           </div>
           <div className="toolbar-sep" />
           <div className="toolbar-group">
@@ -964,10 +1539,10 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
               </select>
             </label>
             {hasBuildings && (
-              <label className="scale-label" title="Colour bubbles by department or by building.">
+              <label className="scale-label" title="Colour bubbles by category or by building.">
                 Colour
                 <select className="scale-select" value={colorBy} onChange={(e) => setColorBy(e.target.value)}>
-                  <option value="department">Department</option>
+                  <option value="department">Category</option>
                   <option value="building">Building</option>
                 </select>
               </label>
@@ -975,10 +1550,10 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
           </div>
           <div className="toolbar-sep" />
           <div className="toolbar-group">
-            <button className={`btn small ${panel === 'layers' ? 'primary' : ''}`} onClick={() => setPanel(panel === 'layers' ? null : 'layers')} title="Satellite & imported images, each with its own scale and rotation.">
+            <button className={`btn small ${panel === 'layers' ? 'on' : ''}`} onClick={() => setPanel(panel === 'layers' ? null : 'layers')} title="Satellite & imported images, each with its own scale and rotation.">
               🗺 Layers
             </button>
-            <button className={`btn small ${split ? 'primary' : ''}`} onClick={toggleSplit} title="Show or hide the side panel.">
+            <button className={`btn small ${split ? 'on' : ''}`} onClick={toggleSplit} title="Show or hide the Areas & Relationships panel.">
               ◫ Panel
             </button>
           </div>
@@ -987,6 +1562,58 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
             <button className="btn small" onClick={() => convertAll(leaves.every((s) => shapeOf(s) === 'box') ? 'bubble' : 'box')} title="Convert every space to boxes (or back to bubbles)">
               {leaves.every((s) => shapeOf(s) === 'box') ? '○ All bubbles' : '▢ All boxes'}
             </button>
+            <label className="scale-label" title="How bubbles are drawn">
+              Style
+              <select className="scale-select" value={bubbleStyle} onChange={(e) => setBubbleStyle(e.target.value)}>
+                <option value="solid">Solid</option>
+                <option value="outline">Outline</option>
+                <option value="sketch">Sketch</option>
+              </select>
+            </label>
+            <button className={`btn small ${hulls ? 'on' : ''}`} onClick={toggleHulls} title="Show a soft hull behind each category group (building hulls always show).">
+              ⬡ Categories
+            </button>
+            {(hulls || hasBuildings) && (
+              <label className="hull-size" title="Hull padding around the bubbles">
+                <input type="range" min="6" max="80" step="2" value={hullPad} onChange={(e) => setHullSize(Number(e.target.value))} />
+              </label>
+            )}
+            <button className={`btn small ${showMatrix ? 'on' : ''}`} onClick={() => setShowMatrix(true)} title="Edit relationships as an adjacency matrix.">
+              ▦ Matrix
+            </button>
+            {hasLevels && (
+              <label className={`scale-label ${floorMode !== 'all' ? 'floors-active' : ''}`} title="View all floors together, one floor at a time, or stack the floor plans — offset apart, or overlaid on top of each other.">
+                ▤ Floors
+                <select className="scale-select" value={floorMode} onChange={(e) => setFloorView(e.target.value)}>
+                  <option value="all">All floors</option>
+                  {levels.map((l) => (
+                    <option key={l} value={l}>{l}</option>
+                  ))}
+                  <option value="offset">Stacked · offset</option>
+                  <option value="overlaid">Stacked · overlaid</option>
+                </select>
+              </label>
+            )}
+            {hasLevels && floorMode === 'offset' && (
+              <label className="hull-size" title="Spacing between stacked floors">
+                ⇕
+                <input type="range" min="0.2" max="1.3" step="0.05" value={floorGap} onChange={(e) => setFloorGap(Number(e.target.value))} />
+              </label>
+            )}
+            {stackMode && imgLayers.length > 0 && (
+              <button className={`btn small ${stackImages ? 'on' : ''}`} onClick={() => setStackImages((v) => !v)} title="Show or hide the site image on the stacked floors">
+                ⊞ Image
+              </button>
+            )}
+            {showScore && (
+              <button
+                className={`btn small adj-score ${scoreBand(adjResult.score) || ''} ${highlightGaps ? 'active' : ''}`}
+                onClick={() => setHighlightGaps((v) => !v)}
+                title={`Adjacency compliance: ${adjResult.met}/${adjResult.total} relationships satisfied (required links weigh double). Click to highlight the ${adjResult.unmet.length} unmet link${adjResult.unmet.length === 1 ? '' : 's'} on the diagram.`}
+              >
+                ◈ Adjacency {adjResult.score == null ? '—' : `${Math.round(adjResult.score * 100)}%`}
+              </button>
+            )}
           </div>
           <div className="toolbar-spacer" />
           <div className="toolbar-group">
@@ -1008,47 +1635,42 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
           )}
 
           {panel === 'layers' && (
-            <div className="stage-popover">
+            <div className="stage-popover layers-popover">
               <div className="layers-panel-head">
                 <h3>Image layers</h3>
                 <button className="btn small ghost" onClick={() => setPanel(null)}>✕</button>
               </div>
-              <LayerRow
-                title="🛰 Satellite imagery"
-                layer={layers.sat}
-                dims={dims.sat}
-                units={units}
-                calibrated={layers.sat.mpp > 0}
-                onToggleVisible={(v) => saveProject({ sat_visible: v ? 1 : 0 }, { silent: true })}
-                onOpacity={(v) => layerSlider('sat', 'sat_opacity', v)}
-                onRotate={(v) => layerSlider('sat', 'sat_rot', v)}
-                onCalibrate={() => startCalibrate('sat')}
-                onMove={() => setMoveLayer(moveLayer === 'sat' ? null : 'sat')}
-                moving={moveLayer === 'sat'}
-                onClear={() => clearLayer('sat')}
-                actionLabel={layers.sat.image ? 'Re-fetch…' : 'Fetch…'}
-                onAction={() => setPanel('sat')}
-              />
-              <LayerRow
-                title="🖼 Imported image"
-                layer={layers.bg}
-                dims={dims.bg}
-                units={units}
-                calibrated={layers.bg.mpp > 0}
-                onToggleVisible={(v) => saveProject({ bg_visible: v ? 1 : 0 }, { silent: true })}
-                onOpacity={(v) => layerSlider('bg', 'bg_opacity', v)}
-                onRotate={(v) => layerSlider('bg', 'bg_rot', v)}
-                onCalibrate={() => startCalibrate('bg')}
-                onMove={() => setMoveLayer(moveLayer === 'bg' ? null : 'bg')}
-                moving={moveLayer === 'bg'}
-                onClear={() => clearLayer('bg')}
-                actionLabel={layers.bg.image ? 'Replace…' : 'Upload…'}
-                onAction={() => fileRef.current?.click()}
-              />
+              <div className="layers-list">
+                {imgLayers.length === 0 && <div className="empty small">No images yet — add a site plan or satellite below.</div>}
+                {imgLayers.map((im) => (
+                  <LayerRow
+                    key={im.id}
+                    title={`${im.kind === 'satellite' ? '🛰' : '🖼'} ${im.name || (im.kind === 'satellite' ? 'Satellite' : 'Image')}`}
+                    layer={im}
+                    dims={dims[im.id]}
+                    units={units}
+                    calibrated={im.mpp > 0}
+                    onToggleVisible={(v) => toggleLayerVisible(im, v)}
+                    onOpacity={(v) => layerSlider(im, 'opacity', v)}
+                    onRotate={(v) => layerSlider(im, 'rot', v)}
+                    onCalibrate={() => startCalibrate(im.id)}
+                    onMove={() => ((setRotateLayer(null)), setMoveLayer(moveLayer === im.id ? null : im.id))}
+                    moving={moveLayer === im.id}
+                    onRotateMode={() => ((setMoveLayer(null)), setRotateLayer(rotateLayer === im.id ? null : im.id))}
+                    rotating={rotateLayer === im.id}
+                    onFilter={(v) => layerSlider(im, 'filter', v)}
+                    onDelete={() => deleteImageLayer(im.id)}
+                  />
+                ))}
+              </div>
+              <div className="layers-add">
+                <button className="btn small" onClick={() => fileRef.current?.click()}>＋ Add image</button>
+                <button className="btn small" onClick={() => setPanel('sat')}>＋ Add satellite</button>
+              </div>
               <input ref={fileRef} type="file" accept="image/*" hidden onChange={onUpload} />
               <p className="hint" style={{ margin: '6px 2px 0' }}>
-                Calibrate each image on its own, then both share the diagram scale. <strong>Rotate</strong> a
-                layer to align it (e.g. turn the satellite so the building squares up to north).
+                Add as many images as you like. Calibrate each on its own and they share the diagram scale.
+                Use <strong>Move</strong> and <strong>Rotate</strong> (then drag the canvas) to align a layer.
               </p>
             </div>
           )}
@@ -1075,7 +1697,7 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
             <div className="stage-popover scale-panel">
               {scalePoints.length < 2 ? (
                 <span>
-                  Calibrating <strong>{calibrateLayer === 'sat' ? 'satellite' : 'imported image'}</strong> — click{' '}
+                  Calibrating <strong>{imgById.get(calibrateLayer)?.name || 'image'}</strong> — click{' '}
                   {scalePoints.length === 0 ? 'the first' : 'the second'} point of a known distance on it.
                 </span>
               ) : (
@@ -1095,9 +1717,11 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
           )}
 
           <div className="stage-legend">
-            {groups.map((g, i) => (
+            {groups.map((g) => (
               <span key={g} className="legend-item">
-                <span className="legend-dot" style={{ background: PALETTE[i % PALETTE.length] }} />
+                <label className="legend-swatch" style={{ background: colorForLabel(g) }} title={`Recolour “${g}”`}>
+                  <input type="color" value={colorForLabel(g)} onChange={(e) => setCategoryColor(g, e.target.value)} />
+                </label>
                 {g}
               </span>
             ))}
@@ -1106,18 +1730,156 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
           <svg
             ref={svgRef}
             viewBox={`${originX} ${originY} ${vb.w} ${vb.h}`}
-            className={`bubble-svg ${scalePoints ? 'scaling' : ''} ${panMode || moveLayer ? 'panning' : ''}`}
+            className={`bubble-svg ${scalePoints ? 'scaling' : ''} ${panMode || moveLayer || rotateLayer ? 'panning' : ''}`}
             onPointerDown={onSvgPointerDown}
             onPointerMove={onMove}
             onPointerUp={onUp}
             onPointerLeave={onUp}
           >
-            {satR && layers.sat.visible && (
-              <image href={layers.sat.image} x={satR.x} y={satR.y} width={satR.w} height={satR.h} opacity={layers.sat.opacity} preserveAspectRatio="none" transform={imgTransform(satR)} className={moveLayer === 'sat' ? 'layer-active' : ''} />
-            )}
-            {bgR && layers.bg.visible && (
-              <image href={layers.bg.image} x={bgR.x} y={bgR.y} width={bgR.w} height={bgR.h} opacity={layers.bg.opacity} preserveAspectRatio="none" transform={imgTransform(bgR)} className={moveLayer === 'bg' ? 'layer-active' : ''} />
-            )}
+            <defs>
+              <filter id="sketchy" x="-20%" y="-20%" width="140%" height="140%">
+                <feTurbulence type="fractalNoise" baseFrequency="0.018" numOctaves="2" seed="7" result="n" />
+                <feDisplacementMap in="SourceGraphic" in2="n" scale="5" xChannelSelector="R" yChannelSelector="G" />
+              </filter>
+              {/* Colour-independent shading overlaid on a coloured circle to make
+                  it read as a lit 3D sphere (highlight top-left, shaded rim). */}
+              <radialGradient id="sphere3d" cx="36%" cy="30%" r="75%">
+                <stop offset="0%" stopColor="rgba(255,255,255,0.9)" />
+                <stop offset="26%" stopColor="rgba(255,255,255,0.22)" />
+                <stop offset="60%" stopColor="rgba(0,0,0,0)" />
+                <stop offset="100%" stopColor="rgba(0,0,0,0.5)" />
+              </radialGradient>
+            </defs>
+            {(() => {
+              const imgs = imgLayers.map((im) => {
+                if (!im.visible) return null;
+                const r = layerRect(im);
+                if (!r) return null;
+                const active = moveLayer === im.id || rotateLayer === im.id;
+                return (
+                  <image
+                    key={im.id}
+                    href={im.image}
+                    x={r.x}
+                    y={r.y}
+                    width={r.w}
+                    height={r.h}
+                    opacity={im.opacity}
+                    preserveAspectRatio="none"
+                    transform={imgTransform(r)}
+                    style={im.filter ? { filter: filterCss(im.filter) } : undefined}
+                    className={active ? 'layer-active' : ''}
+                  />
+                );
+              });
+              // In the stacked view, warp the images onto the ground-floor plane
+              // (not clipped — the full site image shows through). The ⊞ Images
+              // toggle can hide them.
+              if (!stack) return imgs;
+              if (!stackImages) return null;
+              return <g transform={stack.groundTransform}>{imgs}</g>;
+            })()}
+
+            {(() => {
+              // Building hulls always show (when buildings exist); category hulls
+              // are optional via the ⬡ Categories toggle.
+              const out = [];
+              const addHulls = (keyFn, cls, withLabel) => {
+                const byG = new Map();
+                for (const o of instances) {
+                  if (!levelVisible(o.s)) continue;
+                  const n = nodes.get(o.key);
+                  if (!n) continue;
+                  const g = keyFn(o.s);
+                  if (g == null) continue;
+                  if (!byG.has(g)) byG.set(g, []);
+                  const r = radiusOf(o.s) + hullPad;
+                  for (let a = 0; a < Math.PI * 2; a += Math.PI / 4)
+                    byG.get(g).push({ x: n.x + Math.cos(a) * r, y: n.y + Math.sin(a) * r });
+                }
+                for (const [g, pts] of byG) {
+                  const hull = convexHull(pts);
+                  const d = smoothHullPath(hull);
+                  if (!d) continue;
+                  const color = colorForLabel(g);
+                  out.push(<path key={`${cls}:${g}`} d={d} className={`group-hull ${cls}`} fill={color} stroke={color} />);
+                  if (withLabel) {
+                    const top = hull.reduce((m, p) => (p.y < m.y ? p : m), hull[0]);
+                    out.push(
+                      <text key={`lbl:${g}`} x={top.x} y={top.y - 4} textAnchor="middle" className="hull-label" fill={color}>
+                        {g}
+                      </text>
+                    );
+                  }
+                }
+              };
+              if (!stackMode && hasBuildings) addHulls((s) => { const root = rootContainer(s, byId); return root ? root.name : null; }, 'building-hull', true);
+              if (!stackMode && hulls) addHulls((s) => s.department || 'General', 'cat-hull', false);
+              return out;
+            })()}
+
+            {/* Stacked axonometric view. Dashed corner guides tie the floors into
+                one building; each floor is an iso-tilted group so its plate,
+                bubbles and the warped images foreshorten onto the plane. */}
+            {stack &&
+              stack.guides.map((g, i) => (
+                <g key={`guide:${i}`} className="floor-guides">
+                  <line x1={g.x} y1={g.y1} x2={g.x} y2={g.y2} className="floor-guide" />
+                  <line x1={g.x - 7} y1={g.y1} x2={g.x + 7} y2={g.y1} className="floor-guide" />
+                  <line x1={g.x - 7} y1={g.y2} x2={g.x + 7} y2={g.y2} className="floor-guide" />
+                </g>
+              ))}
+            {/* Floor planes: just the iso-tilted plate + label (rooms are drawn as
+                billboarded 3D spheres on top, so they stay round). */}
+            {stack &&
+              stack.floors.map((f) => (
+                <g key={`floor:${f.label}`} transform={f.transform} className={`floor-plane ${floorMode}`}>
+                  <rect x={stack.foot.x} y={stack.foot.y} width={stack.foot.w} height={stack.foot.h} rx="10" className="floor-plate" stroke={f.color} />
+                  <text x={stack.foot.x + 16} y={stack.foot.y + 30} className="floor-plate-label" fill={f.color}>{f.label}</text>
+                </g>
+              ))}
+            {/* Links drawn in screen space so cross-floor connectors read clearly. */}
+            {stack &&
+              adjacencies.map((l) => {
+                const sa = byId.get(l.space_a), sb = byId.get(l.space_b);
+                if (!sa || !sb) return null;
+                const inter = rankOf(sa) !== rankOf(sb);
+                if (inter && floorMode !== 'offset') return null;
+                const pair = stack.closestPairScreen(sa, sb);
+                if (!pair) return null;
+                return <line key={`sl:${l.id}`} x1={pair.a.x} y1={pair.a.y} x2={pair.b.x} y2={pair.b.y} className={`link ${l.strength}${inter ? ' interfloor' : ''}`} />;
+              })}
+            {/* Rooms as lit 3D spheres sitting on their floor plane. */}
+            {stack &&
+              stack.ordered.map((o) => {
+                const p = stack.screenPos.get(o.key);
+                if (!p) return null;
+                const r = p.r;
+                const box = shapeOf(o.s) === 'box';
+                const side = r * Math.sqrt(Math.PI);
+                const label = `${o.s.name}${Math.max(1, o.s.count || 1) > 1 ? ` ${o.i + 1}` : ''}`;
+                return (
+                  <g key={`sph:${o.key}`} transform={`translate(${p.x}, ${p.y})`} className="bubble stacked sphere">
+                    <title>{label} — {fmtArea(ea(o.s), units)}</title>
+                    <ellipse cx="0" cy={r * 0.62} rx={r * 0.92} ry={r * 0.26} className="sphere-shadow" />
+                    {box ? (
+                      <>
+                        <rect x={-side / 2} y={-side / 2} width={side} height={side} rx={Math.min(5, side / 8)} fill={colorOf(o.s)} />
+                        <rect x={-side / 2} y={-side / 2} width={side} height={side} rx={Math.min(5, side / 8)} fill="url(#sphere3d)" />
+                      </>
+                    ) : (
+                      <>
+                        <circle r={r} fill={colorOf(o.s)} />
+                        <circle r={r} fill="url(#sphere3d)" />
+                      </>
+                    )}
+                    <text textAnchor="middle" dy={r > 26 ? -2 : r > 13 ? 3 : r + 11} className="bubble-name" style={{ fontSize: Math.max(9, Math.min(14, r / 3.2)) }}>
+                      {label}
+                    </text>
+                    {r > 26 && <text textAnchor="middle" dy={14} className="bubble-area">{fmtArea(ea(o.s), units)}</text>}
+                  </g>
+                );
+              })}
 
             {scalePoints &&
               scalePoints.map((p, i) => (
@@ -1130,38 +1892,54 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
               <line x1={scalePoints[0].x} y1={scalePoints[0].y} x2={scalePoints[1].x} y2={scalePoints[1].y} className="scale-line" />
             )}
 
-            {adjacencies.map((l) => {
-              const sa = byId.get(l.space_a);
-              const sb = byId.get(l.space_b);
-              if (!sa || !sb) return null;
-              const pair = closestPair(sa, sb);
-              if (!pair) return null;
-              return (
-                <g key={l.id} className="link-hit" onClick={() => onLinkClick(l)}>
-                  <line x1={pair.a.x} y1={pair.a.y} x2={pair.b.x} y2={pair.b.y} className="link-hitarea" />
-                  <line x1={pair.a.x} y1={pair.a.y} x2={pair.b.x} y2={pair.b.y} className={`link ${l.strength}`} />
-                </g>
-              );
-            })}
+            {!stackMode &&
+              adjacencies.map((l) => {
+                const sa = byId.get(l.space_a);
+                const sb = byId.get(l.space_b);
+                if (!sa || !sb) return null;
+                if (!levelVisible(sa) || !levelVisible(sb)) return null;
+                const pair = closestPair(sa, sb);
+                if (!pair) return null;
+                return (
+                  <g key={l.id} className="link-hit" onClick={() => onLinkClick(l)}>
+                    <line x1={pair.a.x} y1={pair.a.y} x2={pair.b.x} y2={pair.b.y} className="link-hitarea" />
+                    <line
+                      x1={pair.a.x}
+                      y1={pair.a.y}
+                      x2={pair.b.x}
+                      y2={pair.b.y}
+                      className={`link ${l.strength}${highlightGaps && unmetLinkIds.has(l.id) ? ' unmet' : ''}`}
+                    />
+                  </g>
+                );
+              })}
 
-            {instances.map((o) => {
+            {!stackMode &&
+              instances.map((o) => {
               const n = nodes.get(o.key);
               if (!n) return null;
               const { s, i } = o;
+              if (!levelVisible(s)) return null;
               const r = radiusOf(s);
               const isSel = selected === s.id && (Math.max(1, s.count || 1) === 1 || selectedInst === i);
               const pinned = !!instPin(s, i);
+              const inMulti = multi.has(o.key);
               const count = Math.max(1, s.count || 1);
               const box = shapeOf(s) === 'box';
               const side = r * Math.sqrt(Math.PI); // square of equal area
               const fillOp = isSel ? Math.min((project.bubble_opacity ?? 0.32) + 0.25, 1) : pinned ? Math.min((project.bubble_opacity ?? 0.32) + 0.1, 1) : project.bubble_opacity ?? 0.32;
               const sw = isSel ? 3 : pinned ? 2.5 : 1.5;
+              const outline = bubbleStyle === 'outline';
+              const sketch = bubbleStyle === 'sketch';
+              const fillOpEff = outline ? 0 : fillOp;
+              const swEff = outline ? sw + 1 : sw;
+              const shapeFilter = sketch ? 'url(#sketchy)' : undefined;
               return (
                 <g
                   key={o.key}
                   data-space-id={s.id}
                   data-instance={i}
-                  className={`bubble ${isSel ? 'selected' : ''}`}
+                  className={`bubble ${isSel ? 'selected' : ''} ${inMulti ? 'multi' : ''}`}
                   transform={`translate(${n.x}, ${n.y})`}
                   onPointerDown={(e) => onBubbleDown(e, o)}
                   onPointerEnter={() => (hoverRef.current = { space: s, idx: i })}
@@ -1177,10 +1955,16 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
                     ) : (
                       <circle r={r + 5} className="pin-ring" />
                     ))}
+                  {inMulti &&
+                    (box ? (
+                      <rect x={-side / 2 - 7} y={-side / 2 - 7} width={side + 14} height={side + 14} rx="4" className="multi-ring" />
+                    ) : (
+                      <circle r={r + 7} className="multi-ring" />
+                    ))}
                   {box ? (
-                    <rect x={-side / 2} y={-side / 2} width={side} height={side} rx={Math.min(4, side / 8)} fill={colorOf(s)} fillOpacity={fillOp} stroke={colorOf(s)} strokeWidth={sw} />
+                    <rect x={-side / 2} y={-side / 2} width={side} height={side} rx={Math.min(4, side / 8)} fill={colorOf(s)} fillOpacity={fillOpEff} stroke={colorOf(s)} strokeWidth={swEff} filter={shapeFilter} />
                   ) : (
-                    <circle r={r} fill={colorOf(s)} fillOpacity={fillOp} stroke={colorOf(s)} strokeWidth={sw} />
+                    <circle r={r} fill={colorOf(s)} fillOpacity={fillOpEff} stroke={colorOf(s)} strokeWidth={swEff} filter={shapeFilter} />
                   )}
                   <text textAnchor="middle" dy={r > 26 ? -2 : r > 13 ? 3 : r + 11} className="bubble-name" style={{ fontSize: Math.max(9, Math.min(14, r / 3.2)) }}>
                     {s.name}
@@ -1207,12 +1991,29 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
               </g>
             )}
 
-            {(layers.sat.attribution || layers.bg.attribution) && (
+            {attributionLayer && (
               <text x={originX + vb.w - 8} y={originY + vb.h - 8} textAnchor="end" className="attribution">
-                {(layers.sat.visible && layers.sat.attribution) || (layers.bg.visible && layers.bg.attribution) || ''}
+                {attributionLayer.attribution}
               </text>
             )}
+
+            {marquee && (
+              <rect
+                className="marquee"
+                x={Math.min(marquee.x0, marquee.x1)}
+                y={Math.min(marquee.y0, marquee.y1)}
+                width={Math.abs(marquee.x1 - marquee.x0)}
+                height={Math.abs(marquee.y1 - marquee.y0)}
+              />
+            )}
           </svg>
+
+          {hasLevels && floorMode !== 'all' && (
+            <div className="floor-caption">
+              {stackMode ? (floorMode === 'offset' ? '▤ Floors — offset' : '▤ Floors — overlaid') : `▤ ${floorMode}`}
+              {stackMode && <span className="floor-caption-sub">view only — switch to a single floor to edit</span>}
+            </div>
+          )}
 
           <NorthRose deg={project.north_deg || 0} onSet={setNorth} />
 
@@ -1254,12 +2055,47 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
             );
           })()}
 
+          {multi.size > 0 && (
+            <div className="multi-bar">
+              <span className="multi-count">{multi.size} selected</span>
+              <button className="btn small" onClick={() => multiPin(true)} title="Pin every selected bubble where it sits">📌 Pin</button>
+              <button className="btn small" onClick={() => multiPin(false)} title="Unpin the selected bubbles">Unpin</button>
+              <button className="btn small" onClick={() => multiShape('box')} title="Make the selected spaces boxes">▢ Box</button>
+              <button className="btn small" onClick={() => multiShape('bubble')} title="Make the selected spaces bubbles">○ Bubble</button>
+              <span className="multi-sep" />
+              <input
+                className="multi-cat"
+                list="diagram-categories"
+                placeholder="Category…"
+                value={catDraft}
+                onChange={(e) => setCatDraft(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') multiSetCategory(catDraft); }}
+                title="Assign the selected bubbles to a category (type a new name to create it)"
+              />
+              <datalist id="diagram-categories">
+                {departments.map((d) => (
+                  <option key={d} value={d} />
+                ))}
+              </datalist>
+              <button className="btn small" onClick={() => multiSetCategory(catDraft)} disabled={!catDraft.trim()} title="Set the category of the selected bubbles">
+                Set
+              </button>
+              <span className="multi-sep" />
+              <button className="btn small ghost danger" onClick={multiDelete} title="Delete the selected spaces from the brief">✕ Delete</button>
+              <button className="btn small ghost" onClick={() => setMulti(new Set())} title="Clear the selection (Esc)">Clear</button>
+            </div>
+          )}
+
           <div className="stage-hint">
-            {moveLayer
+            {rotateLayer
+              ? 'Rotating image — drag the canvas to turn it. Toggle Rotate off when done.'
+              : moveLayer
               ? 'Moving image layer — drag the canvas to reposition it.'
               : panMode
               ? 'Pan mode — drag the canvas. Toggle Pan off to edit bubbles.'
-              : 'Drag to move · hover + P to pin · hover + B for box · click two bubbles to link them' +
+              : multi.size > 0
+              ? `${multi.size} selected — drag any selected bubble to move them together · set category / pin / box above · Esc to clear`
+              : 'Drag to move · hover + P to pin · hover + B for box · click two bubbles to link · drag empty canvas to multi-select' +
                 (effScale ? ` · ${scaleLabelFor(effScale)}` : '') +
                 (hasImage ? '' : ' · add a site image under Layers')}
           </div>
@@ -1268,33 +2104,61 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
 
       {split && (
         <aside className="diagram-rail">
+          <button className="rail-close" onClick={toggleSplit} title="Close panel">▾ Close panel</button>
+          <div className="rail-resizer" onPointerDown={startRailResize} title="Drag to resize the panel" />
           <section className="rail-section areas">
             <div className="rail-head">
               <h3>Areas</h3>
-              <span className="muted">live</span>
+              {hasBuildings && (
+                <div className="seg small">
+                  <button className={`seg-btn ${areaMode === 'category' ? 'active' : ''}`} onClick={() => setAreaMode('category')}>Category</button>
+                  <button className={`seg-btn ${areaMode === 'building' ? 'active' : ''}`} onClick={() => setAreaMode('building')}>Building</button>
+                </div>
+              )}
             </div>
             <div className="split-rows">
-              {groups.map((g) => (
-                <div key={g} className="split-group">
-                  <div className="split-dept">
-                    <span className="legend-dot" style={{ background: PALETTE[groups.indexOf(g) % PALETTE.length] }} />
-                    {g}
-                  </div>
-                  {leaves
-                    .filter((s) => groupKey(s) === g)
-                    .map((s) => (
-                      <div key={s.id} className={`split-row ${selected === s.id ? 'selected' : ''}`} onClick={() => setSelected(selected === s.id ? null : s.id)}>
-                        <span className="split-name" title={s.name}>
-                          {anyPinned(s) && <span className="split-pin">◉</span>}
-                          {s.name}
-                          {s.count > 1 ? ` ×${s.count}` : ''}
-                        </span>
-                        <input type="number" min="0.1" step="any" value={drafts[s.id] ?? s.target_area} onChange={(e) => onAreaDraft(s, e.target.value)} onClick={(e) => e.stopPropagation()} />
-                        <span className="split-total">{fmtArea((s.count || 1) * ea(s), units)}</span>
+              {areaMode === 'building' && hasBuildings
+                ? [...areaTree.entries()].map(([b, levels]) => {
+                    const bKey = `b:${b}`;
+                    const open = !collapsed.has(bKey);
+                    const bSpaces = [...levels.values()].flat();
+                    const bTotal = bSpaces.reduce((t, s) => t + (s.count || 1) * ea(s), 0);
+                    const multiLevel = levels.size > 1 || ![...levels.keys()].every((k) => k === '');
+                    return (
+                      <div key={bKey} className="split-group">
+                        <div className="split-dept building" onClick={() => toggleCollapse(bKey)}>
+                          <span className="collapse-caret">{open ? '▾' : '▸'}</span>
+                          <span className="legend-dot" style={{ background: colorForLabel(b) }} />
+                          🏢 {b}
+                          <span className="split-grouptotal">{fmtArea(bTotal, units)}</span>
+                        </div>
+                        {open &&
+                          [...levels.entries()].map(([lvl, list]) => (
+                            <div key={lvl} className="split-level-group">
+                              {multiLevel && <div className="split-level">{lvl || 'Unassigned level'}</div>}
+                              {list.map((s) => areaRow(s))}
+                            </div>
+                          ))}
                       </div>
-                    ))}
-                </div>
-              ))}
+                    );
+                  })
+                : groups.map((g) => {
+                    const gKey = `c:${g}`;
+                    const open = !collapsed.has(gKey);
+                    const list = leaves.filter((s) => groupKey(s) === g);
+                    const gTotal = list.reduce((t, s) => t + (s.count || 1) * ea(s), 0);
+                    return (
+                      <div key={gKey} className="split-group">
+                        <div className="split-dept" onClick={() => toggleCollapse(gKey)}>
+                          <span className="collapse-caret">{open ? '▾' : '▸'}</span>
+                          <span className="legend-dot" style={{ background: colorForLabel(g) }} />
+                          {g}
+                          <span className="split-grouptotal">{fmtArea(gTotal, units)}</span>
+                        </div>
+                        {open && list.map((s) => areaRow(s))}
+                      </div>
+                    );
+                  })}
             </div>
             <div className="split-foot">
               <span>Net total</span>
@@ -1305,14 +2169,22 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
           <section className="rail-section rel">
             <div className="rail-head">
               <h3>Relationships</h3>
-              <span className="muted">{adjacencies.length}</span>
+              <span className="muted">
+                {selectedSpace ? `${relList.length} · ${selectedSpace.name}` : adjacencies.length}
+              </span>
             </div>
-            {adjacencies.length === 0 ? (
-              <div className="empty small">Click two bubbles to link them.</div>
+            {selectedSpace && (
+              <div className="rel-filter">
+                Showing links for <strong>{selectedSpace.name}</strong>
+                <button className="btn small ghost" onClick={() => setSelected(null)}>show all</button>
+              </div>
+            )}
+            {relList.length === 0 ? (
+              <div className="empty small">{selectedSpace ? 'No links for this space yet — click another bubble to connect them.' : 'Click two bubbles to link them.'}</div>
             ) : (
               <table className="rail-rel">
                 <tbody>
-                  {adjacencies.map((l) => {
+                  {relList.map((l) => {
                     const a = byId.get(l.space_a);
                     const b = byId.get(l.space_b);
                     if (!a || !b) return null;
@@ -1345,49 +2217,104 @@ export default function BubbleTab({ project, spaces, adjacencies, onChanged }) {
   );
 }
 
-function LayerRow({ title, layer, dims, units, calibrated, onToggleVisible, onOpacity, onRotate, onCalibrate, onMove, moving, onClear, actionLabel, onAction }) {
-  const present = !!layer.image;
+function LayerRow({ title, layer, dims, units, calibrated, onToggleVisible, onOpacity, onRotate, onCalibrate, onMove, moving, onRotateMode, rotating, onFilter, onDelete }) {
   let scaleNote = '';
-  if (present && calibrated && dims) {
+  if (calibrated && dims) {
     const realW = dims.w * layer.mpp;
-    scaleNote = `${Math.round(realW).toLocaleString()} ${distUnit(units)} wide`;
+    scaleNote = `${Math.round(realW).toLocaleString()} ${distUnit(units)}`;
   }
   return (
     <div className="layer-row">
-      <label className="switch" title="Show or hide this layer">
-        <input type="checkbox" checked={!!layer.visible} disabled={!present} onChange={(e) => onToggleVisible(e.target.checked)} />
-        {title}
-      </label>
-      <span className={`layer-cal ${present ? (calibrated ? 'ok' : 'warn') : 'muted'}`}>
-        {present ? (calibrated ? scaleNote || 'calibrated' : 'not calibrated') : 'none'}
-      </span>
-      <div className="layer-controls">
-        <label className="opacity-label">
-          Opacity
-          <input type="range" min="0.1" max="1" step="0.05" value={layer.opacity} disabled={!present} onChange={(e) => onOpacity(Number(e.target.value))} />
+      <div className="layer-head">
+        <label className="switch" title="Show or hide this layer">
+          <input type="checkbox" checked={!!layer.visible} onChange={(e) => onToggleVisible(e.target.checked)} />
+          <span className="layer-name">{title}</span>
         </label>
+        <span className={`layer-cal ${calibrated ? 'ok' : 'warn'}`} title={calibrated ? `${scaleNote} wide` : 'Not calibrated — use 📏 to set the scale'}>
+          {calibrated ? scaleNote : 'uncal.'}
+        </span>
+        <button className="btn small ghost danger layer-del" onClick={onDelete} title="Remove this image">✕</button>
+      </div>
+      <div className="layer-ctrls">
+        <span className="opacity-mini" title="Opacity">
+          ◐
+          <input type="range" min="0.1" max="1" step="0.05" value={layer.opacity} onChange={(e) => onOpacity(Number(e.target.value))} />
+        </span>
         <span className="rot-field" title="Rotation in degrees (clockwise)">
           ⟳
-          <input type="number" step="1" value={Math.round(layer.rot || 0)} disabled={!present} onChange={(e) => onRotate(((Number(e.target.value) % 360) + 360) % 360)} />°
+          <input type="number" step="1" value={Math.round(layer.rot || 0)} onChange={(e) => onRotate(((Number(e.target.value) % 360) + 360) % 360)} />
         </span>
+        <select className="filter-select" value={layer.filter || ''} onChange={(e) => onFilter(e.target.value)} title="Diagrammatic filter">
+          {IMAGE_FILTERS.map(([v, l]) => (
+            <option key={v} value={v}>{l}</option>
+          ))}
+        </select>
+        <button className="btn small" onClick={onCalibrate} title="Calibrate scale — mark a known distance">📏</button>
+        <button className={`btn small ${moving ? 'on' : ''}`} onClick={onMove} title="Move — then drag the canvas">✥</button>
+        <button className={`btn small ${rotating ? 'on' : ''}`} onClick={onRotateMode} title="Rotate — then drag the canvas">⟲</button>
       </div>
-      <div className="layer-actions">
-        <button className="btn small" onClick={onAction}>
-          {actionLabel}
-        </button>
-        {present && (
-          <>
-            <button className="btn small" onClick={onCalibrate}>
-              📏 Calibrate
-            </button>
-            <button className={`btn small ${moving ? 'primary' : ''}`} onClick={onMove}>
-              ✥ Move
-            </button>
-            <button className="btn small ghost danger" onClick={onClear}>
-              ✕
-            </button>
-          </>
-        )}
+    </div>
+  );
+}
+
+function MatrixPanel({ leaves, adjacencies, colorOf, onCycle, onClose }) {
+  const strengthOf = (a, b) => {
+    const l = adjacencies.find(
+      (x) => (x.space_a === a && x.space_b === b) || (x.space_a === b && x.space_b === a)
+    );
+    return l?.strength ?? null;
+  };
+  const glyph = { required: '●', desired: '○' };
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal matrix-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h2>Adjacency matrix</h2>
+          <button className="btn ghost" onClick={onClose}>✕</button>
+        </div>
+        <p className="hint">
+          Click a cell to cycle the relationship: blank → <b>○ desired</b> → <b>● required</b> → blank. Changes
+          sync with the diagram and are undoable.
+        </p>
+        <div className="matrix-scroll">
+          <table className="matrix">
+            <thead>
+              <tr>
+                <th className="corner" />
+                {leaves.map((s) => (
+                  <th key={s.id} className="mcol" title={s.name}>
+                    <span>{s.name}</span>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {leaves.map((row, ri) => (
+                <tr key={row.id}>
+                  <th className="mrow" title={row.name}>
+                    <span className="legend-dot" style={{ background: colorOf(row) }} />
+                    {row.name}
+                  </th>
+                  {leaves.map((col, ci) => {
+                    if (ci === ri) return <td key={col.id} className="mdiag" />;
+                    if (ci > ri) return <td key={col.id} className="mvoid" />;
+                    const st = strengthOf(row.id, col.id);
+                    return (
+                      <td
+                        key={col.id}
+                        className={`mcell ${st || ''}`}
+                        title={`${row.name} ↔ ${col.name}`}
+                        onClick={() => onCycle(row.id, col.id)}
+                      >
+                        {glyph[st] || ''}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );

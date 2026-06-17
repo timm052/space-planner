@@ -21,15 +21,39 @@ export function childIdSet(spaces) {
   return set;
 }
 
-export function isLeaf(space, parents = null) {
-  if (isContainerKind(space)) return false;
-  if (parents && parents.has(space.id)) return false;
+// A pure container groups its children and carries no area of its own:
+// buildings/zones, and 'group'-mode spaces that have children.
+export function isPureContainer(space, childIds) {
+  if (isContainerKind(space)) return true;
+  if (childIds && childIds.has(space.id)) return space.child_mode !== 'within' && space.child_mode !== 'attached';
+  return false;
+}
+
+// True if an ancestor 'within' space already accounts for this space's area
+// (so it must not be counted again or drawn as its own bubble).
+export function isWithinDescendant(space, byId) {
+  let cur = space;
+  const seen = new Set();
+  while (cur && cur.parent_id != null && byId.has(cur.parent_id) && !seen.has(cur.id)) {
+    seen.add(cur.id);
+    cur = byId.get(cur.parent_id);
+    if (!isContainerKind(cur) && cur.child_mode === 'within') return true;
+  }
+  return false;
+}
+
+// A "leaf" carries area and draws a bubble: a space that isn't a pure container
+// and isn't swallowed by a 'within' ancestor.
+export function isLeaf(space, childIds = null, byId = null) {
+  if (isPureContainer(space, childIds)) return false;
+  if (byId && isWithinDescendant(space, byId)) return false;
   return true;
 }
 
 export function leafSpaces(spaces) {
-  const parents = childIdSet(spaces);
-  return spaces.filter((s) => isLeaf(s, parents));
+  const childIds = childIdSet(spaces);
+  const byId = new Map(spaces.map((s) => [s.id, s]));
+  return spaces.filter((s) => isLeaf(s, childIds, byId));
 }
 
 export function childrenOf(spaces, parentId) {
@@ -61,15 +85,14 @@ export function orderedTree(spaces) {
   return out;
 }
 
-// Sum of count*target_area over the leaf descendants of a space (self if leaf).
+// Sum of count*target_area over the area-carrying descendants of a space
+// (includes self when it carries area; 'within' children are excluded).
 export function subtreeArea(space, spaces) {
-  const parents = childIdSet(spaces);
+  const childIds = childIdSet(spaces);
+  const byId = new Map(spaces.map((s) => [s.id, s]));
   let sum = 0;
   const visit = (s) => {
-    if (isLeaf(s, parents)) {
-      sum += targetTotal(s);
-      return;
-    }
+    if (isLeaf(s, childIds, byId)) sum += targetTotal(s);
     for (const c of spaces.filter((x) => x.parent_id === s.id)) visit(c);
   };
   visit(space);

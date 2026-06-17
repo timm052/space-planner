@@ -112,12 +112,25 @@ export default function ProjectList({ projects, onOpen, onChanged }) {
       ) : (
         <div className="project-grid">
           {projects.map((p) => (
-            <div key={p.id} className="card project-card" onClick={() => onOpen(p.id)}>
+            <div
+              key={p.id}
+              className="card project-card"
+              role="button"
+              tabIndex={0}
+              onClick={() => onOpen(p.id)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  onOpen(p.id);
+                }
+              }}
+            >
               <div className="project-card-head">
                 <h2>{p.name}</h2>
                 <button
                   className="btn ghost danger small"
                   title="Delete project"
+                  aria-label={`Delete project ${p.name}`}
                   onClick={(e) => {
                     e.stopPropagation();
                     remove(p.id, p.name);

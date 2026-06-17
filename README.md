@@ -52,6 +52,16 @@ milestone into a recorded snapshot measured against it:
     not clamped to the viewport.
   - **One bubble per room** — count 3 draws three clustered bubbles, each
     pinnable; adjacency links connect the closest pair of rooms.
+  - **Floor view modes** — when the brief uses building levels, switch the
+    diagram between **all floors** together, **one floor at a time**, or a
+    **stacked axonometric** — each floor an isometric plane with its rooms (and
+    the site image, warped to match the perspective) lying on it, tied together
+    by dashed corner guides. Floors can be **offset** apart or **overlaid** on
+    one plane to compare footprints.
+  - **Adjacency compliance score** — with a scale set, a toolbar badge grades how
+    well the current layout honours the declared relationships (the weighted share
+    of required/desired links whose bubbles are actually placed adjacent); click
+    it to highlight the unmet links in red.
   - **Help** — a "?" panel documents every gesture and feature.
 - **Settings** — user preferences: default units (m²/ft²), default tolerance,
   and default efficiency target for new projects.
@@ -97,6 +107,22 @@ Production:
 npm run build
 npm start          # serves API + built app on :3001 (or $PORT)
 ```
+
+## Tests
+
+```bash
+npm test           # Node's built-in test runner (no extra deps)
+```
+
+The suite (`test/`) covers the pure domain logic in `compute.js` (hierarchy,
+leaf-aware rollups, units, CSV) and `scale.js` (scale conversions + the
+zoom-about-anchor invariant); API integration tests that spin the Express app up
+against an isolated temp database (set via `BRIEFTRACK_DB_DIR`) and exercise
+every endpoint, including parent-cycle prevention and recursive subtree deletes;
+and component tests that render the prop-driven React views (Dashboard,
+DriftChart, ProjectList) to static markup via `react-dom/server` and assert on
+the output. JSX in the tests is transformed by `tsx` (the `--import tsx` flag in
+the `test` script). CI runs `npm test` before the build.
 
 ## API
 

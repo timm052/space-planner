@@ -55,7 +55,7 @@ const PROJECT_FIELDS = [
   'bubble_opacity', 'view_x', 'view_y',
   'bg_mpp', 'bg_visible', 'bg_x', 'bg_y',
   'sat_image', 'sat_mpp', 'sat_opacity', 'sat_attribution', 'sat_visible', 'sat_x', 'sat_y',
-  'north_deg', 'bg_rot', 'sat_rot',
+  'north_deg', 'bg_rot', 'sat_rot', 'category_colors', 'bubble_style',
 ];
 
 app.put('/api/projects/:id', (req, res) => {
@@ -99,7 +99,10 @@ app.get('/api/projects/:id', (req, res) => {
   const adjacencies = db
     .prepare('SELECT * FROM adjacencies WHERE project_id = ?')
     .all(project.id);
-  res.json({ project, spaces, snapshots, adjacencies });
+  const images = db
+    .prepare('SELECT * FROM images WHERE project_id = ? ORDER BY sort_order, id')
+    .all(project.id);
+  res.json({ project, spaces, snapshots, adjacencies, images });
 });
 
 // ---------- Spaces (brief) ----------
@@ -132,7 +135,8 @@ function parentOk(projectId, parentId, selfId) {
 app.post('/api/projects/:id/spaces', (req, res) => {
   const project = requireProject(req, res);
   if (!project) return;
-  const { department = 'General', name, count = 1, target_area, notes = '', kind = 'space' } = req.body;
+  const { department = 'General', name, count = 1, target_area, notes = '', kind = 'space', level = '' } = req.body;
+  const child_mode = ['group', 'within', 'attached'].includes(req.body.child_mode) ? req.body.child_mode : 'group';
   const parent_id = req.body.parent_id != null ? Number(req.body.parent_id) : null;
   if (!name || !name.trim()) return res.status(400).json({ error: 'Space name is required' });
   const isContainer = CONTAINER_KINDS.has(kind);
@@ -147,12 +151,12 @@ app.post('/api/projects/:id/spaces', (req, res) => {
     .get(project.id).m;
   const r = db
     .prepare(
-      `INSERT INTO spaces (project_id, department, name, count, target_area, notes, sort_order, parent_id, kind)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO spaces (project_id, department, name, count, target_area, notes, sort_order, parent_id, kind, child_mode, level)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       project.id, department, name.trim(), Number(count) || 1,
-      isContainer ? 0 : Number(target_area), notes, max + 1, parent_id, kind
+      isContainer ? 0 : Number(target_area), notes, max + 1, parent_id, kind, child_mode, level
     );
   res.status(201).json(db.prepare('SELECT * FROM spaces WHERE id = ?').get(r.lastInsertRowid));
 });
@@ -160,7 +164,7 @@ app.post('/api/projects/:id/spaces', (req, res) => {
 app.put('/api/spaces/:id', (req, res) => {
   const space = db.prepare('SELECT * FROM spaces WHERE id = ?').get(Number(req.params.id));
   if (!space) return res.status(404).json({ error: 'Space not found' });
-  const { department = space.department, name = space.name, count = space.count, target_area = space.target_area, notes = space.notes, kind = space.kind, shape = space.shape } = req.body;
+  const { department = space.department, name = space.name, count = space.count, target_area = space.target_area, notes = space.notes, kind = space.kind, shape = space.shape, child_mode = space.child_mode, level = space.level } = req.body;
   const parent_id = 'parent_id' in req.body ? (req.body.parent_id != null ? Number(req.body.parent_id) : null) : space.parent_id;
   if (!parentOk(space.project_id, parent_id, space.id)) {
     return res.status(400).json({ error: 'Invalid parent (would create a cycle)' });
@@ -170,10 +174,14 @@ app.put('/api/spaces/:id', (req, res) => {
   const pin_y = 'pin_y' in req.body ? req.body.pin_y : space.pin_y;
   let pin_json = 'pin_json' in req.body ? req.body.pin_json : space.pin_json;
   if (pin_json != null && typeof pin_json !== 'string') pin_json = JSON.stringify(pin_json);
+  // image and sort_order are settable (image to null clears it), so check key presence.
+  const image = 'image' in req.body ? req.body.image : space.image;
+  const sort_order = 'sort_order' in req.body ? Number(req.body.sort_order) : space.sort_order;
   const area = CONTAINER_KINDS.has(kind) ? 0 : Number(target_area);
+  const childMode = ['group', 'within', 'attached'].includes(child_mode) ? child_mode : 'group';
   db.prepare(
-    'UPDATE spaces SET department = ?, name = ?, count = ?, target_area = ?, notes = ?, pin_x = ?, pin_y = ?, pin_json = ?, parent_id = ?, kind = ?, shape = ? WHERE id = ?'
-  ).run(department, name, Number(count) || 1, area, notes, pin_x, pin_y, pin_json, parent_id, kind, shape === 'box' ? 'box' : 'bubble', space.id);
+    'UPDATE spaces SET department = ?, name = ?, count = ?, target_area = ?, notes = ?, pin_x = ?, pin_y = ?, pin_json = ?, parent_id = ?, kind = ?, shape = ?, image = ?, sort_order = ?, child_mode = ?, level = ? WHERE id = ?'
+  ).run(department, name, Number(count) || 1, area, notes, pin_x, pin_y, pin_json, parent_id, kind, shape === 'box' ? 'box' : 'bubble', image, sort_order, childMode, level ?? '', space.id);
   res.json(db.prepare('SELECT * FROM spaces WHERE id = ?').get(space.id));
 });
 
@@ -294,6 +302,43 @@ app.delete('/api/snapshots/:id', (req, res) => {
   res.status(204).end();
 });
 
+// ---------- Image layers ----------
+
+const IMAGE_FIELDS = ['kind', 'name', 'image', 'mpp', 'opacity', 'visible', 'x', 'y', 'rot', 'sort_order', 'attribution', 'filter'];
+
+app.post('/api/projects/:id/images', (req, res) => {
+  const project = requireProject(req, res);
+  if (!project) return;
+  const { kind = 'custom', name = '', image, mpp = null, opacity = 0.6, visible = 1, x = 0, y = 0, rot = 0, attribution = null } = req.body;
+  if (!image || typeof image !== 'string') return res.status(400).json({ error: 'Image data is required' });
+  const max = db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM images WHERE project_id = ?').get(project.id).m;
+  const r = db
+    .prepare(
+      `INSERT INTO images (project_id, kind, name, image, mpp, opacity, visible, x, y, rot, sort_order, attribution)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(project.id, kind, name, image, mpp, opacity, visible ? 1 : 0, x, y, rot, max + 1, attribution);
+  res.status(201).json(db.prepare('SELECT * FROM images WHERE id = ?').get(r.lastInsertRowid));
+});
+
+app.put('/api/images/:id', (req, res) => {
+  const img = db.prepare('SELECT * FROM images WHERE id = ?').get(Number(req.params.id));
+  if (!img) return res.status(404).json({ error: 'Image not found' });
+  const updates = {};
+  for (const f of IMAGE_FIELDS) if (f in req.body) updates[f] = f === 'visible' ? (req.body[f] ? 1 : 0) : req.body[f];
+  if (Object.keys(updates).length > 0) {
+    const setSql = Object.keys(updates).map((f) => `${f} = ?`).join(', ');
+    db.prepare(`UPDATE images SET ${setSql} WHERE id = ?`).run(...Object.values(updates), img.id);
+  }
+  res.json(db.prepare('SELECT * FROM images WHERE id = ?').get(img.id));
+});
+
+app.delete('/api/images/:id', (req, res) => {
+  const r = db.prepare('DELETE FROM images WHERE id = ?').run(Number(req.params.id));
+  if (r.changes === 0) return res.status(404).json({ error: 'Image not found' });
+  res.status(204).end();
+});
+
 // ---------- Settings ----------
 
 app.get('/api/settings', (req, res) => {
@@ -361,11 +406,18 @@ if (process.env.NODE_ENV === 'production') {
   app.get('*', (req, res) => res.sendFile(path.join(dist, 'index.html')));
 }
 
-// In dev, Vite owns PORT (the launcher may inject it); the API listens on its own port.
-const PORT =
-  process.env.API_PORT ||
-  (process.env.NODE_ENV === 'production' && process.env.PORT) ||
-  3001;
-app.listen(PORT, () => {
-  console.log(`BriefTrack API listening on http://localhost:${PORT}`);
-});
+export { app };
+
+// Only start listening when run directly (node server/index.js), not when the
+// app is imported by tests (which start their own ephemeral-port server).
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) {
+  // In dev, Vite owns PORT (the launcher may inject it); the API listens on its own port.
+  const PORT =
+    process.env.API_PORT ||
+    (process.env.NODE_ENV === 'production' && process.env.PORT) ||
+    3001;
+  app.listen(PORT, () => {
+    console.log(`BriefTrack API listening on http://localhost:${PORT}`);
+  });
+}

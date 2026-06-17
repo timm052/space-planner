@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api.js';
 import {
   briefNet,
@@ -6,11 +6,13 @@ import {
   subtreeArea,
   orderedTree,
   isContainerKind,
+  isPureContainer,
   childIdSet,
   fmtArea,
 } from '../compute.js';
 
 const NEW = { kind: 'space', department: '', name: '', count: 1, target_area: '' };
+const CHILD_MODE_LABEL = { group: 'Group', within: 'Within', attached: 'Attached' };
 
 export default function BriefTab({ project, spaces, onChanged }) {
   const [form, setForm] = useState(NEW);
@@ -20,6 +22,19 @@ export default function BriefTab({ project, spaces, onChanged }) {
   const [error, setError] = useState(null);
   const [dragId, setDragId] = useState(null);
   const [dropId, setDropId] = useState(null); // 0 = top level
+  const [dropPos, setDropPos] = useState(null); // 'before' | 'after' | 'inside'
+  const [focusId, setFocusId] = useState(null);
+  const [expandedId, setExpandedId] = useState(null); // row whose notes/image panel is open
+  const rowEls = useRef(new Map());
+  const pendingFocus = useRef(null); // re-focus this row after the next refetch
+
+  // Keep keyboard focus on the row the user just moved/indented, across refetch.
+  useEffect(() => {
+    if (pendingFocus.current != null) {
+      rowEls.current.get(pendingFocus.current)?.focus();
+      pendingFocus.current = null;
+    }
+  });
 
   async function reparent(id, parentId) {
     if (id === parentId) return;
@@ -31,14 +46,47 @@ export default function BriefTab({ project, spaces, onChanged }) {
       setError(e.message);
     }
   }
-  function onDropRow(target) {
+  // Decide drop intent from the cursor's vertical position within the row:
+  // containers nest in the middle and reorder at the edges; leaves only reorder.
+  function dropIntent(e, target) {
+    const r = e.currentTarget.getBoundingClientRect();
+    const rel = (e.clientY - r.top) / r.height;
+    if (isContainerRow(target)) return rel < 0.3 ? 'before' : rel > 0.7 ? 'after' : 'inside';
+    return rel < 0.5 ? 'before' : 'after';
+  }
+  function onRowDrop(e, target) {
+    e.preventDefault();
     const id = dragId;
+    const pos = dropPos;
     setDragId(null);
     setDropId(null);
+    setDropPos(null);
     if (!id || id === target.id) return;
-    // Drop onto a container → nest inside it; onto a leaf → become its sibling.
-    const parent = isContainerKind(target) || parents.has(target.id) ? target.id : target.parent_id ?? null;
-    reparent(id, parent);
+    if (pos === 'inside') reparent(id, target.id);
+    else placeBeside(id, target, pos === 'after');
+  }
+  // Move `id` to sit just before/after `target`, in the same parent, reassigning
+  // sibling sort_order so the new order persists.
+  async function placeBeside(id, target, after) {
+    const dragSpace = byId.get(id);
+    if (!dragSpace) return;
+    const parentId = target.parent_id ?? null;
+    const sibs = spaces
+      .filter((x) => (x.parent_id ?? null) === parentId && x.id !== id)
+      .sort((a, b) => a.sort_order - b.sort_order || a.id - b.id);
+    const ti = sibs.findIndex((x) => x.id === target.id);
+    sibs.splice(after ? ti + 1 : ti, 0, dragSpace);
+    setError(null);
+    try {
+      for (let k = 0; k < sibs.length; k++) {
+        const upd = { sort_order: k };
+        if (sibs[k].id === id && (dragSpace.parent_id ?? null) !== parentId) upd.parent_id = parentId;
+        if (sibs[k].sort_order !== k || sibs[k].id === id) await api.updateSpace(sibs[k].id, upd);
+      }
+      onChanged();
+    } catch (e) {
+      setError(e.message);
+    }
   }
 
   const departments = [...new Set(spaces.map((s) => s.department).filter(Boolean))];
@@ -46,7 +94,10 @@ export default function BriefTab({ project, spaces, onChanged }) {
   const tree = useMemo(() => orderedTree(spaces), [spaces]);
   const parents = useMemo(() => childIdSet(spaces), [spaces]);
   const byId = useMemo(() => new Map(spaces.map((s) => [s.id, s])), [spaces]);
-  const isContainerRow = (s) => isContainerKind(s) || parents.has(s.id);
+  // Pure containers (buildings/zones and group-mode parents) show rolled-up
+  // areas; 'within'/'attached' parents are real spaces with their own area.
+  const isContainerRow = (s) => isPureContainer(s, parents);
+  const hasChildren = (s) => parents.has(s.id);
 
   async function add(e) {
     e.preventDefault();
@@ -77,6 +128,8 @@ export default function BriefTab({ project, spaces, onChanged }) {
       count: s.count,
       target_area: s.target_area,
       parent_id: s.parent_id,
+      child_mode: s.child_mode || 'group',
+      level: s.level || '',
     });
   }
 
@@ -90,6 +143,8 @@ export default function BriefTab({ project, spaces, onChanged }) {
         count: Number(edit.count) || 1,
         target_area: Number(edit.target_area),
         parent_id: edit.parent_id ? Number(edit.parent_id) : null,
+        child_mode: edit.child_mode || 'group',
+        level: edit.level || '',
       });
       setEditingId(null);
       onChanged();
@@ -109,6 +164,114 @@ export default function BriefTab({ project, spaces, onChanged }) {
     onChanged();
   }
 
+  // ---------- keyboard-first editing ----------
+  function focusRow(id) {
+    setFocusId(id);
+    rowEls.current.get(id)?.focus();
+  }
+  function siblingsOf(space) {
+    return spaces
+      .filter((x) => (x.parent_id ?? null) === (space.parent_id ?? null))
+      .sort((a, b) => a.sort_order - b.sort_order || a.id - b.id);
+  }
+  async function moveWithin(space, dir) {
+    const sibs = siblingsOf(space);
+    const i = sibs.findIndex((x) => x.id === space.id);
+    const j = i + dir;
+    if (j < 0 || j >= sibs.length) return;
+    const reordered = [...sibs];
+    [reordered[i], reordered[j]] = [reordered[j], reordered[i]];
+    pendingFocus.current = space.id;
+    setError(null);
+    try {
+      // Normalise sort_order to position so a swap is unambiguous.
+      for (let k = 0; k < reordered.length; k++) {
+        if (reordered[k].sort_order !== k) await api.updateSpace(reordered[k].id, { sort_order: k });
+      }
+      onChanged();
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+  function indent(space) {
+    const sibs = siblingsOf(space);
+    const i = sibs.findIndex((x) => x.id === space.id);
+    if (i <= 0) return; // nothing to nest under
+    pendingFocus.current = space.id;
+    reparent(space.id, sibs[i - 1].id);
+  }
+  function outdent(space) {
+    if (space.parent_id == null) return;
+    const parent = byId.get(space.parent_id);
+    pendingFocus.current = space.id;
+    reparent(space.id, parent ? parent.parent_id ?? null : null);
+  }
+  function onTreeKey(e, s) {
+    if (editingId != null) return;
+    const ids = tree.map((t) => t.space.id);
+    const idx = ids.indexOf(s.id);
+    if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+      e.preventDefault();
+      moveWithin(s, e.key === 'ArrowUp' ? -1 : 1);
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (ids[idx + 1] != null) focusRow(ids[idx + 1]);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (ids[idx - 1] != null) focusRow(ids[idx - 1]);
+    } else if (e.key === 'Tab') {
+      e.preventDefault();
+      e.shiftKey ? outdent(s) : indent(s);
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      startEdit(s);
+    } else if (e.key === 'Delete') {
+      e.preventDefault();
+      remove(s);
+    } else if (e.key.toLowerCase() === 'n') {
+      e.preventDefault();
+      setExpandedId(expandedId === s.id ? null : s.id);
+    }
+  }
+
+  // ---------- per-space notes & reference image ----------
+  async function saveNotes(space, value) {
+    if (value === (space.notes ?? '')) return;
+    setError(null);
+    try {
+      await api.updateSpace(space.id, { notes: value });
+      onChanged();
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+  function onSpaceImage(space, e) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (file.size > 6 * 1024 * 1024) return setError('Reference image is too large (6 MB max).');
+    const reader = new FileReader();
+    reader.onload = async () => {
+      setError(null);
+      try {
+        await api.updateSpace(space.id, { image: reader.result });
+        onChanged();
+      } catch (err) {
+        setError(err.message);
+      }
+    };
+    reader.readAsDataURL(file);
+  }
+  async function clearImage(space) {
+    setError(null);
+    try {
+      await api.updateSpace(space.id, { image: null });
+      onChanged();
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
   const parentOptions = containers.filter((c) => c.id !== editingId);
   const addingUnder = addParent != null ? byId.get(addParent) : null;
   const unit = project.units === 'ft2' ? 'ft²' : 'm²';
@@ -122,13 +285,8 @@ export default function BriefTab({ project, spaces, onChanged }) {
             <option value="building">Building / zone</option>
           </select>
           {form.kind !== 'building' && (
-            <input list="departments" placeholder="Department" value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value })} />
+            <CategorySelect value={form.department} options={departments} onChange={(v) => setForm({ ...form, department: v })} />
           )}
-          <datalist id="departments">
-            {departments.map((d) => (
-              <option key={d} value={d} />
-            ))}
-          </datalist>
           <input placeholder={form.kind === 'building' ? 'Building name (e.g. Main Building)' : 'Space name (e.g. Reading Room)'} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
           {form.kind !== 'building' && (
             <>
@@ -156,6 +314,13 @@ export default function BriefTab({ project, spaces, onChanged }) {
       </form>
       {error && <div className="banner error">{error}</div>}
 
+      {spaces.length > 0 && (
+        <p className="brief-hint hint">
+          Keyboard: click a row, then <kbd>↑</kbd>/<kbd>↓</kbd> move · <kbd>Alt</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd> reorder ·{' '}
+          <kbd>Tab</kbd>/<kbd>⇧Tab</kbd> nest/unnest · <kbd>Enter</kbd> edit · <kbd>N</kbd> notes · <kbd>Del</kbd> remove.
+        </p>
+      )}
+
       {spaces.length === 0 ? (
         <div className="empty">The brief is empty. Add a building or the client's required spaces above.</div>
       ) : (
@@ -164,7 +329,7 @@ export default function BriefTab({ project, spaces, onChanged }) {
             <thead>
               <tr>
                 <th>Name</th>
-                <th>Department</th>
+                <th>Category</th>
                 <th className="num">Count</th>
                 <th className="num">Area each</th>
                 <th className="num">Total</th>
@@ -191,7 +356,7 @@ export default function BriefTab({ project, spaces, onChanged }) {
                       {edit.kind === 'building' ? (
                         <span className="muted">—</span>
                       ) : (
-                        <input value={edit.department} onChange={(e) => setEdit({ ...edit, department: e.target.value })} />
+                        <CategorySelect value={edit.department} options={departments} onChange={(v) => setEdit({ ...edit, department: v })} />
                       )}
                     </td>
                     <td className="num">
@@ -201,14 +366,26 @@ export default function BriefTab({ project, spaces, onChanged }) {
                       {edit.kind === 'building' ? <span className="muted">—</span> : <input type="number" min="0.1" step="any" value={edit.target_area} onChange={(e) => setEdit({ ...edit, target_area: e.target.value })} />}
                     </td>
                     <td className="num">
-                      <select className="parent-select" value={edit.parent_id || ''} onChange={(e) => setEdit({ ...edit, parent_id: e.target.value })} title="Parent container">
-                        <option value="">Top level</option>
-                        {parentOptions.map((c) => (
-                          <option key={c.id} value={c.id}>
-                            in {c.name}
-                          </option>
-                        ))}
-                      </select>
+                      <div className="edit-extra">
+                        <select className="parent-select" value={edit.parent_id || ''} onChange={(e) => setEdit({ ...edit, parent_id: e.target.value })} title="Parent container">
+                          <option value="">Top level</option>
+                          {parentOptions.map((c) => (
+                            <option key={c.id} value={c.id}>
+                              in {c.name}
+                            </option>
+                          ))}
+                        </select>
+                        {edit.kind !== 'building' && hasChildren(s) && (
+                          <select className="mode-select" value={edit.child_mode} onChange={(e) => setEdit({ ...edit, child_mode: e.target.value })} title="How nested spaces relate to this one">
+                            <option value="group">Children: grouped (sum)</option>
+                            <option value="within">Children: within its area</option>
+                            <option value="attached">Children: attached (move together)</option>
+                          </select>
+                        )}
+                        {edit.kind !== 'building' && (
+                          <input className="level-input" placeholder="Level (e.g. Ground)" value={edit.level} onChange={(e) => setEdit({ ...edit, level: e.target.value })} title="Building level / storey" />
+                        )}
+                      </div>
                     </td>
                     <td className="row-actions">
                       <button className="btn small primary" onClick={() => saveEdit(s.id)} type="button">
@@ -220,38 +397,90 @@ export default function BriefTab({ project, spaces, onChanged }) {
                     </td>
                   </tr>
                 ) : (
-                  <tr
-                    key={s.id}
-                    className={`${isContainerRow(s) ? 'container-row' : ''} ${dragId === s.id ? 'dragging' : ''} ${dropId === s.id ? 'drop-target' : ''}`}
-                    draggable
-                    onDragStart={() => setDragId(s.id)}
-                    onDragEnd={() => (setDragId(null), setDropId(null))}
-                    onDragOver={(e) => { e.preventDefault(); if (dropId !== s.id) setDropId(s.id); }}
-                    onDrop={(e) => { e.preventDefault(); onDropRow(s); }}
-                  >
-                    <td style={{ paddingLeft: 10 + depth * 20 }}>
-                      <span className="drag-grip" title="Drag to move / nest">⠿</span>
-                      <span className="kind-icon">{isContainerRow(s) ? '▦' : '·'}</span>
-                      {s.name}
-                    </td>
-                    <td>{isContainerKind(s) ? <span className="muted">{s.kind}</span> : s.department}</td>
-                    <td className="num">{isContainerKind(s) ? '—' : s.count}</td>
-                    <td className="num">{isContainerKind(s) ? '—' : fmtArea(s.target_area, project.units)}</td>
-                    <td className="num strong">{fmtArea(isContainerRow(s) ? subtreeArea(s, spaces) : targetTotal(s), project.units)}</td>
-                    <td className="row-actions">
-                      {isContainerRow(s) && (
-                        <button className="btn small ghost" onClick={() => setAddParent(s.id)} type="button" title={`Add a space inside ${s.name}`}>
-                          + inside
+                  <Fragment key={s.id}>
+                    <tr
+                      ref={(el) => (el ? rowEls.current.set(s.id, el) : rowEls.current.delete(s.id))}
+                      tabIndex={0}
+                      className={`${isContainerRow(s) ? 'container-row' : ''} ${s.kind === 'building' ? 'building-row' : ''} ${dragId === s.id ? 'dragging' : ''} ${dropId === s.id ? `drop-${dropPos}` : ''} ${focusId === s.id ? 'kb-focus' : ''}`}
+                      draggable
+                      onFocus={() => setFocusId(s.id)}
+                      onKeyDown={(e) => onTreeKey(e, s)}
+                      onDragStart={() => setDragId(s.id)}
+                      onDragEnd={() => (setDragId(null), setDropId(null), setDropPos(null))}
+                      onDragOver={(e) => { e.preventDefault(); const pos = dropIntent(e, s); if (dropId !== s.id || dropPos !== pos) { setDropId(s.id); setDropPos(pos); } }}
+                      onDrop={(e) => onRowDrop(e, s)}
+                    >
+                      <td style={{ paddingLeft: 10 + depth * 20 }}>
+                        <span className="drag-grip" title="Drag to move / nest">⠿</span>
+                        <span className="kind-icon">{s.kind === 'building' ? '🏢' : isContainerRow(s) ? '▦' : '·'}</span>
+                        <span className={isContainerRow(s) ? 'container-name' : ''}>{s.name}</span>
+                        {s.level ? <span className="row-tag" title="Building level">{s.level}</span> : null}
+                        {hasChildren(s) && s.kind === 'space' && (s.child_mode === 'within' || s.child_mode === 'attached') ? (
+                          <span className="row-tag mode" title="How nested spaces relate to this one">{CHILD_MODE_LABEL[s.child_mode]}</span>
+                        ) : null}
+                        {s.notes ? <span className="row-flag" title="Has notes">📝</span> : null}
+                        {s.image ? <span className="row-flag" title="Has reference image">🖼</span> : null}
+                      </td>
+                      <td>
+                        {isContainerKind(s) ? (
+                          <span className={`kind-badge ${s.kind}`}>{s.kind === 'building' ? 'Building' : 'Zone'}</span>
+                        ) : (
+                          s.department
+                        )}
+                      </td>
+                      <td className="num">{isContainerRow(s) ? '—' : s.count}</td>
+                      <td className="num">{isContainerRow(s) ? '—' : fmtArea(s.target_area, project.units)}</td>
+                      <td className="num strong">{fmtArea(isContainerRow(s) ? subtreeArea(s, spaces) : targetTotal(s), project.units)}</td>
+                      <td className="row-actions">
+                        {isContainerRow(s) && (
+                          <button className="btn small ghost" onClick={() => setAddParent(s.id)} type="button" title={`Add a space inside ${s.name}`}>
+                            + inside
+                          </button>
+                        )}
+                        <button className={`btn small ghost ${expandedId === s.id ? 'on' : ''}`} onClick={() => setExpandedId(expandedId === s.id ? null : s.id)} type="button" title="Notes & reference image (N)">
+                          Notes
                         </button>
-                      )}
-                      <button className="btn small ghost" onClick={() => startEdit(s)} type="button">
-                        Edit
-                      </button>
-                      <button className="btn small ghost danger" onClick={() => remove(s)} type="button">
-                        ✕
-                      </button>
-                    </td>
-                  </tr>
+                        <button className="btn small ghost" onClick={() => startEdit(s)} type="button">
+                          Edit
+                        </button>
+                        <button className="btn small ghost danger" onClick={() => remove(s)} type="button">
+                          ✕
+                        </button>
+                      </td>
+                    </tr>
+                    {expandedId === s.id && (
+                      <tr className="detail-row">
+                        <td colSpan="6">
+                          <div className="space-detail" style={{ marginLeft: depth * 20 }}>
+                            <div className="detail-notes">
+                              <label className="detail-label">Notes</label>
+                              <textarea
+                                defaultValue={s.notes ?? ''}
+                                placeholder="Design notes, client requirements, references…"
+                                onBlur={(e) => saveNotes(s, e.target.value)}
+                              />
+                            </div>
+                            <div className="detail-image">
+                              <label className="detail-label">Reference image</label>
+                              {s.image ? (
+                                <div className="detail-thumb">
+                                  <img src={s.image} alt={`${s.name} reference`} />
+                                  <button className="btn small ghost danger" type="button" onClick={() => clearImage(s)}>
+                                    Remove
+                                  </button>
+                                </div>
+                              ) : (
+                                <label className="btn small">
+                                  Upload…
+                                  <input type="file" accept="image/*" hidden onChange={(e) => onSpaceImage(s, e)} />
+                                </label>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 )
               )}
             </tbody>
@@ -266,5 +495,49 @@ export default function BriefTab({ project, spaces, onChanged }) {
         </div>
       )}
     </div>
+  );
+}
+
+// A category picker: choose an existing category or create a new one inline.
+function CategorySelect({ value, options, onChange }) {
+  const [creating, setCreating] = useState(false);
+  const [draft, setDraft] = useState('');
+  const commit = () => {
+    const v = draft.trim();
+    if (v) onChange(v);
+    setCreating(false);
+    setDraft('');
+  };
+  if (creating) {
+    return (
+      <span className="cat-create">
+        <input
+          autoFocus
+          placeholder="New category"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') (e.preventDefault(), commit());
+            else if (e.key === 'Escape') (setCreating(false), setDraft(''));
+          }}
+        />
+        <button type="button" className="btn small" onClick={commit}>Add</button>
+        <button type="button" className="btn small ghost" onClick={() => (setCreating(false), setDraft(''))}>✕</button>
+      </span>
+    );
+  }
+  return (
+    <select
+      className="cat-select"
+      value={options.includes(value) ? value : value || ''}
+      onChange={(e) => (e.target.value === '__new__' ? setCreating(true) : onChange(e.target.value))}
+    >
+      {!value && <option value="">Category…</option>}
+      {options.map((o) => (
+        <option key={o} value={o}>{o}</option>
+      ))}
+      {value && !options.includes(value) && <option value={value}>{value}</option>}
+      <option value="__new__">＋ New category…</option>
+    </select>
   );
 }

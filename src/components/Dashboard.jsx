@@ -12,8 +12,135 @@ import DriftChart from './DriftChart.jsx';
 
 const STATUS_LABEL = { on: 'On target', over: 'Over', under: 'Under', missing: 'Not measured' };
 
+// Target vs designed rollup table, grouped by category or building.
+function RollupTable({ title, head, rows, project }) {
+  return (
+    <>
+      <h3>{title}</h3>
+      <table className="table">
+        <thead>
+          <tr>
+            <th>{head}</th>
+            <th className="num">Target</th>
+            <th className="num">Designed</th>
+            <th className="num">Δ</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((d) => (
+            <tr key={d.department}>
+              <td>{d.department}</td>
+              <td className="num">{fmtArea(d.target, project.units)}</td>
+              <td className="num">{d.hasActual ? fmtArea(d.actual, project.units) : '—'}</td>
+              <td className="num">{d.pct != null ? fmtPct(d.pct) : '—'}</td>
+              <td>
+                <span className={`badge ${d.status}`}>{STATUS_LABEL[d.status]}</span>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </>
+  );
+}
+
+// Overlay two milestones to see which spaces grew or shrank between them.
+function SnapshotDiff({ project, spaces, snapshots }) {
+  const leaves = leafSpaces(spaces);
+  const [aId, setAId] = useState(snapshots[snapshots.length - 2].id);
+  const [bId, setBId] = useState(snapshots[snapshots.length - 1].id);
+  const a = snapshots.find((s) => s.id === Number(aId));
+  const b = snapshots.find((s) => s.id === Number(bId));
+  if (!a || !b) return null;
+
+  const rows = leaves
+    .map((s) => {
+      const va = a.areas[s.id] ?? null;
+      const vb = b.areas[s.id] ?? null;
+      const delta = va != null && vb != null ? vb - va : null;
+      const pct = delta != null && va > 0 ? delta / va : null;
+      return { s, va, vb, delta, pct };
+    })
+    .filter((r) => r.delta != null && Math.abs(r.delta) > 1e-6)
+    .sort((x, y) => Math.abs(y.delta) - Math.abs(x.delta));
+
+  const netDelta = snapshotNet(b, spaces) - snapshotNet(a, spaces);
+  const maxAbs = Math.max(1, ...rows.map((r) => Math.abs(r.delta)));
+  const opts = snapshots.map((sn) => (
+    <option key={sn.id} value={sn.id}>
+      {sn.label} · {sn.taken_at}
+    </option>
+  ));
+
+  return (
+    <div className="card">
+      <div className="card-head-row">
+        <h3>Milestone comparison</h3>
+        <div className="diff-picker">
+          <select value={aId} onChange={(e) => setAId(e.target.value)}>{opts}</select>
+          <span className="diff-arrow">→</span>
+          <select value={bId} onChange={(e) => setBId(e.target.value)}>{opts}</select>
+        </div>
+      </div>
+      {a.id === b.id ? (
+        <div className="empty small">Pick two different milestones to compare.</div>
+      ) : rows.length === 0 ? (
+        <div className="empty small">No measured spaces changed between these milestones.</div>
+      ) : (
+        <>
+          <div className="diff-summary">
+            Net change{' '}
+            <strong className={netDelta > 0 ? 'warn-text' : netDelta < 0 ? 'ok-text' : ''}>
+              {netDelta > 0 ? '+' : ''}
+              {fmtArea(netDelta, project.units)}
+            </strong>{' '}
+            across {rows.length} space{rows.length > 1 ? 's' : ''}.
+          </div>
+          <table className="table diff-table">
+            <thead>
+              <tr>
+                <th>Space</th>
+                <th className="num">{a.label}</th>
+                <th className="num">{b.label}</th>
+                <th className="num">Δ</th>
+                <th>Change</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(({ s, va, vb, delta, pct }) => {
+                const grew = delta > 0;
+                const frac = Math.abs(delta) / maxAbs;
+                return (
+                  <tr key={s.id}>
+                    <td>
+                      {s.name}
+                      <span className="muted"> · {s.department}</span>
+                    </td>
+                    <td className="num">{va != null ? fmtArea(va, project.units) : '—'}</td>
+                    <td className="num">{vb != null ? fmtArea(vb, project.units) : '—'}</td>
+                    <td className={`num ${grew ? 'warn-text' : 'ok-text'}`}>
+                      {grew ? '+' : ''}
+                      {fmtArea(delta, project.units)}
+                      {pct != null ? ` (${fmtPct(pct)})` : ''}
+                    </td>
+                    <td>
+                      <span className="diff-bar-wrap">
+                        <span className={`diff-bar ${grew ? 'grew' : 'shrank'}`} style={{ width: `${Math.round(frac * 100)}%` }} />
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function Dashboard({ project, spaces, snapshots }) {
-  const [groupBy, setGroupBy] = useState('department');
   if (spaces.length === 0) {
     return <div className="empty">Define the brief first — add spaces in the Brief tab.</div>;
   }
@@ -26,7 +153,8 @@ export default function Dashboard({ project, spaces, snapshots }) {
   const variance = actual != null && target > 0 ? (actual - target) / target : null;
   const efficiency = latest && latest.gross_area > 0 ? snapshotNet(latest, spaces) / latest.gross_area : null;
 
-  const rollup = latest ? rollupBy(spaces, latest, project.tolerance, groupBy) : [];
+  const catRollup = latest ? rollupBy(spaces, latest, project.tolerance, 'department') : [];
+  const bldRollup = latest && hasBuildings ? rollupBy(spaces, latest, project.tolerance, 'building') : [];
   const statuses = latest ? leaves.map((s) => ({ space: s, ...spaceStatus(s, latest, project.tolerance) })) : [];
   const flagged = statuses.filter((s) => s.status === 'over' || s.status === 'under');
 
@@ -64,52 +192,18 @@ export default function Dashboard({ project, spaces, snapshots }) {
         </div>
       )}
 
+      {snapshots.length >= 2 && <SnapshotDiff project={project} spaces={spaces} snapshots={snapshots} />}
+
+      {latest && hasBuildings && (
+        <div className="card">
+          <RollupTable title={`By building · ${latest.label}`} head="Building" rows={bldRollup} project={project} />
+        </div>
+      )}
+
       {latest && (
         <div className="two-col">
           <div className="card">
-            <div className="card-head-row">
-              <h3>By {groupBy} · {latest.label}</h3>
-              {hasBuildings && (
-                <div className="seg">
-                  <button
-                    className={`seg-btn ${groupBy === 'department' ? 'active' : ''}`}
-                    onClick={() => setGroupBy('department')}
-                  >
-                    Department
-                  </button>
-                  <button
-                    className={`seg-btn ${groupBy === 'building' ? 'active' : ''}`}
-                    onClick={() => setGroupBy('building')}
-                  >
-                    Building
-                  </button>
-                </div>
-              )}
-            </div>
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>{groupBy === 'building' ? 'Building' : 'Department'}</th>
-                  <th className="num">Target</th>
-                  <th className="num">Designed</th>
-                  <th className="num">Δ</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rollup.map((d) => (
-                  <tr key={d.department}>
-                    <td>{d.department}</td>
-                    <td className="num">{fmtArea(d.target, project.units)}</td>
-                    <td className="num">{d.hasActual ? fmtArea(d.actual, project.units) : '—'}</td>
-                    <td className="num">{d.pct != null ? fmtPct(d.pct) : '—'}</td>
-                    <td>
-                      <span className={`badge ${d.status}`}>{STATUS_LABEL[d.status]}</span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <RollupTable title={`By category · ${latest.label}`} head="Category" rows={catRollup} project={project} />
           </div>
 
           <div className="card">
