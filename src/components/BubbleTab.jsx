@@ -1,19 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api.js';
 import { fmtArea, areaToM2, distToMeters, distUnit, leafSpaces, rootContainer } from '../compute.js';
-import { exportDiagramPdf } from '../pdfExport.js';
+// pdfExport is lazy-loaded on demand — keeps jsPDF out of the initial bundle.
 import { useHistory } from '../useHistory.js';
 import { SCALE_PRESETS, ratioToScale, scaleToRatio, zoomAbout } from '../scale.js';
 import { convexHull, smoothHullPath, pinsOf, filterCss, IMAGE_FILTERS } from '../geometry.js';
 import { edgeGap, adjacencyScore, scoreBand } from '../adjacency.js';
-import { orderedLevels, levelRankMap, ISO } from '../floors.js';
+import { orderedLevels, levelRankMap, ISO, CAMERAS } from '../floors.js';
+import { useViewport, W, H } from '../hooks/useViewport.js';
+import { useImageDims } from '../hooks/useImageDims.js';
+import { useSimulation } from '../hooks/useSimulation.js';
+import { bakeImage } from '../imageUtils.js';
 import HelpPanel from './HelpPanel.jsx';
+import NorthRose from './diagram/NorthRose.jsx';
+import MatrixPanel from './diagram/MatrixPanel.jsx';
+import LayerRow from './diagram/LayerRow.jsx';
 
-// Logical design canvas — the world anchor for spawning, gravity and image
-// centring. The *visible* viewBox is sized to the container (see vb), so a big
-// screen simply shows more of this world.
-const W = 900;
-const H = 620;
 const PALETTE = ['#e8b04b', '#5b9dd9', '#4cc38a', '#c678dd', '#e5707a', '#56b6c2', '#d19a66', '#98c379', '#7aa2f7', '#f7768e'];
 const SAT_CANVAS = 768;
 
@@ -24,28 +26,64 @@ const layoutCache = new Map(); // projectId → Map(instanceKey → {x,y})
 
 // Bake rotation (clockwise deg) and/or a CSS filter into a data URL on a canvas
 // sized to the rotated bounding box — keeps the PDF export scale-accurate.
-function bakeImage(dataUrl, deg, filter) {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.onload = () => {
-      const rad = (deg * Math.PI) / 180;
-      const w = img.naturalWidth;
-      const h = img.naturalHeight;
-      const cw = Math.ceil(Math.abs(w * Math.cos(rad)) + Math.abs(h * Math.sin(rad)));
-      const ch = Math.ceil(Math.abs(w * Math.sin(rad)) + Math.abs(h * Math.cos(rad)));
-      const c = document.createElement('canvas');
-      c.width = cw;
-      c.height = ch;
-      const ctx = c.getContext('2d');
-      if (filter && filter !== 'none') ctx.filter = filter;
-      ctx.translate(cw / 2, ch / 2);
-      ctx.rotate(rad);
-      ctx.drawImage(img, -w / 2, -h / 2);
-      resolve({ dataUrl: c.toDataURL('image/png'), canvasW: cw, canvasH: ch, naturalW: w });
-    };
-    img.onerror = () => resolve(null);
-    img.src = dataUrl;
-  });
+
+/**
+ * Renders a bubble's name (and optional area) as word-wrapped SVG text,
+ * vertically centred inside a circle of radius `r`.
+ *
+ * Strategy: character-count greedy wrap using an average char-width heuristic
+ * (fontSize × 0.55). Lines are stacked with <tspan dy> and the whole block is
+ * offset so its visual centre lands at y = 0 (the bubble's centre).
+ *
+ * Tiny bubbles (r ≤ 13) fall back to a single label below the circle.
+ */
+function BubbleLabel({ label, r, areaStr }) {
+  const fontSize = Math.max(9, Math.min(14, r / 3.2));
+  const lineH    = fontSize * 1.22;
+  const charW    = fontSize * 0.55;
+  const maxW     = Math.max(r * 1.65, 28);
+  const cpl      = Math.max(4, Math.floor(maxW / charW)); // chars per line
+
+  // Tiny bubble: single line sitting below the circle
+  if (r <= 13) {
+    return (
+      <text textAnchor="middle" dy={r + 11} className="bubble-name" style={{ fontSize }}>
+        {label}
+      </text>
+    );
+  }
+
+  // Greedy word-wrap, capped at 3 lines
+  const words = label.split(/\s+/);
+  const lines = [];
+  let cur = '';
+  for (const w of words) {
+    if (!cur) { cur = w; continue; }
+    if ((cur + ' ' + w).length <= cpl) { cur += ' ' + w; }
+    else { lines.push(cur); cur = w; }
+  }
+  if (cur) lines.push(cur);
+  if (lines.length > 3) {
+    lines[2] = lines.slice(2).join(' ');
+    if (lines[2].length > cpl) lines[2] = lines[2].slice(0, cpl - 1) + '…';
+    lines.length = 3;
+  }
+
+  const showArea   = !!areaStr && r > 26;
+  const totalLines = lines.length + (showArea ? 1 : 0);
+  // First tspan dy: raise so the whole block is vertically centred at y=0.
+  const startDy    = -((totalLines - 1) * lineH) / 2 + fontSize * 0.35;
+
+  return (
+    <text textAnchor="middle" className="bubble-name" style={{ fontSize }}>
+      {lines.map((ln, i) => (
+        <tspan key={i} x="0" dy={i === 0 ? startDy : lineH}>{ln}</tspan>
+      ))}
+      {showArea && (
+        <tspan x="0" dy={lineH} className="bubble-area">{areaStr}</tspan>
+      )}
+    </text>
+  );
 }
 
 export default function BubbleTab({ project, spaces, adjacencies, images = [], onChanged }) {
@@ -77,19 +115,12 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const [highlightGaps, setHighlightGaps] = useState(false); // flag unmet adjacencies on the diagram
   const [floorView, setFloorView] = useState('all'); // 'all' | <level label> | 'offset' | 'overlaid'
   const [floorGap, setFloorGap] = useState(0.6); // floor spacing as a fraction of plate height
+  const [camKey, setCamKey] = useState('iso'); // 3-D camera preset
   const [stackImages, setStackImages] = useState(true); // show warped site images in the stacked view
   const [railW, setRailW] = useState(() => Number(localStorage.getItem('brieftrack.railw')) || 340);
   const [areaMode, setAreaMode] = useState('category'); // Areas panel grouping
   const [collapsed, setCollapsed] = useState(() => new Set()); // collapsed Areas groups
-  const [view, setViewState] = useState({ x: project.view_x || 0, y: project.view_y || 0 });
-  const [dims, setDims] = useState({}); // image id → { w, h } natural pixel size
-  const [vb, setVb] = useState({ w: W, h: H }); // visible viewBox size = container pixels
 
-  const viewRef = useRef(view);
-  const setView = (v) => {
-    viewRef.current = v;
-    setViewState(v);
-  };
   const draftTimers = useRef(new Map());
   const nodesRef = useRef(new Map());
   // Start idle if we have a cached layout to restore (avoids a re-scatter on
@@ -99,8 +130,6 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const panRef = useRef(null);
   const layerMoveRef = useRef(null);
   const rotateRef = useRef(null); // { id, startAngle, startRot } while rotating an image by mouse
-  const svgRef = useRef(null);
-  const stageRef = useRef(null);
   const lastClickRef = useRef({ key: null, t: 0 });
   const pinOverride = useRef(new Map());
   const fileRef = useRef(null);
@@ -110,6 +139,22 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const marqueeRef = useRef(null); // { sx, sy, additive } while drag-selecting
   const adjRef = useRef(adjacencies); // latest adjacencies, for history closures
   adjRef.current = adjacencies;
+
+  // Refs needed by hooks must be declared before those hooks.
+  const svgRef = useRef(null);
+  const stageRef = useRef(null);
+
+  // Viewport: vb tracks the SVG container size; view is the pan offset.
+  const { vb, view, viewRef, setView } = useViewport(project, stageRef);
+
+  // Image natural dimensions — measured lazily as images load.
+  // ---------- image layers (multiple, ordered bottom→top) ----------
+  // Copy so optimistic move/rotate/opacity edits can mutate in place between
+  // refetches (the `images` prop is stable until onChanged re-fetches).
+  const imgLayers = useMemo(() => (images || []).map((im) => ({ ...im })), [images]);
+  const imgById = useMemo(() => new Map(imgLayers.map((im) => [im.id, im])), [imgLayers]);
+
+  const dims = useImageDims(imgLayers);
 
   const history = useHistory();
   // Reset history + optimistic colours when switching projects.
@@ -121,11 +166,6 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const units = project.units;
   const simEnabled = !!project.sim_enabled;
 
-  // ---------- image layers (multiple, ordered bottom→top) ----------
-  // Copy so optimistic move/rotate/opacity edits can mutate in place between
-  // refetches (the `images` prop is stable until onChanged re-fetches).
-  const imgLayers = useMemo(() => (images || []).map((im) => ({ ...im })), [images]);
-  const imgById = useMemo(() => new Map(imgLayers.map((im) => [im.id, im])), [imgLayers]);
 
   // Scale auto-fit uses the first visible, calibrated image.
   const primaryImg = imgLayers.find((im) => im.visible && im.mpp > 0 && dims[im.id]);
@@ -133,30 +173,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const displayScale = project.display_scale > 0 ? project.display_scale : null;
   const effScale = displayScale ?? fitScale;
 
-  // Measure natural image sizes (once per image).
-  useEffect(() => {
-    for (const im of imgLayers) {
-      if (dims[im.id]) continue;
-      const img = new Image();
-      img.onload = () => setDims((d) => ({ ...d, [im.id]: { w: img.naturalWidth, h: img.naturalHeight } }));
-      img.src = im.image;
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [imgLayers]);
 
-  // Track the canvas size so the diagram fills the available space.
-  useEffect(() => {
-    const el = stageRef.current;
-    if (!el || typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver((entries) => {
-      const r = entries[0].contentRect;
-      if (r.width > 1 && r.height > 1) {
-        setVb((prev) => (Math.abs(prev.w - r.width) < 1 && Math.abs(prev.h - r.height) < 1 ? prev : { w: Math.round(r.width), h: Math.round(r.height) }));
-      }
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
 
   // Placement rectangle (in diagram units) for an image layer.
   function layerRect(im) {
@@ -256,7 +273,6 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const anyPinned = (s) =>
     Array.from({ length: Math.max(1, s.count || 1) }, (_, i) => i).some((i) => instPin(s, i));
 
-  useEffect(() => setView({ x: project.view_x || 0, y: project.view_y || 0 }), [project.id]); // eslint-disable-line
   useEffect(() => () => Object.values(debouncers.current).forEach(clearTimeout), []);
 
   // Keyboard shortcuts: P pins/unpins, B toggles box/bubble for the hovered space.
@@ -394,6 +410,13 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     alphaRef.current = Math.max(alphaRef.current, 0.35);
   }, [drafts]);
 
+  // Force simulation — delegated to the hook. radiusOf/groupKey/instPin are
+  // ref-wrapped inside useSimulation so they are always fresh without needing
+  // to be listed in the effect deps.
+  useSimulation({ instances, leaves, adjacencies, byId, simEnabled, effScale, nodesRef, alphaRef, dragRef, radiusOf, instPin, groupKey, setTick });
+
+  // Closest instance pair between two spaces — used by PDF export, adjacency
+  // rendering, and the scale bar. Reads nodesRef so it is always current.
   function closestPair(sa, sb) {
     const nodes = nodesRef.current;
     let best = null;
@@ -409,122 +432,6 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     }
     return best;
   }
-
-  // Force simulation.
-  useEffect(() => {
-    let raf;
-    const held = (key) => {
-      const d = dragRef.current;
-      return !!d && (d.key === key || (d.groupSet != null && d.groupSet.has(key)));
-    };
-    const fixedInst = (o) => held(o.key) || !!instPin(o.s, o.i);
-
-    const simulate = (alpha) => {
-      const nodes = nodesRef.current;
-      const arr = instances.map((o) => ({ ...o, n: nodes.get(o.key), r: radiusOf(o.s) })).filter((o) => o.n);
-
-      const cents = new Map();
-      for (const o of arr) {
-        const c = cents.get(groupKey(o.s)) || { x: 0, y: 0, n: 0 };
-        c.x += o.n.x;
-        c.y += o.n.y;
-        c.n++;
-        cents.set(groupKey(o.s), c);
-      }
-      for (const o of arr) {
-        if (fixedInst(o)) continue;
-        const c = cents.get(groupKey(o.s));
-        o.n.vx += (c.x / c.n - o.n.x) * 0.012 * alpha;
-        o.n.vy += (c.y / c.n - o.n.y) * 0.012 * alpha;
-        o.n.vx += (W / 2 - o.n.x) * 0.006 * alpha;
-        o.n.vy += (H / 2 - o.n.y) * 0.006 * alpha;
-      }
-
-      for (const s of leaves) {
-        const count = Math.max(1, s.count || 1);
-        if (count < 2) continue;
-        const r = radiusOf(s);
-        for (let i = 0; i < count - 1; i++) {
-          const a = nodes.get(`${s.id}:${i}`);
-          const b = nodes.get(`${s.id}:${i + 1}`);
-          if (!a || !b) continue;
-          const rest = r * 2 + 10;
-          const dx = b.x - a.x;
-          const dy = b.y - a.y;
-          const d = Math.hypot(dx, dy) || 0.01;
-          const f = ((d - rest) / d) * 0.04 * alpha;
-          if (!held(`${s.id}:${i}`) && !instPin(s, i)) ((a.vx += dx * f), (a.vy += dy * f));
-          if (!held(`${s.id}:${i + 1}`) && !instPin(s, i + 1)) ((b.vx -= dx * f), (b.vy -= dy * f));
-        }
-      }
-
-      for (const l of adjacencies) {
-        const sa = byId.get(l.space_a);
-        const sb = byId.get(l.space_b);
-        if (!sa || !sb) continue;
-        const pair = closestPair(sa, sb);
-        if (!pair) continue;
-        const rest = radiusOf(sa) + radiusOf(sb) + (l.strength === 'required' ? 14 : 70);
-        const k = l.strength === 'required' ? 0.05 : 0.018;
-        const dx = pair.b.x - pair.a.x;
-        const dy = pair.b.y - pair.a.y;
-        const d = Math.hypot(dx, dy) || 0.01;
-        const f = ((d - rest) / d) * k * alpha;
-        if (!held(`${sa.id}:${pair.ai}`) && !instPin(sa, pair.ai)) ((pair.a.vx += dx * f), (pair.a.vy += dy * f));
-        if (!held(`${sb.id}:${pair.bi}`) && !instPin(sb, pair.bi)) ((pair.b.vx -= dx * f), (pair.b.vy -= dy * f));
-      }
-
-      for (let i = 0; i < arr.length; i++) {
-        for (let j = i + 1; j < arr.length; j++) {
-          const a = arr[i];
-          const b = arr[j];
-          let dx = b.n.x - a.n.x;
-          let dy = b.n.y - a.n.y;
-          let d = Math.hypot(dx, dy);
-          if (d === 0) ((dx = Math.random() - 0.5), (dy = Math.random() - 0.5), (d = Math.hypot(dx, dy)));
-          const minD = a.r + b.r + (effScale ? 4 : 12);
-          const aF = fixedInst(a);
-          const bF = fixedInst(b);
-          if (aF && bF) continue;
-          if (d < minD) {
-            const push = ((minD - d) / d) * 0.45;
-            if (!aF) ((a.n.x -= dx * push * (bF ? 2 : 1)), (a.n.y -= dy * push * (bF ? 2 : 1)));
-            if (!bF) ((b.n.x += dx * push * (aF ? 2 : 1)), (b.n.y += dy * push * (aF ? 2 : 1)));
-          } else if (d < minD + 60) {
-            const f = (800 * alpha) / (d * d);
-            if (!aF) ((a.n.vx -= (dx / d) * f), (a.n.vy -= (dy / d) * f));
-            if (!bF) ((b.n.vx += (dx / d) * f), (b.n.vy += (dy / d) * f));
-          }
-        }
-      }
-
-      for (const o of arr) {
-        if (held(o.key)) ((o.n.vx = 0), (o.n.vy = 0));
-        else {
-          const pin = instPin(o.s, o.i);
-          if (pin) ((o.n.x = pin.x), (o.n.y = pin.y), (o.n.vx = 0), (o.n.vy = 0));
-          else {
-            o.n.vx *= 0.55;
-            o.n.vy *= 0.55;
-            o.n.x += o.n.vx;
-            o.n.y += o.n.vy;
-          }
-        }
-      }
-    };
-
-    const step = () => {
-      if (simEnabled && (alphaRef.current > 0.012 || dragRef.current)) {
-        simulate(Math.max(alphaRef.current, dragRef.current ? 0.3 : 0));
-        if (!dragRef.current) alphaRef.current *= 0.99;
-        setTick((t) => t + 1);
-      }
-      raf = requestAnimationFrame(step);
-    };
-    raf = requestAnimationFrame(step);
-    return () => cancelAnimationFrame(raf);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spaces, adjacencies, simEnabled, effScale, drafts, colorBy]);
 
   // ---------- viewBox geometry ----------
   // Visible viewBox is sized to the container; its origin keeps the logical
@@ -1259,6 +1166,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
 
     const ratioLabel = effScale ? scaleLabelFor(effScale) : 'NTS';
     try {
+      // Dynamic import keeps jsPDF out of the initial bundle.
+      const { exportDiagramPdf } = await import('../pdfExport.js');
       exportDiagramPdf({
         bounds,
         layers: sceneLayers,
@@ -1326,16 +1235,22 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   // match. Floors share a common footprint and are vertically aligned, separated
   // by a lift large enough to never overlap, with dashed corner guides tying the
   // stack into one building (see the reference axonometric).
+  /**
+   * Build the 3-D stacked scene using a proper orthographic camera.
+   *
+   * World coordinate system: x/y = plan (same as the simulation), z = height
+   * (z increases upward; z=0 = ground floor).  The camera is parameterised by
+   * azimuth (rotation around world-Z) and elevation (tilt above horizontal).
+   * At elevation=0 we see a pure side elevation; at elevation=90 a plan view.
+   *
+   * Camera centering: the mid-floor anchor (W/2, H/2) always maps to screen
+   * centre (W/2, H/2) regardless of the chosen camera angle.
+   */
   function stackScene() {
+    const cam = CAMERAS[camKey] ?? CAMERAS.iso;
     const anchor = { x: W / 2, y: H / 2 };
-    const kx = ISO.kx;
-    const ky = ISO.ky;
-    // matrix(kx ky -kx ky e f0) maps a plan point to its iso position (ground plane).
-    const e = anchor.x - kx * anchor.x + kx * anchor.y;
-    const f0 = anchor.y - ky * anchor.x - ky * anchor.y;
-    const isoXY = (px, py) => ({ x: kx * px - kx * py + e, y: ky * px + ky * py + f0 });
 
-    // Per-floor content bounding box (raw node coords) and centre.
+    // Per-floor content bounding box (raw node coords).
     const PAD = 48;
     const fb = new Map();
     for (const o of instances) {
@@ -1345,21 +1260,18 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       if (!n) continue;
       const r = radiusOf(o.s);
       const b = fb.get(lv) || { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
-      b.minX = Math.min(b.minX, n.x - r);
-      b.maxX = Math.max(b.maxX, n.x + r);
-      b.minY = Math.min(b.minY, n.y - r);
-      b.maxY = Math.max(b.maxY, n.y + r);
+      b.minX = Math.min(b.minX, n.x - r);  b.maxX = Math.max(b.maxX, n.x + r);
+      b.minY = Math.min(b.minY, n.y - r);  b.maxY = Math.max(b.maxY, n.y + r);
       fb.set(lv, b);
     }
-    // Common footprint = the largest floor, centred on the anchor; each floor's
-    // content is shifted so it sits inside this shared footprint.
+    // Shared footprint centred on the anchor; per-floor offset aligns each
+    // floor's content within it.
     let maxW = 1, maxH = 1;
     for (const b of fb.values()) {
       maxW = Math.max(maxW, b.maxX - b.minX);
       maxH = Math.max(maxH, b.maxY - b.minY);
     }
-    maxW += 2 * PAD;
-    maxH += 2 * PAD;
+    maxW += 2 * PAD;  maxH += 2 * PAD;
     const foot = { x: anchor.x - maxW / 2, y: anchor.y - maxH / 2, w: maxW, h: maxH };
     const offOf = (lv) => {
       const b = fb.get(lv);
@@ -1367,18 +1279,43 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       return { x: anchor.x - (b.minX + b.maxX) / 2, y: anchor.y - (b.minY + b.maxY) / 2 };
     };
 
-    // Lift between floors = projected footprint height + a gap, so they separate.
-    const footCorners = [
-      [foot.x, foot.y], [foot.x + foot.w, foot.y], [foot.x + foot.w, foot.y + foot.h], [foot.x, foot.y + foot.h],
-    ].map(([x, y]) => isoXY(x, y));
-    const projH = Math.max(...footCorners.map((c) => c.y)) - Math.min(...footCorners.map((c) => c.y));
-    // Lift between floors as a fraction of the plate height: < 1 overlaps the
-    // floors into a tight stack, > 1 separates them. Overlaid keeps one plane.
-    const lift = floorMode === 'offset' ? Math.max(24, projH * floorGap) : 0;
-    const recenter = ((levels.length - 1) * lift) / 2;
-    const liftYOf = (k) => recenter - k * lift;
+    // Projected footprint height in the ISO preset — drives the spacing slider
+    // (we keep it ISO-based so the slider feels the same regardless of camera).
+    const kx = ISO.kx, ky = ISO.ky;
+    const e_iso = anchor.x - kx * anchor.x + kx * anchor.y;
+    const f_iso = anchor.y - ky * anchor.x - ky * anchor.y;
+    const isoXY = (px, py) => ({ x: kx * px - kx * py + e_iso, y: ky * px + ky * py + f_iso });
+    const isoProjH = (() => {
+      const cs = [[foot.x,foot.y],[foot.x+foot.w,foot.y],[foot.x+foot.w,foot.y+foot.h],[foot.x,foot.y+foot.h]]
+        .map(([x,y]) => isoXY(x,y));
+      return Math.max(...cs.map(c=>c.y)) - Math.min(...cs.map(c=>c.y));
+    })();
+    const lift = floorMode === 'offset' ? Math.max(24, isoProjH * floorGap) : 0;
 
-    // Screen centre of each bubble (for the screen-space link lines).
+    // World-Z per floor.  Using lift directly as world units keeps scale=1 and
+    // makes the slider feel natural across all camera angles.
+    const FLOOR_Z = lift;
+    const SLAB_Z  = 14;
+    const midZ = ((levels.length - 1) / 2) * FLOOR_Z;
+
+    // Orthographic projection: world (wx,wy,wz) → screen (sx,sy).
+    // Centre is computed so the anchor at mid-floor maps to screen anchor.
+    const az = (cam.azimuth   * Math.PI) / 180;
+    const el = (cam.elevation * Math.PI) / 180;
+    const cosAz = Math.cos(az), sinAz = Math.sin(az);
+    const sinEl = Math.sin(el), cosEl = Math.cos(el);
+    // Raw anchor projection (no offset) at mid-floor:
+    const rx0 = anchor.x * cosAz - anchor.y * sinAz;
+    const ry0 = anchor.x * sinAz + anchor.y * cosAz;
+    const pcx  = anchor.x - rx0;
+    const pcy  = anchor.y + (ry0 * sinEl + midZ * cosEl);
+    const proj = (wx, wy, wz) => {
+      const rx = wx * cosAz - wy * sinAz;
+      const ry = wx * sinAz + wy * cosAz;
+      return { x: pcx + rx, y: pcy - (ry * sinEl + wz * cosEl) };
+    };
+
+    // Screen position of every instance.
     const screenPos = new Map();
     for (const o of instances) {
       const lv = levelOf(o.s);
@@ -1386,9 +1323,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       const n = nodes.get(o.key);
       if (!n) continue;
       const off = offOf(lv);
-      const s = isoXY(n.x + off.x, n.y + off.y);
-      screenPos.set(o.key, { x: s.x, y: s.y + liftYOf(rankOf(o.s)), r: radiusOf(o.s), o });
+      const k = levelRank.get(lv) ?? 0;
+      const s = proj(n.x + off.x, n.y + off.y, k * FLOOR_Z);
+      screenPos.set(o.key, { x: s.x, y: s.y, r: radiusOf(o.s), o });
     }
+
     const closestPairScreen = (sa, sb) => {
       let best = null;
       for (let i = 0; i < Math.max(1, sa.count || 1); i++) {
@@ -1404,30 +1343,53 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       return best;
     };
 
-    const matrix = `matrix(${kx} ${ky} ${-kx} ${ky} ${e} ${f0})`;
+    const ptsStr = (arr) => arr.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+
     const floors = levels.map((label) => {
-      const k = levelRank.get(label);
+      const k = levelRank.get(label) ?? 0;
+      const z = k * FLOOR_Z;
+      // Plate corners — shared footprint (no per-floor offset; bubbles offset separately).
+      const TL = proj(foot.x,          foot.y,          z);
+      const TR = proj(foot.x + foot.w, foot.y,          z);
+      const BR = proj(foot.x + foot.w, foot.y + foot.h, z);
+      const BL = proj(foot.x,          foot.y + foot.h, z);
+      // Slab-thickness faces (bottom of each edge, offset by SLAB_Z in world-Z).
+      const BL_b = proj(foot.x,          foot.y + foot.h, z - SLAB_Z);
+      const BR_b = proj(foot.x + foot.w, foot.y + foot.h, z - SLAB_Z);
+      const TR_b = proj(foot.x + foot.w, foot.y,          z - SLAB_Z);
+      const frontY = Math.max(BL.y, BR.y, BL_b.y, BR_b.y);
       return {
-        k,
-        label,
+        k, label,
         color: PALETTE[k % PALETTE.length],
         off: offOf(label),
-        transform: `translate(0 ${liftYOf(k)}) ${matrix}`,
         bubbles: instances.filter((o) => levelOf(o.s) === label),
+        platePts:  ptsStr([TL, TR, BR, BL]),
+        slabFront: ptsStr([BL, BR, BR_b, BL_b]),
+        slabRight: ptsStr([BR, TR, TR_b, BR_b]),
+        labelPos: { x: (BL.x + BR.x) / 2, y: frontY + 18 },
       };
     });
 
-    // Ground-plane transform + offset, used to warp background images onto it.
-    const groundOff = offOf(levels[0]);
-    const groundTransform = `translate(0 ${liftYOf(0)}) ${matrix} translate(${groundOff.x} ${groundOff.y})`;
-
-    // Vertical corner guides spanning the stack (offset mode, >1 floor).
-    const topK = levels.length - 1;
+    // Corner guides: true 3-D lines from ground to top at each plan corner.
+    const planCorners = [
+      [foot.x, foot.y], [foot.x + foot.w, foot.y],
+      [foot.x + foot.w, foot.y + foot.h], [foot.x, foot.y + foot.h],
+    ];
     const guides = lift > 0
-      ? footCorners.map((c) => ({ x: c.x, y1: c.y + liftYOf(0), y2: c.y + liftYOf(topK) }))
+      ? planCorners.map(([px, py]) => {
+          const top = proj(px, py, (levels.length - 1) * FLOOR_Z);
+          const bot = proj(px, py, 0);
+          return { x1: top.x, y1: top.y, x2: bot.x, y2: bot.y };
+        })
       : [];
 
-    // Instances on a real floor, ground → top, for the billboarded sphere pass.
+    // Ground image transform — only meaningful in ISO mode (affine in 2-D);
+    // returns null for elevation views.
+    const groundOff = offOf(levels[0]);
+    const groundTransform = camKey === 'iso'
+      ? `translate(0 ${((levels.length-1)/2)*lift}) matrix(${kx} ${ky} ${-kx} ${ky} ${e_iso} ${f_iso}) translate(${groundOff.x} ${groundOff.y})`
+      : null;
+
     const ordered = instances
       .filter((o) => levels.includes(levelOf(o.s)))
       .sort((a, b) => (levelRank.get(levelOf(a.s)) ?? 0) - (levelRank.get(levelOf(b.s)) ?? 0));
@@ -1600,6 +1562,15 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                 <input type="range" min="0.2" max="1.3" step="0.05" value={floorGap} onChange={(e) => setFloorGap(Number(e.target.value))} />
               </label>
             )}
+            {stackMode && (
+              <label className="scale-label" title="3-D camera angle">
+                <select className="scale-select" value={camKey} onChange={(e) => setCamKey(e.target.value)}>
+                  {Object.entries(CAMERAS).map(([k, c]) => (
+                    <option key={k} value={k}>{c.label}</option>
+                  ))}
+                </select>
+              </label>
+            )}
             {stackMode && imgLayers.length > 0 && (
               <button className={`btn small ${stackImages ? 'on' : ''}`} onClick={() => setStackImages((v) => !v)} title="Show or hide the site image on the stacked floors">
                 ⊞ Image
@@ -1743,11 +1714,23 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
               </filter>
               {/* Colour-independent shading overlaid on a coloured circle to make
                   it read as a lit 3D sphere (highlight top-left, shaded rim). */}
-              <radialGradient id="sphere3d" cx="36%" cy="30%" r="75%">
-                <stop offset="0%" stopColor="rgba(255,255,255,0.9)" />
-                <stop offset="26%" stopColor="rgba(255,255,255,0.22)" />
-                <stop offset="60%" stopColor="rgba(0,0,0,0)" />
-                <stop offset="100%" stopColor="rgba(0,0,0,0.5)" />
+              {/* Diffuse shading + rim shadow — colour-independent, layered over fill */}
+              <radialGradient id="sphere3d" cx="36%" cy="30%" r="72%">
+                <stop offset="0%" stopColor="rgba(255,255,255,0.52)" />
+                <stop offset="35%" stopColor="rgba(255,255,255,0.10)" />
+                <stop offset="65%" stopColor="rgba(0,0,0,0.02)" />
+                <stop offset="100%" stopColor="rgba(0,0,0,0.52)" />
+              </radialGradient>
+              {/* Tight specular hot-spot */}
+              <radialGradient id="sphere-spec" cx="32%" cy="26%" r="38%">
+                <stop offset="0%" stopColor="rgba(255,255,255,0.82)" />
+                <stop offset="100%" stopColor="rgba(255,255,255,0)" />
+              </radialGradient>
+              {/* Contact shadow — dark centre fading to transparent */}
+              <radialGradient id="sphere-shadow-grad">
+                <stop offset="0%" stopColor="rgba(0,0,0,0.38)" />
+                <stop offset="65%" stopColor="rgba(0,0,0,0.14)" />
+                <stop offset="100%" stopColor="rgba(0,0,0,0)" />
               </radialGradient>
             </defs>
             {(() => {
@@ -1775,7 +1758,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
               // In the stacked view, warp the images onto the ground-floor plane
               // (not clipped — the full site image shows through). The ⊞ Images
               // toggle can hide them.
-              if (!stack) return imgs;
+              if (!stack || !stack.groundTransform) return imgs;
               if (!stackImages) return null;
               return <g transform={stack.groundTransform}>{imgs}</g>;
             })()}
@@ -1823,19 +1806,24 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                 bubbles and the warped images foreshorten onto the plane. */}
             {stack &&
               stack.guides.map((g, i) => (
-                <g key={`guide:${i}`} className="floor-guides">
-                  <line x1={g.x} y1={g.y1} x2={g.x} y2={g.y2} className="floor-guide" />
-                  <line x1={g.x - 7} y1={g.y1} x2={g.x + 7} y2={g.y1} className="floor-guide" />
-                  <line x1={g.x - 7} y1={g.y2} x2={g.x + 7} y2={g.y2} className="floor-guide" />
-                </g>
+                <line key={`guide:${i}`} x1={g.x1} y1={g.y1} x2={g.x2} y2={g.y2} className="floor-guide" />
               ))}
-            {/* Floor planes: just the iso-tilted plate + label (rooms are drawn as
-                billboarded 3D spheres on top, so they stay round). */}
+            {/* Floor plates: projected polygon (screen-space) + slab edge faces.
+                The polygon is computed from the 3-D footprint corners so the
+                shape is correct for every camera angle. */}
             {stack &&
               stack.floors.map((f) => (
-                <g key={`floor:${f.label}`} transform={f.transform} className={`floor-plane ${floorMode}`}>
-                  <rect x={stack.foot.x} y={stack.foot.y} width={stack.foot.w} height={stack.foot.h} rx="10" className="floor-plate" stroke={f.color} />
-                  <text x={stack.foot.x + 16} y={stack.foot.y + 30} className="floor-plate-label" fill={f.color}>{f.label}</text>
+                <g key={`floor:${f.label}`}>
+                  <polygon points={f.platePts} className={`floor-plate floor-plane ${floorMode}`}
+                    stroke={f.color} fill={`${f.color}${floorMode === 'overlaid' ? '0c' : '1a'}`} />
+                  {floorMode === 'offset' && (
+                    <>
+                      <polygon points={f.slabFront} fill={f.color} className="slab-face slab-front" />
+                      <polygon points={f.slabRight} fill={f.color} className="slab-face slab-right" />
+                    </>
+                  )}
+                  <text x={f.labelPos.x} y={f.labelPos.y} className="floor-plate-label"
+                    fill={f.color} textAnchor="middle">{f.label}</text>
                 </g>
               ))}
             {/* Links drawn in screen space so cross-floor connectors read clearly. */}
@@ -1861,22 +1849,21 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                 return (
                   <g key={`sph:${o.key}`} transform={`translate(${p.x}, ${p.y})`} className="bubble stacked sphere">
                     <title>{label} — {fmtArea(ea(o.s), units)}</title>
-                    <ellipse cx="0" cy={r * 0.62} rx={r * 0.92} ry={r * 0.26} className="sphere-shadow" />
+                    <ellipse cx="0" cy={r * 0.65} rx={r * 0.9} ry={r * 0.24} fill="url(#sphere-shadow-grad)" />
                     {box ? (
                       <>
                         <rect x={-side / 2} y={-side / 2} width={side} height={side} rx={Math.min(5, side / 8)} fill={colorOf(o.s)} />
                         <rect x={-side / 2} y={-side / 2} width={side} height={side} rx={Math.min(5, side / 8)} fill="url(#sphere3d)" />
+                        <rect x={-side / 2} y={-side / 2} width={side} height={side} rx={Math.min(5, side / 8)} fill="url(#sphere-spec)" />
                       </>
                     ) : (
                       <>
                         <circle r={r} fill={colorOf(o.s)} />
                         <circle r={r} fill="url(#sphere3d)" />
+                        <circle r={r} fill="url(#sphere-spec)" />
                       </>
                     )}
-                    <text textAnchor="middle" dy={r > 26 ? -2 : r > 13 ? 3 : r + 11} className="bubble-name" style={{ fontSize: Math.max(9, Math.min(14, r / 3.2)) }}>
-                      {label}
-                    </text>
-                    {r > 26 && <text textAnchor="middle" dy={14} className="bubble-area">{fmtArea(ea(o.s), units)}</text>}
+                    <BubbleLabel label={label} r={r} areaStr={fmtArea(ea(o.s), units)} />
                   </g>
                 );
               })}
@@ -1966,15 +1953,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                   ) : (
                     <circle r={r} fill={colorOf(s)} fillOpacity={fillOpEff} stroke={colorOf(s)} strokeWidth={swEff} filter={shapeFilter} />
                   )}
-                  <text textAnchor="middle" dy={r > 26 ? -2 : r > 13 ? 3 : r + 11} className="bubble-name" style={{ fontSize: Math.max(9, Math.min(14, r / 3.2)) }}>
-                    {s.name}
-                    {count > 1 ? ` ${i + 1}` : ''}
-                  </text>
-                  {r > 26 && (
-                    <text textAnchor="middle" dy={14} className="bubble-area">
-                      {fmtArea(ea(s), units)}
-                    </text>
-                  )}
+                  <BubbleLabel
+                    label={`${s.name}${count > 1 ? ` ${i + 1}` : ''}`}
+                    r={r}
+                    areaStr={fmtArea(ea(s), units)}
+                  />
                 </g>
               );
             })}
@@ -2213,149 +2196,6 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
           </section>
         </aside>
       )}
-    </div>
-  );
-}
-
-function LayerRow({ title, layer, dims, units, calibrated, onToggleVisible, onOpacity, onRotate, onCalibrate, onMove, moving, onRotateMode, rotating, onFilter, onDelete }) {
-  let scaleNote = '';
-  if (calibrated && dims) {
-    const realW = dims.w * layer.mpp;
-    scaleNote = `${Math.round(realW).toLocaleString()} ${distUnit(units)}`;
-  }
-  return (
-    <div className="layer-row">
-      <div className="layer-head">
-        <label className="switch" title="Show or hide this layer">
-          <input type="checkbox" checked={!!layer.visible} onChange={(e) => onToggleVisible(e.target.checked)} />
-          <span className="layer-name">{title}</span>
-        </label>
-        <span className={`layer-cal ${calibrated ? 'ok' : 'warn'}`} title={calibrated ? `${scaleNote} wide` : 'Not calibrated — use 📏 to set the scale'}>
-          {calibrated ? scaleNote : 'uncal.'}
-        </span>
-        <button className="btn small ghost danger layer-del" onClick={onDelete} title="Remove this image">✕</button>
-      </div>
-      <div className="layer-ctrls">
-        <span className="opacity-mini" title="Opacity">
-          ◐
-          <input type="range" min="0.1" max="1" step="0.05" value={layer.opacity} onChange={(e) => onOpacity(Number(e.target.value))} />
-        </span>
-        <span className="rot-field" title="Rotation in degrees (clockwise)">
-          ⟳
-          <input type="number" step="1" value={Math.round(layer.rot || 0)} onChange={(e) => onRotate(((Number(e.target.value) % 360) + 360) % 360)} />
-        </span>
-        <select className="filter-select" value={layer.filter || ''} onChange={(e) => onFilter(e.target.value)} title="Diagrammatic filter">
-          {IMAGE_FILTERS.map(([v, l]) => (
-            <option key={v} value={v}>{l}</option>
-          ))}
-        </select>
-        <button className="btn small" onClick={onCalibrate} title="Calibrate scale — mark a known distance">📏</button>
-        <button className={`btn small ${moving ? 'on' : ''}`} onClick={onMove} title="Move — then drag the canvas">✥</button>
-        <button className={`btn small ${rotating ? 'on' : ''}`} onClick={onRotateMode} title="Rotate — then drag the canvas">⟲</button>
-      </div>
-    </div>
-  );
-}
-
-function MatrixPanel({ leaves, adjacencies, colorOf, onCycle, onClose }) {
-  const strengthOf = (a, b) => {
-    const l = adjacencies.find(
-      (x) => (x.space_a === a && x.space_b === b) || (x.space_a === b && x.space_b === a)
-    );
-    return l?.strength ?? null;
-  };
-  const glyph = { required: '●', desired: '○' };
-  return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal matrix-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-head">
-          <h2>Adjacency matrix</h2>
-          <button className="btn ghost" onClick={onClose}>✕</button>
-        </div>
-        <p className="hint">
-          Click a cell to cycle the relationship: blank → <b>○ desired</b> → <b>● required</b> → blank. Changes
-          sync with the diagram and are undoable.
-        </p>
-        <div className="matrix-scroll">
-          <table className="matrix">
-            <thead>
-              <tr>
-                <th className="corner" />
-                {leaves.map((s) => (
-                  <th key={s.id} className="mcol" title={s.name}>
-                    <span>{s.name}</span>
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {leaves.map((row, ri) => (
-                <tr key={row.id}>
-                  <th className="mrow" title={row.name}>
-                    <span className="legend-dot" style={{ background: colorOf(row) }} />
-                    {row.name}
-                  </th>
-                  {leaves.map((col, ci) => {
-                    if (ci === ri) return <td key={col.id} className="mdiag" />;
-                    if (ci > ri) return <td key={col.id} className="mvoid" />;
-                    const st = strengthOf(row.id, col.id);
-                    return (
-                      <td
-                        key={col.id}
-                        className={`mcell ${st || ''}`}
-                        title={`${row.name} ↔ ${col.name}`}
-                        onClick={() => onCycle(row.id, col.id)}
-                      >
-                        {glyph[st] || ''}
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function NorthRose({ deg, onSet }) {
-  const ref = useRef(null);
-  const dragging = useRef(false);
-  const [live, setLive] = useState(null);
-  const shown = live ?? deg;
-  function angleFrom(e) {
-    const r = ref.current.getBoundingClientRect();
-    const cx = r.left + r.width / 2;
-    const cy = r.top + r.height / 2;
-    const a = (Math.atan2(e.clientX - cx, -(e.clientY - cy)) * 180) / Math.PI;
-    const norm = ((a % 360) + 360) % 360;
-    setLive(norm);
-    onSet(norm);
-  }
-  const rotate = (shown * 1).toFixed(2);
-  return (
-    <div
-      ref={ref}
-      className="north-rose"
-      title={`Project north — drag to set (currently ${Math.round(shown)}°). Double-click to reset to up.`}
-      onPointerDown={(e) => ((dragging.current = true), e.currentTarget.setPointerCapture?.(e.pointerId), angleFrom(e))}
-      onPointerMove={(e) => dragging.current && angleFrom(e)}
-      onPointerUp={() => ((dragging.current = false), setLive(null))}
-      onDoubleClick={() => (setLive(0), onSet(0))}
-    >
-      <svg viewBox="-22 -22 44 44">
-        <circle r="20" className="rose-bg" />
-        <g transform={`rotate(${rotate})`}>
-          <polygon points="0,-16 5,4 0,0 -5,4" className="rose-needle-n" />
-          <polygon points="0,16 5,0 0,4 -5,0" className="rose-needle-s" />
-          <text y="-11" className="rose-n">
-            N
-          </text>
-        </g>
-      </svg>
-      <span className="rose-deg">{Math.round(shown)}°</span>
     </div>
   );
 }

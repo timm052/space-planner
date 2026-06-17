@@ -41,3 +41,12 @@ export function isoProject(p, k = 0, anchor = { x: 0, y: 0 }, opts = ISO) {
     y: anchor.y + (dx + dy) * opts.ky - k * opts.lift,
   };
 }
+
+// Camera presets for the stacked 3-D views.
+// azimuth: rotation around world Z (degrees). elevation: tilt above horizontal
+// (0 = pure side elevation, 90 = straight down). perspective: 0 = orthographic.
+export const CAMERAS = {
+  iso:   { azimuth: 45,  elevation: 30, label: 'Isometric' },
+  side:  { azimuth: 0,   elevation: 5,  label: 'Side elevation' },
+  front: { azimuth: 90,  elevation: 5,  label: 'Front elevation' },
+};
