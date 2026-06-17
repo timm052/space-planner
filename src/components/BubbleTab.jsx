@@ -77,6 +77,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const [highlightGaps, setHighlightGaps] = useState(false); // flag unmet adjacencies on the diagram
   const [floorView, setFloorView] = useState('all'); // 'all' | <level label> | 'offset' | 'overlaid'
   const [floorGap, setFloorGap] = useState(0.6); // floor spacing as a fraction of plate height
+  const [stackImages, setStackImages] = useState(true); // show warped site images in the stacked view
   const [railW, setRailW] = useState(() => Number(localStorage.getItem('brieftrack.railw')) || 340);
   const [areaMode, setAreaMode] = useState('category'); // Areas panel grouping
   const [collapsed, setCollapsed] = useState(() => new Set()); // collapsed Areas groups
@@ -1599,6 +1600,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                 <input type="range" min="0.2" max="1.3" step="0.05" value={floorGap} onChange={(e) => setFloorGap(Number(e.target.value))} />
               </label>
             )}
+            {stackMode && imgLayers.length > 0 && (
+              <button className={`btn small ${stackImages ? 'on' : ''}`} onClick={() => setStackImages((v) => !v)} title="Show or hide the site image on the stacked floors">
+                ⊞ Image
+              </button>
+            )}
             {showScore && (
               <button
                 className={`btn small adj-score ${scoreBand(adjResult.score) || ''} ${highlightGaps ? 'active' : ''}`}
@@ -1767,19 +1773,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                 );
               });
               // In the stacked view, warp the images onto the ground-floor plane
-              // and clip them to its footprint so they read as the site plan on
-              // that floor instead of a flat backdrop.
+              // (not clipped — the full site image shows through). The ⊞ Images
+              // toggle can hide them.
               if (!stack) return imgs;
-              return (
-                <g transform={stack.groundTransform}>
-                  <defs>
-                    <clipPath id="ground-floor-clip">
-                      <rect x={stack.foot.x} y={stack.foot.y} width={stack.foot.w} height={stack.foot.h} rx="10" />
-                    </clipPath>
-                  </defs>
-                  <g clipPath="url(#ground-floor-clip)">{imgs}</g>
-                </g>
-              );
+              if (!stackImages) return null;
+              return <g transform={stack.groundTransform}>{imgs}</g>;
             })()}
 
             {(() => {
