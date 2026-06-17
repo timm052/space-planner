@@ -21,8 +21,9 @@ Thumbs.db
 .vscode/
 .idea/
 
-# vite cache
+# vite cache + transient config-load temp files
 .vite/
+vite.config.*.timestamp-*.mjs
 
 # editor / agent tooling
 .claude/
