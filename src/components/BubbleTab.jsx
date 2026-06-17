@@ -15,6 +15,7 @@ import HelpPanel from './HelpPanel.jsx';
 import NorthRose from './diagram/NorthRose.jsx';
 import MatrixPanel from './diagram/MatrixPanel.jsx';
 import LayerRow from './diagram/LayerRow.jsx';
+import Stacked3D from './diagram/Stacked3D.jsx';
 
 const PALETTE = ['#e8b04b', '#5b9dd9', '#4cc38a', '#c678dd', '#e5707a', '#56b6c2', '#d19a66', '#98c379', '#7aa2f7', '#f7768e'];
 const SAT_CANVAS = 768;
@@ -250,7 +251,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const hasLevels = levels.length >= 2;
   // A previously-selected level may vanish (e.g. project change); fall back to all.
   const floorMode =
-    floorView === 'offset' || floorView === 'overlaid' || floorView === 'all' || levels.includes(floorView)
+    floorView === 'offset' || floorView === 'overlaid' || floorView === '3d' || floorView === 'all' || levels.includes(floorView)
       ? floorView
       : 'all';
   useEffect(() => setFloorView('all'), [project.id]);
@@ -1398,6 +1399,88 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   }
   const stack = stackMode ? stackScene() : null;
 
+  const is3D = hasLevels && floorMode === '3d';
+
+  // Plain data for the WebGL 3-D view. Each floor's content is re-centred to a
+  // shared footprint so the storeys stack into one aligned building; Stacked3D
+  // maps plan x/y → world X/Z and floor rank → world Y (height).
+  function build3DScene() {
+    const PAD = 36;
+    // Per-floor bounding box + centre (raw node coords).
+    const fb = new Map();
+    for (const o of instances) {
+      const lv = levelOf(o.s);
+      if (!levels.includes(lv)) continue;
+      const n = nodes.get(o.key); if (!n) continue;
+      const r = radiusOf(o.s) + PAD;
+      const b = fb.get(lv) || { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+      b.minX = Math.min(b.minX, n.x - r); b.maxX = Math.max(b.maxX, n.x + r);
+      b.minY = Math.min(b.minY, n.y - r); b.maxY = Math.max(b.maxY, n.y + r);
+      fb.set(lv, b);
+    }
+    const centreOf = (lv) => {
+      const b = fb.get(lv);
+      return b ? { x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2 } : { x: W / 2, y: H / 2 };
+    };
+    // Shared footprint = the largest floor, centred at the origin.
+    let maxW = 1, maxH = 1;
+    for (const b of fb.values()) { maxW = Math.max(maxW, b.maxX - b.minX); maxH = Math.max(maxH, b.maxY - b.minY); }
+    const foot = { x0: -maxW / 2, y0: -maxH / 2, x1: maxW / 2, y1: maxH / 2, w: maxW, h: maxH };
+    const center = { x: 0, y: 0 };
+
+    const rooms = instances
+      .filter((o) => levels.includes(levelOf(o.s)) && nodes.get(o.key))
+      .map((o) => {
+        const n = nodes.get(o.key);
+        const c = centreOf(levelOf(o.s));
+        return {
+          key: o.key,
+          x: n.x - c.x, y: n.y - c.y, // re-centred onto the shared footprint
+          rank: rankOf(o.s),
+          r: radiusOf(o.s),
+          color: colorOf(o.s),
+          name: `${o.s.name}${Math.max(1, o.s.count || 1) > 1 ? ` ${o.i + 1}` : ''}`,
+        };
+      });
+
+    const links = [];
+    for (const l of adjacencies) {
+      const sa = byId.get(l.space_a), sb = byId.get(l.space_b);
+      if (!sa || !sb || !levels.includes(levelOf(sa)) || !levels.includes(levelOf(sb))) continue;
+      const ca = centreOf(levelOf(sa)), cb = centreOf(levelOf(sb));
+      let best = null;
+      for (let i = 0; i < Math.max(1, sa.count || 1); i++) {
+        const a = nodes.get(`${sa.id}:${i}`); if (!a) continue;
+        for (let j = 0; j < Math.max(1, sb.count || 1); j++) {
+          const b = nodes.get(`${sb.id}:${j}`); if (!b) continue;
+          const d = Math.hypot(b.x - a.x, b.y - a.y);
+          if (!best || d < best.d) best = { a, b, d };
+        }
+      }
+      if (best) links.push({ a: [best.a.x - ca.x, best.a.y - ca.y, rankOf(sa)], b: [best.b.x - cb.x, best.b.y - cb.y, rankOf(sb)], strength: l.strength });
+    }
+
+    let image = null;
+    if (stackImages) {
+      const im = imgLayers.find((x) => x.visible && x.image);
+      const r = im ? layerRect(im) : null;
+      if (im && r) {
+        const c0 = centreOf(levels[0]);
+        image = { href: im.image, cx: r.x + r.w / 2 - c0.x, cy: r.y + r.h / 2 - c0.y, w: r.w, h: r.h };
+      }
+    }
+
+    const floors = levels.map((label) => ({
+      label,
+      rank: levelRank.get(label),
+      color: PALETTE[levelRank.get(label) % PALETTE.length],
+      minX: foot.x0, minY: foot.y0, maxX: foot.x1, maxY: foot.y1,
+    }));
+
+    return { center, foot, floors, rooms, links, image, floorCount: levels.length };
+  }
+  const scene3d = is3D ? build3DScene() : null;
+
   function scaleLabelFor(S) {
     const ratio = scaleToRatio(S);
     const preset = presets.find(([r]) => Math.abs(r - ratio) / r < 0.02);
@@ -1553,10 +1636,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                   ))}
                   <option value="offset">Stacked · offset</option>
                   <option value="overlaid">Stacked · overlaid</option>
+                  <option value="3d">Stacked · 3D</option>
                 </select>
               </label>
             )}
-            {hasLevels && floorMode === 'offset' && (
+            {hasLevels && (floorMode === 'offset' || floorMode === '3d') && (
               <label className="hull-size" title="Spacing between stacked floors">
                 ⇕
                 <input type="range" min="0.2" max="1.3" step="0.05" value={floorGap} onChange={(e) => setFloorGap(Number(e.target.value))} />
@@ -1598,6 +1682,12 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
         </div>
 
         <div className="bubble-stage" ref={stageRef}>
+          {is3D && scene3d && (
+            <div className="stage-3d">
+              <Stacked3D scene={scene3d} gap={floorGap} showImage={stackImages} />
+              <div className="stage-3d-hint">Drag to orbit · scroll to zoom · right-drag to pan</div>
+            </div>
+          )}
           {error && (
             <div className="stage-popover" style={{ borderColor: 'var(--bad)', color: 'var(--bad)' }}>
               {error}
