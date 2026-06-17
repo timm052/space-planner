@@ -78,3 +78,20 @@ test('scoreBand maps a score to good / warn / bad', () => {
   assert.equal(scoreBand(0), 'bad');
   assert.equal(scoreBand(null), null);
 });
+
+test('linkSatisfied: required gap ≤ 2 m is satisfied, gap > 2 m is not', () => {
+  assert.ok(linkSatisfied('required', 1.5));
+  assert.ok(!linkSatisfied('required', 3));
+});
+
+test('linkSatisfied: desired gap ≤ 12 m is satisfied', () => {
+  assert.ok(linkSatisfied('desired', 10));
+  assert.ok(!linkSatisfied('desired', 15));
+});
+
+test('scoreBand maps score ranges to colour bands', () => {
+  assert.strictEqual(scoreBand(1),   'good'); // ≥ 0.9
+  assert.strictEqual(scoreBand(0.8), 'warn'); // ≥ 0.7
+  assert.strictEqual(scoreBand(0.5), 'bad');  // < 0.7
+  assert.strictEqual(scoreBand(null), null);
+});

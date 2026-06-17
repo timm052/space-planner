@@ -295,3 +295,13 @@ test('buildCsv emits header, leaf rows, totals and gross with escaping', () => {
   const gross = lines.find((l) => l.includes('GROSS (GIA)'));
   assert.ok(gross.endsWith('300'));
 });
+
+test('distUnit returns m2/ft2 for area-unit labels', () => {
+  assert.strictEqual(distUnit('m2'), 'm');
+  assert.strictEqual(distUnit('ft2'), 'ft');
+});
+
+test('metersToDist converts m→ft and passes m through', () => {
+  assert.ok(Math.abs(metersToDist(1, 'ft2') - 1 / 0.3048) < 0.001);
+  assert.strictEqual(metersToDist(5, 'm2'), 5);
+});
