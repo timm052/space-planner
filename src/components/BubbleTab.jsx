@@ -118,6 +118,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const [floorGap, setFloorGap] = useState(0.6); // floor spacing as a fraction of plate height
   const [camKey, setCamKey] = useState('iso'); // 3-D camera preset
   const [stackImages, setStackImages] = useState(true); // show warped site images in the stacked view
+  const [cam3d, setCam3d] = useState('persp'); // 3-D camera preset
   const [railW, setRailW] = useState(() => Number(localStorage.getItem('brieftrack.railw')) || 340);
   const [areaMode, setAreaMode] = useState('category'); // Areas panel grouping
   const [collapsed, setCollapsed] = useState(() => new Set()); // collapsed Areas groups
@@ -1438,6 +1439,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
           x: n.x - c.x, y: n.y - c.y, // re-centred onto the shared footprint
           rank: rankOf(o.s),
           r: radiusOf(o.s),
+          box: shapeOf(o.s) === 'box',
           color: colorOf(o.s),
           name: `${o.s.name}${Math.max(1, o.s.count || 1) > 1 ? ` ${o.i + 1}` : ''}`,
         };
@@ -1457,14 +1459,22 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
           if (!best || d < best.d) best = { a, b, d };
         }
       }
-      if (best) links.push({ a: [best.a.x - ca.x, best.a.y - ca.y, rankOf(sa)], b: [best.b.x - cb.x, best.b.y - cb.y, rankOf(sb)], strength: l.strength });
+      if (best) {
+        const ra = radiusOf(sa), rb = radiusOf(sb);
+        const boxA = shapeOf(sa) === 'box', boxB = shapeOf(sb) === 'box';
+        links.push({
+          a: [best.a.x - ca.x, best.a.y - ca.y, rankOf(sa), ra, boxA],
+          b: [best.b.x - cb.x, best.b.y - cb.y, rankOf(sb), rb, boxB],
+          strength: l.strength,
+        });
+      }
     }
 
     let image = null;
     if (stackImages) {
       const im = imgLayers.find((x) => x.visible && x.image);
       const r = im ? layerRect(im) : null;
-      if (im && r) {
+      if (im && r && Number.isFinite(r.w) && Number.isFinite(r.h) && r.w > 0 && r.h > 0) {
         const c0 = centreOf(levels[0]);
         image = { href: im.image, cx: r.x + r.w / 2 - c0.x, cy: r.y + r.h / 2 - c0.y, w: r.w, h: r.h };
       }
@@ -1646,6 +1656,18 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                 <input type="range" min="0.2" max="1.3" step="0.05" value={floorGap} onChange={(e) => setFloorGap(Number(e.target.value))} />
               </label>
             )}
+            {is3D && (
+              <label className="scale-label" title="3-D camera projection / view">
+                <select className="scale-select" value={cam3d} onChange={(e) => setCam3d(e.target.value)}>
+                  <option value="persp">Perspective</option>
+                  <option value="iso">Isometric</option>
+                  <option value="ortho">Orthographic</option>
+                  <option value="top">Top / plan</option>
+                  <option value="front">Front</option>
+                  <option value="side">Side</option>
+                </select>
+              </label>
+            )}
             {stackMode && (
               <label className="scale-label" title="3-D camera angle">
                 <select className="scale-select" value={camKey} onChange={(e) => setCamKey(e.target.value)}>
@@ -1655,7 +1677,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                 </select>
               </label>
             )}
-            {stackMode && imgLayers.length > 0 && (
+            {(stackMode || is3D) && imgLayers.length > 0 && (
               <button className={`btn small ${stackImages ? 'on' : ''}`} onClick={() => setStackImages((v) => !v)} title="Show or hide the site image on the stacked floors">
                 ⊞ Image
               </button>
@@ -1684,7 +1706,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
         <div className="bubble-stage" ref={stageRef}>
           {is3D && scene3d && (
             <div className="stage-3d">
-              <Stacked3D scene={scene3d} gap={floorGap} showImage={stackImages} />
+              <Stacked3D scene={scene3d} gap={floorGap} showImage={stackImages} camMode={cam3d} />
               <div className="stage-3d-hint">Drag to orbit · scroll to zoom · right-drag to pan</div>
             </div>
           )}
