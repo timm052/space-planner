@@ -2098,15 +2098,25 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                 const kind = shapeOf(o.s);
                 const box = kind === 'box';
                 const poly = kind === 'poly' ? polyVertsOf(o.s) : null;
+                const pbS = poly ? polyBounds(poly) : null;
                 const side = r * Math.sqrt(Math.PI);
                 const polyD = poly ? polygonPath(poly) : null;
+                const extrude = r * 0.5; // screen-space "thickness" for the raised blob
+                // Contact shadow: under the sphere bottom, or under the extruded blob's base.
+                const shadow = poly
+                  ? { cy: extrude + pbS.maxY * 0.95, rx: (pbS.maxX - pbS.minX) / 2 * 0.92, ry: (pbS.maxX - pbS.minX) / 2 * 0.22 }
+                  : { cy: r * 0.65, rx: r * 0.9, ry: r * 0.24 };
                 const label = `${o.s.name}${Math.max(1, o.s.count || 1) > 1 ? ` ${o.i + 1}` : ''}`;
                 return (
                   <g key={`sph:${o.key}`} transform={`translate(${p.x}, ${p.y})`} className="bubble stacked sphere">
                     <title>{label} — {fmtArea(ea(o.s), units)}</title>
-                    <ellipse cx="0" cy={r * 0.65} rx={r * 0.9} ry={r * 0.24} fill="url(#sphere-shadow-grad)" />
+                    <ellipse cx="0" cy={shadow.cy} rx={shadow.rx} ry={shadow.ry} fill="url(#sphere-shadow-grad)" />
                     {poly ? (
                       <>
+                        {/* Extruded body: a darkened copy dropped below the top face
+                            so the freeform shape reads as a raised 3-D blob. */}
+                        <path d={polyD} transform={`translate(0, ${extrude})`} fill={colorOf(o.s)} />
+                        <path d={polyD} transform={`translate(0, ${extrude})`} fill="rgba(0,0,0,0.32)" />
                         <path d={polyD} fill={colorOf(o.s)} />
                         <path d={polyD} fill="url(#sphere3d)" />
                         <path d={polyD} fill="url(#sphere-spec)" />
