@@ -8,6 +8,7 @@ const SECTIONS = [
       ['Move', 'Drag a bubble to reposition it. With Auto-layout on, others flow around it.'],
       ['Pin', 'Hover a bubble and press P (or select it and use the Pin button) to pin/unpin it. Pinned bubbles wear a dashed ring and never move.'],
       ['Box', 'Hover a bubble and press B to switch it between a circle and an equal-area square. Use “All boxes / All bubbles” to convert every space at once.'],
+      ['Custom shape', 'Select a bubble and use the ✎ Shape button to give it a freeform outline. Drag the corner handles to make odd-shaped rooms, click a “＋” to add a corner, or double-click a corner to remove it. The area stays locked to the brief — only the outline changes — and the shape carries through the stacked, 3D and PDF views.'],
       ['Multi-select', 'Drag across empty canvas to marquee-select bubbles, or Shift-click to add/remove them. A toolbar lets you pin, box or delete the whole selection at once. Esc clears it.'],
       ['Move together', 'With several bubbles selected, drag any one of them to move the whole group; they pin where you drop them.'],
       ['Categories', 'Bubbles colour by category. Recolour any category by clicking its legend swatch. Select bubbles and use the Category box to reassign them — typing a new name creates that category.'],
@@ -40,7 +41,7 @@ const SECTIONS = [
   {
     title: 'View & output',
     items: [
-      ['Floors', 'When the brief uses levels, the ▤ Floors menu switches between all floors together, one floor at a time, or a stacked axonometric — each floor an isometric plane (with the site image warped onto the ground plane) and its rooms drawn as 3D spheres, tied together by corner guides. Offset separates the floors (drag the ⇕ slider to set the gap); overlaid puts them on one plane to compare footprints. Use ⊞ Image to show or hide the site image. Stacked views are read-only — pick a single floor to edit.'],
+      ['Floors', 'When the brief uses levels, the ▤ Floors menu switches between all floors together, one floor at a time, or stacked views. Stacked · offset and · overlaid are flat isometric planes; Stacked · 3D is a real WebGL model you can orbit (drag to rotate, scroll to zoom, right-drag to pan) with rooms as spheres on each floor slab and the site image on the ground. The ⇕ slider sets the floor spacing and ⊞ Image shows/hides the site image. Stacked views are read-only — pick a single floor to edit.'],
       ['Pan', 'The view is locked by default. Toggle Pan, then drag the canvas. Recentre returns to the middle.'],
       ['North', 'Drag the compass rose (top-right of the canvas) to set project north. Double-click it to reset to up.'],
       ['PDF', 'Export a scale-accurate PDF with the background images, scale bar, north arrow and a title block.'],

@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { convexHull, smoothHullPath, pinsOf, filterCss, IMAGE_FILTERS } from '../src/geometry.js';
+import { convexHull, smoothHullPath, pinsOf, filterCss, IMAGE_FILTERS,
+  polygonArea, polygonCentroid, normalizePolygon, parsePoly, polygonPath, polyBounds,
+  regularPolygon, lShape, smoothPolygonPoints } from '../src/geometry.js';
 
 // ---- convexHull ---------------------------------------------------------
 
@@ -75,6 +77,65 @@ test('pinsOf falls back to the legacy single pin as instance 0', () => {
 test('pinsOf returns an empty map when there is no pin', () => {
   assert.deepEqual(pinsOf({}), {});
   assert.deepEqual(pinsOf({ pin_x: null, pin_y: null }), {});
+});
+
+// ---- freeform polygon helpers -------------------------------------------
+
+test('polygonArea computes area by the shoelace formula (winding-independent)', () => {
+  const sq = [{ x: 0, y: 0 }, { x: 4, y: 0 }, { x: 4, y: 4 }, { x: 0, y: 4 }];
+  assert.equal(polygonArea(sq), 16);
+  assert.equal(polygonArea([...sq].reverse()), 16); // sign of winding doesn't matter
+  assert.equal(polygonArea([{ x: 0, y: 0 }, { x: 1, y: 1 }]), 0); // degenerate
+});
+
+test('polygonCentroid finds the area centroid of a square', () => {
+  const c = polygonCentroid([{ x: 0, y: 0 }, { x: 2, y: 0 }, { x: 2, y: 2 }, { x: 0, y: 2 }]);
+  assert.ok(Math.abs(c.x - 1) < 1e-9 && Math.abs(c.y - 1) < 1e-9);
+});
+
+test('normalizePolygon centres at the origin and scales to unit area', () => {
+  const np = normalizePolygon([{ x: 10, y: 10 }, { x: 16, y: 10 }, { x: 16, y: 16 }, { x: 10, y: 16 }]);
+  assert.ok(Math.abs(polygonArea(np) - 1) < 1e-9, 'area normalized to 1');
+  const c = polygonCentroid(np);
+  assert.ok(Math.abs(c.x) < 1e-9 && Math.abs(c.y) < 1e-9, 'centroid at origin');
+});
+
+test('regularPolygon and lShape are normalized to unit area', () => {
+  assert.ok(Math.abs(polygonArea(regularPolygon(6)) - 1) < 1e-9);
+  assert.equal(regularPolygon(5).length, 5);
+  assert.ok(Math.abs(polygonArea(lShape()) - 1) < 1e-9);
+});
+
+test('parsePoly reads shape_json and tolerates junk', () => {
+  assert.deepEqual(parsePoly({ shape_json: '[{"x":0,"y":0},{"x":1,"y":0},{"x":0,"y":1}]' }), [
+    { x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 },
+  ]);
+  assert.equal(parsePoly({}), null);
+  assert.equal(parsePoly({ shape_json: '{not json' }), null);
+  assert.equal(parsePoly({ shape_json: '[{"x":0,"y":0},{"x":1,"y":1}]' }), null); // < 3 verts
+  assert.equal(parsePoly({ shape_json: '[{"x":0,"y":0},{"x":1,"y":"z"},{"x":2,"y":2}]' }), null); // NaN
+});
+
+test('polygonPath builds a closed M/L path', () => {
+  const d = polygonPath([{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 }]);
+  assert.ok(d.startsWith('M 0.00 0.00'));
+  assert.ok(d.includes('L '));
+  assert.ok(d.trim().endsWith('Z'));
+});
+
+test('smoothPolygonPoints samples a dense, smaller closed curve inside the polygon', () => {
+  const sq = [{ x: -1, y: -1 }, { x: 1, y: -1 }, { x: 1, y: 1 }, { x: -1, y: 1 }];
+  const curve = smoothPolygonPoints(sq, 10);
+  assert.equal(curve.length, sq.length * 10); // seg points per edge
+  const a = polygonArea(curve);
+  assert.ok(a > 0 && a < polygonArea(sq), 'rounded curve area is positive but inside the polygon');
+  assert.deepEqual(smoothPolygonPoints([{ x: 0, y: 0 }, { x: 1, y: 1 }]), [{ x: 0, y: 0 }, { x: 1, y: 1 }]); // degenerate passthrough
+});
+
+test('polyBounds returns the axis-aligned bounding box', () => {
+  assert.deepEqual(polyBounds([{ x: -2, y: 1 }, { x: 3, y: -4 }, { x: 0, y: 5 }]), {
+    minX: -2, minY: -4, maxX: 3, maxY: 5,
+  });
 });
 
 // ---- filterCss / IMAGE_FILTERS ------------------------------------------

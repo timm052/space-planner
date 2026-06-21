@@ -175,6 +175,24 @@ test('PUT space: stringifies pin_json objects and stores sort_order', async () =
   assert.equal(res.body.sort_order, 7);
 });
 
+test('PUT space: stores a poly shape with shape_json and clamps unknown shapes', async () => {
+  const pid = await newProject();
+  const s = (await api('POST', `/api/projects/${pid}/spaces`, { name: 'Room', target_area: 10 })).body;
+  assert.equal(s.shape, 'bubble'); // default
+
+  const poly = [{ x: -1, y: -1 }, { x: 1, y: -1 }, { x: 1, y: 1 }, { x: -1, y: 1 }];
+  const res = await api('PUT', `/api/spaces/${s.id}`, { shape: 'poly', shape_json: poly });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.shape, 'poly');
+  assert.equal(typeof res.body.shape_json, 'string'); // objects are stringified
+  assert.deepEqual(JSON.parse(res.body.shape_json), poly);
+
+  // An unknown shape falls back to 'bubble' (oneOf clamp).
+  const bad = await api('PUT', `/api/spaces/${s.id}`, { shape: 'hexahedron' });
+  assert.equal(bad.status, 200);
+  assert.equal(bad.body.shape, 'bubble');
+});
+
 test('DELETE space removes the whole subtree', async () => {
   const pid = await newProject();
   const building = (await api('POST', `/api/projects/${pid}/spaces`, { name: 'B', kind: 'building' })).body;

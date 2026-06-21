@@ -111,8 +111,16 @@ export function exportDiagramPdf(scene) {
     const [r, g, bl] = hexToRgb(b.color);
     const rmm = b.r * mmPerUnit;
     const side = rmm * Math.sqrt(Math.PI); // square of equal area
+    const drawPoly = (style) => {
+      const deltas = [];
+      for (let i = 1; i < b.poly.length; i++)
+        deltas.push([X(b.poly[i].x) - X(b.poly[i - 1].x), Y(b.poly[i].y) - Y(b.poly[i - 1].y)]);
+      doc.lines(deltas, X(b.poly[0].x), Y(b.poly[0].y), [1, 1], style, true);
+    };
     const drawShape = (style) =>
-      b.box ? doc.rect(X(b.x) - side / 2, Y(b.y) - side / 2, side, side, style) : doc.circle(X(b.x), Y(b.y), rmm, style);
+      b.poly ? drawPoly(style)
+        : b.box ? doc.rect(X(b.x) - side / 2, Y(b.y) - side / 2, side, side, style)
+        : doc.circle(X(b.x), Y(b.y), rmm, style);
     if (!outline) {
       doc.saveGraphicsState();
       doc.setGState(new doc.GState({ opacity: b.opacity }));
