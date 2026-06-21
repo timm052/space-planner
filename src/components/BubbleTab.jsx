@@ -4,7 +4,9 @@ import { fmtArea, areaToM2, distToMeters, distUnit, leafSpaces, rootContainer } 
 // pdfExport is lazy-loaded on demand — keeps jsPDF out of the initial bundle.
 import { useHistory } from '../useHistory.js';
 import { SCALE_PRESETS, ratioToScale, scaleToRatio, zoomAbout } from '../scale.js';
-import { convexHull, smoothHullPath, pinsOf, filterCss, IMAGE_FILTERS } from '../geometry.js';
+import { convexHull, smoothHullPath, pinsOf, filterCss, IMAGE_FILTERS,
+  parsePoly, normalizePolygon, polygonPath, polyBounds, regularPolygon,
+  polygonArea, smoothPolygonPoints } from '../geometry.js';
 import { edgeGap, adjacencyScore, scoreBand } from '../adjacency.js';
 import { orderedLevels, levelRankMap, ISO, CAMERAS } from '../floors.js';
 import { useViewport, W, H } from '../hooks/useViewport.js';
@@ -122,6 +124,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const [railW, setRailW] = useState(() => Number(localStorage.getItem('brieftrack.railw')) || 340);
   const [areaMode, setAreaMode] = useState('category'); // Areas panel grouping
   const [collapsed, setCollapsed] = useState(() => new Set()); // collapsed Areas groups
+  const [editShape, setEditShape] = useState(null); // space id whose polygon is being edited
 
   const draftTimers = useRef(new Map());
   const nodesRef = useRef(new Map());
@@ -129,6 +132,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   // tab return); otherwise energise so the first layout settles.
   const alphaRef = useRef(layoutCache.has(project.id) ? 0 : 1);
   const dragRef = useRef(null);
+  const polyDragRef = useRef(null); // { space, vi } while dragging a polygon vertex handle
   const panRef = useRef(null);
   const layerMoveRef = useRef(null);
   const rotateRef = useRef(null); // { id, startAngle, startRot } while rotating an image by mouse
@@ -256,6 +260,10 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       ? floorView
       : 'all';
   useEffect(() => setFloorView('all'), [project.id]);
+  // Leave shape-edit mode when the selection moves to another space.
+  useEffect(() => {
+    if (editShape != null && editShape !== selected) setEditShape(null);
+  }, [selected]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const ea = (s) => {
     const draft = drafts[s.id];
@@ -323,7 +331,48 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [multi]);
 
-  const shapeOf = (s) => (s.shape === 'box' ? 'box' : 'bubble');
+  const shapeOf = (s) => {
+    if (s.shape === 'poly' && parsePoly(s)) return 'poly';
+    return s.shape === 'box' ? 'box' : 'bubble';
+  };
+
+  // On-screen area of any shape, in diagram-units². All shapes share this so a
+  // bubble, box and polygon for the same space cover the same footprint area.
+  const areaUnits = (s) => Math.PI * radiusOf(s) ** 2;
+  // Normalized verts for a space, preferring the live drag override (so a vertex
+  // being dragged updates the outline before it's committed).
+  const liveNormOf = (s) => {
+    const d = polyDragRef.current;
+    if (d && d.space.id === s.id) return d.verts;
+    return parsePoly(s);
+  };
+  // Polygons render as smooth, bubble-like blobs (a dense sampled curve through
+  // the corners) — straight edges are reserved for box mode.
+  const SMOOTH_SEG = 14;
+  // Scale factor that makes the *rendered* (curved) outline's area exactly equal
+  // areaUnits(s) — the area lock. We divide by the normalized curve's area k so a
+  // bulgy curve still encloses the correct footprint regardless of the outline.
+  const polyScaleOf = (s) => {
+    const np = liveNormOf(s);
+    if (!np) return null;
+    const k = polygonArea(smoothPolygonPoints(np, SMOOTH_SEG)) || polygonArea(np) || 1;
+    return Math.sqrt(areaUnits(s) / k);
+  };
+  // Dense, area-locked curve points for rendering/extrusion/PDF, centred at origin.
+  const polyVertsOf = (s) => {
+    const np = liveNormOf(s);
+    if (!np) return null;
+    const f = polyScaleOf(s);
+    return smoothPolygonPoints(np, SMOOTH_SEG).map((p) => ({ x: p.x * f, y: p.y * f }));
+  };
+  // The corner vertices (for edit handles), scaled by the same factor so they sit
+  // on the rendered curve's control points.
+  const polyHandlesOf = (s) => {
+    const np = liveNormOf(s);
+    if (!np) return null;
+    const f = polyScaleOf(s);
+    return np.map((p) => ({ x: p.x * f, y: p.y * f }));
+  };
 
   // Apply field updates to a space and refetch. Returns a promise.
   async function applySpace(id, fields) {
@@ -366,6 +415,52 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       .filter((s) => shapeOf(s) !== shape)
       .map((s) => ({ id: s.id, before: { shape: shapeOf(s) }, after: { shape } }));
     await commitMany(changes, 'convert all');
+  }
+
+  // ---------- freeform (custom) polygon shapes ----------
+  // Convert a space to a polygon (seeding a default outline if it has none) and
+  // open vertex-edit mode. Toggling off when it's already the edit target.
+  function editCustomShape(space) {
+    if (editShape === space.id) return setEditShape(null);
+    if (shapeOf(space) === 'poly') return setEditShape(space.id);
+    commitSpace(
+      space,
+      { shape: 'poly', shape_json: JSON.stringify(parsePoly(space) || regularPolygon(6)) },
+      'custom shape'
+    );
+    setEditShape(space.id);
+  }
+  // Persist a new normalized outline for a space (undoable).
+  function savePoly(space, normVerts, label = 'shape') {
+    const before = { shape: space.shape, shape_json: space.shape_json ?? null };
+    const after = { shape: 'poly', shape_json: JSON.stringify(normalizePolygon(normVerts)) };
+    history.record({ label, undo: () => applySpace(space.id, before), redo: () => applySpace(space.id, after) });
+    setError(null);
+    applySpace(space.id, after).catch((e) => setError(e.message));
+  }
+  // Insert a vertex at the midpoint of edge i→i+1 (in normalized space).
+  function addPolyVertex(space, edgeIndex) {
+    const np = parsePoly(space);
+    if (!np) return;
+    const a = np[edgeIndex], b = np[(edgeIndex + 1) % np.length];
+    const next = [...np];
+    next.splice(edgeIndex + 1, 0, { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+    savePoly(space, next, 'add vertex');
+  }
+  // Remove a vertex (keeps at least a triangle).
+  function removePolyVertex(space, vi) {
+    const np = parsePoly(space);
+    if (!np || np.length <= 3) return;
+    savePoly(space, np.filter((_, i) => i !== vi), 'remove vertex');
+  }
+  // The instance node a polygon's edit handles are anchored to.
+  const editAnchorInst = (space) => (selected === space.id ? selectedInst : 0);
+  function onPolyVertexDown(e, space, vi) {
+    e.stopPropagation();
+    try { e.target.setPointerCapture?.(e.pointerId); } catch { /* synthetic */ }
+    const np = parsePoly(space);
+    if (!np) return;
+    polyDragRef.current = { space, vi, verts: np.map((p) => ({ ...p })), moved: 0 };
   }
 
   // Keep simulation nodes in sync with the leaves (per instance). New nodes seed
@@ -481,6 +576,18 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
 
   function onMove(e) {
     const rect = svgRef.current.getBoundingClientRect();
+    if (polyDragRef.current) {
+      const d = polyDragRef.current;
+      const node = nodesRef.current.get(`${d.space.id}:${editAnchorInst(d.space)}`);
+      if (node) {
+        const { x, y } = toSvgCoords(e);
+        const f = polyScaleOf(d.space) || 1;
+        d.verts[d.vi] = { x: (x - node.x) / f, y: (y - node.y) / f };
+        d.moved += 1;
+        setTick((t) => t + 1);
+      }
+      return;
+    }
     if (layerMoveRef.current) {
       const m = layerMoveRef.current;
       const im = imgById.get(m.id);
@@ -538,6 +645,13 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   }
 
   async function onUp() {
+    if (polyDragRef.current) {
+      const d = polyDragRef.current;
+      polyDragRef.current = null;
+      if (d.moved > 0) savePoly(d.space, d.verts, 'reshape');
+      else setTick((t) => t + 1);
+      return;
+    }
     if (marqueeRef.current) {
       finishMarquee();
       return;
@@ -763,6 +877,20 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     const ids = [...new Set(multiList().map((o) => o.id))];
     const changes = ids.map((id) => ({ id, before: { shape: shapeOf(byId.get(id)) }, after: { shape } }));
     await commitMany(changes, 'shape selection');
+  }
+  // Give every selected space a custom polygon (seeding a default outline where
+  // one isn't already present) in a single undo step.
+  async function multiCustomShape() {
+    const ids = [...new Set(multiList().map((o) => o.id))];
+    const changes = ids.map((id) => {
+      const s = byId.get(id);
+      return {
+        id,
+        before: { shape: s.shape, shape_json: s.shape_json ?? null },
+        after: { shape: 'poly', shape_json: JSON.stringify(parsePoly(s) || regularPolygon(6)) },
+      };
+    });
+    await commitMany(changes, 'custom shape selection');
   }
   // Assign the selected bubbles to a category (department) — typing a new name
   // creates it. Colour by department to see the grouping update.
@@ -1112,11 +1240,14 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
         const n = nodes.get(o.key);
         if (!n) return null;
         const count = Math.max(1, o.s.count || 1);
+        const kind = shapeOf(o.s);
         return {
           x: n.x,
           y: n.y,
           r: radiusOf(o.s),
-          box: shapeOf(o.s) === 'box',
+          box: kind === 'box',
+          // Poly verts in absolute diagram units (already centred at origin).
+          poly: kind === 'poly' ? polyVertsOf(o.s).map((p) => ({ x: n.x + p.x, y: n.y + p.y })) : null,
           color: colorOf(o.s),
           opacity: project.bubble_opacity ?? 0.32,
           label: o.s.name + (count > 1 ? ` ${o.i + 1}` : ''),
@@ -1128,10 +1259,17 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
 
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const b of bubbles) {
-      minX = Math.min(minX, b.x - b.r);
-      minY = Math.min(minY, b.y - b.r);
-      maxX = Math.max(maxX, b.x + b.r);
-      maxY = Math.max(maxY, b.y + b.r);
+      if (b.poly) {
+        for (const p of b.poly) {
+          minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+          minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+        }
+      } else {
+        minX = Math.min(minX, b.x - b.r);
+        minY = Math.min(minY, b.y - b.r);
+        maxX = Math.max(maxX, b.x + b.r);
+        maxY = Math.max(maxY, b.y + b.r);
+      }
     }
     const pad = 40;
     const bounds = { minX: minX - pad, minY: minY - pad, maxX: maxX + pad, maxY: maxY + pad };
@@ -1434,12 +1572,14 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       .map((o) => {
         const n = nodes.get(o.key);
         const c = centreOf(levelOf(o.s));
+        const kind = shapeOf(o.s);
         return {
           key: o.key,
           x: n.x - c.x, y: n.y - c.y, // re-centred onto the shared footprint
           rank: rankOf(o.s),
           r: radiusOf(o.s),
-          box: shapeOf(o.s) === 'box',
+          box: kind === 'box',
+          poly: kind === 'poly' ? polyVertsOf(o.s) : null, // scaled verts, centred at origin
           color: colorOf(o.s),
           name: `${o.s.name}${Math.max(1, o.s.count || 1) > 1 ? ` ${o.i + 1}` : ''}`,
         };
@@ -1955,14 +2095,23 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                 const p = stack.screenPos.get(o.key);
                 if (!p) return null;
                 const r = p.r;
-                const box = shapeOf(o.s) === 'box';
+                const kind = shapeOf(o.s);
+                const box = kind === 'box';
+                const poly = kind === 'poly' ? polyVertsOf(o.s) : null;
                 const side = r * Math.sqrt(Math.PI);
+                const polyD = poly ? polygonPath(poly) : null;
                 const label = `${o.s.name}${Math.max(1, o.s.count || 1) > 1 ? ` ${o.i + 1}` : ''}`;
                 return (
                   <g key={`sph:${o.key}`} transform={`translate(${p.x}, ${p.y})`} className="bubble stacked sphere">
                     <title>{label} — {fmtArea(ea(o.s), units)}</title>
                     <ellipse cx="0" cy={r * 0.65} rx={r * 0.9} ry={r * 0.24} fill="url(#sphere-shadow-grad)" />
-                    {box ? (
+                    {poly ? (
+                      <>
+                        <path d={polyD} fill={colorOf(o.s)} />
+                        <path d={polyD} fill="url(#sphere3d)" />
+                        <path d={polyD} fill="url(#sphere-spec)" />
+                      </>
+                    ) : box ? (
                       <>
                         <rect x={-side / 2} y={-side / 2} width={side} height={side} rx={Math.min(5, side / 8)} fill={colorOf(o.s)} />
                         <rect x={-side / 2} y={-side / 2} width={side} height={side} rx={Math.min(5, side / 8)} fill="url(#sphere3d)" />
@@ -2024,8 +2173,16 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
               const pinned = !!instPin(s, i);
               const inMulti = multi.has(o.key);
               const count = Math.max(1, s.count || 1);
-              const box = shapeOf(s) === 'box';
+              const kind = shapeOf(s);
+              const box = kind === 'box';
+              const poly = kind === 'poly' ? polyVertsOf(s) : null;
+              const polyHandles = kind === 'poly' ? polyHandlesOf(s) : null;
+              const pb = poly ? polyBounds(poly) : null;
               const side = r * Math.sqrt(Math.PI); // square of equal area
+              const editing = editShape === s.id && i === editAnchorInst(s);
+              // Live area of the rendered outline, recomputed each frame (the area
+              // lock keeps it ≈ the brief target — shown so the size reads "live").
+              const polyAreaStr = poly ? fmtArea(ea(s) * (polygonArea(poly) / (areaUnits(s) || 1)), units) : null;
               const fillOp = isSel ? Math.min((project.bubble_opacity ?? 0.32) + 0.25, 1) : pinned ? Math.min((project.bubble_opacity ?? 0.32) + 0.1, 1) : project.bubble_opacity ?? 0.32;
               const sw = isSel ? 3 : pinned ? 2.5 : 1.5;
               const outline = bubbleStyle === 'outline';
@@ -2049,18 +2206,24 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                     {count > 1 ? ` ${i + 1} of ${count}` : ''} — {fmtArea(ea(s), units)} · P pin · B box
                   </title>
                   {pinned &&
-                    (box ? (
+                    (poly ? (
+                      <rect x={pb.minX - 5} y={pb.minY - 5} width={pb.maxX - pb.minX + 10} height={pb.maxY - pb.minY + 10} rx="3" className="pin-ring" />
+                    ) : box ? (
                       <rect x={-side / 2 - 5} y={-side / 2 - 5} width={side + 10} height={side + 10} rx="3" className="pin-ring" />
                     ) : (
                       <circle r={r + 5} className="pin-ring" />
                     ))}
                   {inMulti &&
-                    (box ? (
+                    (poly ? (
+                      <rect x={pb.minX - 7} y={pb.minY - 7} width={pb.maxX - pb.minX + 14} height={pb.maxY - pb.minY + 14} rx="4" className="multi-ring" />
+                    ) : box ? (
                       <rect x={-side / 2 - 7} y={-side / 2 - 7} width={side + 14} height={side + 14} rx="4" className="multi-ring" />
                     ) : (
                       <circle r={r + 7} className="multi-ring" />
                     ))}
-                  {box ? (
+                  {poly ? (
+                    <path className={`poly-shape ${editing ? 'editing' : ''}`} d={polygonPath(poly)} fill={colorOf(s)} fillOpacity={fillOpEff} stroke={colorOf(s)} strokeWidth={swEff} strokeLinejoin="round" filter={shapeFilter} />
+                  ) : box ? (
                     <rect x={-side / 2} y={-side / 2} width={side} height={side} rx={Math.min(4, side / 8)} fill={colorOf(s)} fillOpacity={fillOpEff} stroke={colorOf(s)} strokeWidth={swEff} filter={shapeFilter} />
                   ) : (
                     <circle r={r} fill={colorOf(s)} fillOpacity={fillOpEff} stroke={colorOf(s)} strokeWidth={swEff} filter={shapeFilter} />
@@ -2070,6 +2233,42 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                     r={r}
                     areaStr={fmtArea(ea(s), units)}
                   />
+                  {editing && polyHandles && (
+                    <g className="poly-edit">
+                      {polyHandles.map((p, vi) => {
+                        const a = polyHandles[vi];
+                        const b = polyHandles[(vi + 1) % polyHandles.length];
+                        const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+                        return (
+                          <circle
+                            key={`add:${vi}`}
+                            cx={mid.x}
+                            cy={mid.y}
+                            r="4"
+                            className="poly-add"
+                            onPointerDown={(e) => e.stopPropagation()}
+                            onClick={(e) => (e.stopPropagation(), addPolyVertex(s, vi))}
+                          />
+                        );
+                      })}
+                      {polyHandles.map((p, vi) => (
+                        <circle
+                          key={`v:${vi}`}
+                          cx={p.x}
+                          cy={p.y}
+                          r="6"
+                          className="poly-handle"
+                          onPointerDown={(e) => onPolyVertexDown(e, s, vi)}
+                          onDoubleClick={(e) => (e.stopPropagation(), removePolyVertex(s, vi))}
+                        />
+                      ))}
+                      {pb && (
+                        <text className="poly-area-badge" x="0" y={pb.minY - 12} textAnchor="middle">
+                          {polyAreaStr}
+                        </text>
+                      )}
+                    </g>
+                  )}
                 </g>
               );
             })}
@@ -2118,6 +2317,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
             const selInstPinned = sel ? !!instPin(sel, selectedInst) : false;
             const allPinned = sel ? Array.from({ length: selCount }, (_, i) => i).every((i) => instPin(sel, i)) : false;
             const selBox = sel ? shapeOf(sel) === 'box' : false;
+            const selPoly = sel ? shapeOf(sel) === 'poly' : false;
+            const editingSel = sel && editShape === sel.id;
             return (
               <div className="stage-fabs">
                 <button
@@ -2145,7 +2346,15 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                 >
                   {selBox ? '○' : '▢'}<span className="fab-label">{selBox ? 'Bubble' : 'Box'}</span>
                 </button>
-                <div className="fab-hint">{sel ? sel.name + (selCount > 1 ? ` ${selectedInst + 1}` : '') : 'tap a bubble'}</div>
+                <button
+                  className={`fab ${editingSel ? 'active' : selPoly ? 'on' : ''}`}
+                  disabled={!sel}
+                  onClick={() => sel && editCustomShape(sel)}
+                  title={sel ? (editingSel ? 'Finish editing the custom shape' : `Give ${sel.name} a custom shape and edit its corners (area stays locked to the brief)`) : 'Tap a bubble first, then shape it'}
+                >
+                  ✎<span className="fab-label">{editingSel ? 'Done' : 'Shape'}</span>
+                </button>
+                <div className="fab-hint">{editingSel ? 'drag corners · click + to add · double-click a corner to remove' : sel ? sel.name + (selCount > 1 ? ` ${selectedInst + 1}` : '') : 'tap a bubble'}</div>
               </div>
             );
           })()}
@@ -2157,6 +2366,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
               <button className="btn small" onClick={() => multiPin(false)} title="Unpin the selected bubbles">Unpin</button>
               <button className="btn small" onClick={() => multiShape('box')} title="Make the selected spaces boxes">▢ Box</button>
               <button className="btn small" onClick={() => multiShape('bubble')} title="Make the selected spaces bubbles">○ Bubble</button>
+              <button className="btn small" onClick={multiCustomShape} title="Give the selected spaces a custom polygon shape">✎ Custom</button>
               <span className="multi-sep" />
               <input
                 className="multi-cat"

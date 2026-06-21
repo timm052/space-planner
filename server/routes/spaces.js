@@ -29,6 +29,7 @@ function parentOk(projectId, parentId, selfId) {
 }
 
 const VALID_CHILD_MODES = new Set(['group', 'within', 'attached']);
+const VALID_SHAPES = new Set(['bubble', 'box', 'poly']);
 
 // POST /api/projects/:id/spaces
 router.post('/projects/:id/spaces', (req, res) => {
@@ -93,14 +94,18 @@ router.put('/spaces/:id', (req, res) => {
   const sort_order = 'sort_order' in req.body ? Number(req.body.sort_order) : space.sort_order;
   const area = CONTAINER_KINDS.has(kind) ? 0 : Number(target_area);
 
+  // shape_json (freeform polygon) is nullable — check key presence, stringify objects.
+  let shape_json = 'shape_json' in req.body ? req.body.shape_json : space.shape_json;
+  if (shape_json != null && typeof shape_json !== 'string') shape_json = JSON.stringify(shape_json);
+
   const safeCount = clampNum(count, 1, 100, 1);
   db.prepare(
     `UPDATE spaces SET department = ?, name = ?, count = ?, target_area = ?, notes = ?,
-     pin_x = ?, pin_y = ?, pin_json = ?, parent_id = ?, kind = ?, shape = ?,
+     pin_x = ?, pin_y = ?, pin_json = ?, parent_id = ?, kind = ?, shape = ?, shape_json = ?,
      image = ?, sort_order = ?, child_mode = ?, level = ? WHERE id = ?`
   ).run(
     department, name, safeCount, area, notes,
-    pin_x, pin_y, pin_json, parent_id, kind, shape === 'box' ? 'box' : 'bubble',
+    pin_x, pin_y, pin_json, parent_id, kind, oneOf(shape, VALID_SHAPES, 'bubble'), shape_json,
     image, sort_order, child_mode, level ?? '', space.id
   );
   res.json(db.prepare('SELECT * FROM spaces WHERE id = ?').get(space.id));

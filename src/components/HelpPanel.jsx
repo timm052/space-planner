@@ -8,6 +8,7 @@ const SECTIONS = [
       ['Move', 'Drag a bubble to reposition it. With Auto-layout on, others flow around it.'],
       ['Pin', 'Hover a bubble and press P (or select it and use the Pin button) to pin/unpin it. Pinned bubbles wear a dashed ring and never move.'],
       ['Box', 'Hover a bubble and press B to switch it between a circle and an equal-area square. Use “All boxes / All bubbles” to convert every space at once.'],
+      ['Custom shape', 'Select a bubble and use the ✎ Shape button to give it a freeform outline. Drag the corner handles to make odd-shaped rooms, click a “＋” to add a corner, or double-click a corner to remove it. The area stays locked to the brief — only the outline changes — and the shape carries through the stacked, 3D and PDF views.'],
       ['Multi-select', 'Drag across empty canvas to marquee-select bubbles, or Shift-click to add/remove them. A toolbar lets you pin, box or delete the whole selection at once. Esc clears it.'],
       ['Move together', 'With several bubbles selected, drag any one of them to move the whole group; they pin where you drop them.'],
       ['Categories', 'Bubbles colour by category. Recolour any category by clicking its legend swatch. Select bubbles and use the Category box to reassign them — typing a new name creates that category.'],

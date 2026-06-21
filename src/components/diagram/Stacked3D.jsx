@@ -1,4 +1,4 @@
-import { Suspense, useEffect } from 'react';
+import { Suspense, useEffect, useMemo } from 'react';
 import { Canvas, useThree } from '@react-three/fiber';
 import { OrbitControls, PerspectiveCamera, Html, useTexture } from '@react-three/drei';
 import * as THREE from 'three';
@@ -62,6 +62,44 @@ function Floor({ floor, S, gapY, image, showImage }) {
 function Room({ room, S, gapY }) {
   const rW = Math.max(0.06, room.r * S);
   const side = rW * BOX_K;
+
+  // Freeform polygon: extrude the (area-locked) outline into a soft, bubble-like
+  // cushion standing on the floor slab — a generous bevel rounds the top and
+  // bottom edges so it reads as an inflated blob rather than a flat slab. Build
+  // the THREE.Shape with -y so plan-y maps to world +Z.
+  const depth = Math.max(0.4, rW * 0.95);
+  const polyGeom = useMemo(() => {
+    if (!room.poly) return null;
+    const pts = room.poly.map((p) => new THREE.Vector2(p.x * S, -p.y * S));
+    const shape = new THREE.Shape(pts);
+    const bevel = Math.min(depth * 0.46, rW * 0.34); // rounded cap height
+    const geom = new THREE.ExtrudeGeometry(shape, {
+      depth,
+      bevelEnabled: true,
+      bevelThickness: bevel,
+      bevelSize: bevel * 0.85, // horizontal rounding for the puffy edge
+      bevelSegments: 5,
+      curveSegments: 1, // outline is already a dense sampled curve
+      steps: 1,
+    });
+    geom.computeVertexNormals(); // smooth shading across the rounded edges
+    return geom;
+  }, [room.poly, S, rW, depth]);
+  useEffect(() => () => polyGeom?.dispose(), [polyGeom]);
+
+  if (polyGeom) {
+    return (
+      <group position={[room.x * S, room.rank * gapY + 0.06, room.y * S]}>
+        <mesh castShadow geometry={polyGeom} rotation={[-Math.PI / 2, 0, 0]}>
+          <meshStandardMaterial color={room.color} roughness={0.28} metalness={0.05} />
+        </mesh>
+        <Html position={[0, depth + 0.18, 0]} center distanceFactor={16} occlude={false}>
+          <div className="r3f-room-label">{room.name}</div>
+        </Html>
+      </group>
+    );
+  }
+
   const p = roomCentre(room.x, room.y, room.rank, room.r, room.box, S, gapY);
   return (
     <group position={p.toArray()}>

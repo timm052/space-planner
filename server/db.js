@@ -149,7 +149,8 @@ ensureColumn('projects', 'sat_rot', 'sat_rot REAL DEFAULT 0'); // satellite rota
 // Hierarchy: a space may belong to a parent space; kind distinguishes containers.
 ensureColumn('spaces', 'parent_id', 'parent_id INTEGER');
 ensureColumn('spaces', 'kind', "kind TEXT DEFAULT 'space'"); // 'space' | 'building' | 'group'
-ensureColumn('spaces', 'shape', "shape TEXT DEFAULT 'bubble'"); // 'bubble' | 'box'
+ensureColumn('spaces', 'shape', "shape TEXT DEFAULT 'bubble'"); // 'bubble' | 'box' | 'poly'
+ensureColumn('spaces', 'shape_json', 'shape_json TEXT'); // freeform polygon: normalized verts [{x,y},…]
 ensureColumn('spaces', 'image', 'image TEXT'); // per-space reference image (data URL)
 // How a space relates to its children: 'group' = pure grouping container (sums
 // children, no own area, default/legacy), 'within' = a real space whose children
