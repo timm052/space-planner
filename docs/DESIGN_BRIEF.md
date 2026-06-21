@@ -81,15 +81,22 @@ tab row (Dashboard / Diagram / Brief n / Milestones n), and a `⤓ CSV` export.
 
 ## 5. Screens (current state)
 
-> To capture fresh screenshots, see §8.
+> Screenshots below live in [`docs/design/`](design/) (captured from the seeded
+> demo at 1366×820). See §9 to regenerate them.
 
 ### 5.1 Projects (landing)
+
+![Projects list](design/01-projects.png)
+
 Card grid (`.project-grid`, `auto-fill minmax(340px,1fr)`). Each card: project name,
 client, status chips (stage), space/milestone counts, "Brief net target". Hover
 lifts the card with an amber border + shadow. A `+ New Project` action sits in the
 page header.
 
 ### 5.2 Dashboard
+
+![Dashboard](design/02-dashboard.png)
+
 - A row of **KPI cards**: *Brief net target* (e.g. 1,382 m²), *Designed net ·
   <stage>* (1,698 m²), *Program variance* (**+22.9%**, red when over), *Net ÷ Gross
   efficiency* (69.6%).
@@ -100,6 +107,9 @@ page header.
   spaces** (rooms outside tolerance) tables.
 
 ### 5.3 Diagram (the signature screen)
+
+![Diagram — 2D plan over a satellite image](design/03-diagram-2d.png)
+
 Layout: a left **toolbar** strip, the **canvas** (`.bubble-stage`), and a right
 **rail** (Areas editor + Relationships) that can be toggled/resized.
 
@@ -121,7 +131,20 @@ Layout: a left **toolbar** strip, the **canvas** (`.bubble-stage`), and a right
   corner; double-click removes). Dragging changes only the outline, never the area;
   the shape carries across all views (in 3-D it's an extruded, rounded cushion).
 
+Freeform shape in edit mode (cyan vertex handles + live area badge):
+
+![Freeform custom shape with vertex handles](design/04-diagram-shape.png)
+
+Stacked isometric ("offset") and real WebGL 3-D views of the same model:
+
+![Stacked isometric floors](design/05-diagram-stacked.png)
+
+![WebGL 3-D view](design/06-diagram-3d.png)
+
 ### 5.4 Brief
+
+![Brief — hierarchical area schedule](design/07-brief.png)
+
 A top **add-row** (kind selector *Space/Building/Group* · Category datalist · name ·
 count · area · `+ Add`), a keyboard-shortcut hint line, then a **hierarchical
 table**: container rows (e.g. *Main Library*) highlighted in amber, with indented
@@ -230,10 +253,21 @@ mandates.
 
 ---
 
-## 9. Capturing current screenshots
+## 9. Screenshots & regenerating them
 
-Binary screenshots aren't checked in (the automated tooling in this environment
-couldn't reliably persist them). To grab fresh, accurate visuals:
+Current screenshots are checked into [`docs/design/`](design/) and embedded in §5:
+
+| File | Screen |
+|---|---|
+| `01-projects.png` | Projects list |
+| `02-dashboard.png` | Dashboard (KPIs + drift chart) |
+| `03-diagram-2d.png` | Diagram — 2D plan over satellite |
+| `04-diagram-shape.png` | Freeform shape edit (close-up, handles + area badge) |
+| `05-diagram-stacked.png` | Diagram — stacked isometric floors |
+| `06-diagram-3d.png` | Diagram — WebGL 3-D (DOM room labels aren't in the WebGL raster) |
+| `07-brief.png` | Brief area schedule |
+
+To regenerate fresh, accurate visuals:
 
 1. `npm run dev`, open `http://localhost:5173`.
 2. Open **Greenfield Community Library**.

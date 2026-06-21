@@ -215,7 +215,7 @@ export default function Stacked3D({ scene, gap, showImage, camMode = 'persp' }) 
   }, []);
 
   return (
-    <Canvas dpr={[1, 2]} frameloop="demand" gl={{ antialias: true }} style={{ background: 'transparent' }}>
+    <Canvas dpr={[1, 2]} frameloop="demand" gl={{ antialias: true, preserveDrawingBuffer: true }} style={{ background: 'transparent' }}>
       <Suspense fallback={null}>
         <Scene scene={scene} gap={gap} showImage={showImage} camMode={camMode} />
       </Suspense>
