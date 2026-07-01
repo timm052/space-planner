@@ -127,6 +127,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const [collapsed, setCollapsed] = useState(() => new Set()); // collapsed Areas groups
   const [editShape, setEditShape] = useState(null); // space id whose polygon is being edited
   const [tool, setTool] = useState('select'); // 'select' | 'link' — canvas mode
+  const [linkKind, setLinkKind] = useState('desired'); // relationship type new links get in Link mode
   const [spaceHeld, setSpaceHeld] = useState(false); // transient pan while Space is held
   // Auto-layout force strengths (user-adjustable). Buildings barely move by
   // default so clusters hold their position; rooms move more freely.
@@ -311,13 +312,22 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     return 16 + 50 * Math.sqrt(ea(s) / maxEach);
   };
 
-  const instPin = (s, i) => {
+  // A room's SAVED position (persists to pin_json, seeds the sim node). Set by
+  // dragging; it does NOT lock the room. pinOverride holds the optimistic value
+  // before a refetch. An entry may carry `locked: true`.
+  const savedOf = (s, i) => {
     const key = `${s.id}:${i}`;
     if (pinOverride.current.has(key)) return pinOverride.current.get(key);
     return pinsOf(s)[i] ?? null;
   };
+  // LOCKED = protected from auto-layout + shows the pin marker. Toggled only by
+  // the Pin button / P. A saved-but-unlocked room stays where it was dropped but
+  // is free to be rearranged by an auto-layout pass.
+  const instLocked = (s, i) => !!savedOf(s, i)?.locked;
+  // The simulation's fixed point exists only while a room is locked.
+  const instPin = (s, i) => (instLocked(s, i) ? savedOf(s, i) : null);
   const anyPinned = (s) =>
-    Array.from({ length: Math.max(1, s.count || 1) }, (_, i) => i).some((i) => instPin(s, i));
+    Array.from({ length: Math.max(1, s.count || 1) }, (_, i) => i).some((i) => instLocked(s, i));
 
   useEffect(() => () => Object.values(debouncers.current).forEach(clearTimeout), []);
 
@@ -458,6 +468,19 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     const f = polyScaleOf(s);
     return np.map((p) => ({ x: p.x * f, y: p.y * f }));
   };
+  // A selection/pin/multi outline that HUGS a custom (poly) room instead of a
+  // bounding box: the room's own curve scaled outward by ~pad px about its
+  // centroid (≈ origin, since poly verts are centred on the node).
+  const polyRingPath = (verts, pad) => {
+    let cx = 0, cy = 0;
+    for (const p of verts) ((cx += p.x), (cy += p.y));
+    cx /= verts.length; cy /= verts.length;
+    let avgR = 0;
+    for (const p of verts) avgR += Math.hypot(p.x - cx, p.y - cy);
+    avgR = avgR / verts.length || 1;
+    const f = (avgR + pad) / avgR;
+    return polygonPath(verts.map((p) => ({ x: cx + (p.x - cx) * f, y: cy + (p.y - cy) * f })));
+  };
 
   // Apply field updates to a space and refetch. Returns a promise.
   async function applySpace(id, fields) {
@@ -548,48 +571,81 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     polyDragRef.current = { space, vi, verts: np.map((p) => ({ ...p })), moved: 0 };
   }
 
-  // Keep simulation nodes in sync with the leaves (per instance). New nodes seed
-  // from a pin, then the saved layout cache, then a spawn ring; only genuinely
-  // new (uncached, unpinned) nodes re-energise the sim.
+  // Keep simulation nodes in sync with the leaves (per instance). Existing nodes
+  // seed from a pin, then the saved layout cache. A genuinely-new room is dropped
+  // into free space NEAR its building's existing rooms (inside the cluster if
+  // there's room, otherwise just outside its edge); a room belonging to a
+  // brand-new building lands near the existing buildings. Auto-layout is NEVER
+  // started here — it only runs when the user triggers it (A / the Auto-layout
+  // button), so opening the tab never rearranges the diagram.
   useEffect(() => {
     const nodes = nodesRef.current;
     const cache = layoutCache.get(project.id);
     const keys = new Set(instances.map((o) => o.key));
-    let newSpawn = false;
     for (const key of [...nodes.keys()]) if (!keys.has(key)) nodes.delete(key);
-    // Cluster centres spread horizontally on-screen, so buildings start (and
-    // stay) separated rather than spawning bunched at the middle.
-    const clusterKeys = [...new Set(instances.map((o) => clusterKey(o.s)))];
-    const gap = Math.min(300, (W * 0.8) / Math.max(1, clusterKeys.length));
-    const clusterCenter = new Map(
-      clusterKeys.map((k, i) => [k, { x: W / 2 + (i - (clusterKeys.length - 1) / 2) * gap, y: H / 2 }])
-    );
-    const seq = new Map(); // per-cluster spawn index for a tidy ring
+
+    // 1. Seed pinned + cached nodes first so new rooms can be placed relative to
+    //    the rooms that already have a home.
+    const pending = [];
+    const pendingKeys = new Set();
     instances.forEach((o) => {
       if (nodes.has(o.key)) return;
       const pin = pinsOf(o.s)[o.i] ?? null;
       const cached = cache?.get(o.key);
       if (pin) nodes.set(o.key, { x: pin.x, y: pin.y, vx: 0, vy: 0 });
       else if (cached) nodes.set(o.key, { x: cached.x, y: cached.y, vx: 0, vy: 0 });
-      else {
-        const ck = clusterKey(o.s);
-        const c = clusterCenter.get(ck) || { x: W / 2, y: H / 2 };
-        const n = seq.get(ck) || 0;
-        seq.set(ck, n + 1);
-        const angle = n * 2.399; // golden angle → even ring fill
-        const rad = 30 + n * 16;
-        nodes.set(o.key, { x: c.x + Math.cos(angle) * rad + o.i * 9, y: c.y + Math.sin(angle) * rad + o.i * 9, vx: 0, vy: 0 });
-        newSpawn = true;
-      }
+      else ((pending.push(o), pendingKeys.add(o.key)));
     });
-    pinOverride.current.clear();
-    // Newly spawned (uncached, unpinned) rooms run a momentary auto pass so a
-    // fresh diagram settles into shape on its own; the hook stops it when cool.
-    if (newSpawn) {
-      alphaRef.current = 1;
-      autoRunRef.current = true;
-      setAutoRunning(true);
+
+    // 2. Place genuinely-new rooms in free space near their building.
+    if (pending.length) {
+      const gap = effScale ? 14 : 20;
+      const occupied = []; // discs already placed: {x, y, r}
+      const members = new Map(); // building key → placed positions in that building
+      for (const o of instances) {
+        if (pendingKeys.has(o.key)) continue;
+        const n = nodes.get(o.key);
+        if (!n) continue;
+        occupied.push({ x: n.x, y: n.y, r: radiusOf(o.s) });
+        const ck = clusterKey(o.s);
+        if (!members.has(ck)) members.set(ck, []);
+        members.get(ck).push(n);
+      }
+      const centroid = (arr) => ({
+        x: arr.reduce((t, p) => t + p.x, 0) / arr.length,
+        y: arr.reduce((t, p) => t + p.y, 0) / arr.length,
+      });
+      const overall = occupied.length ? centroid(occupied) : { x: W / 2, y: H / 2 };
+      const fits = (x, y, r) => occupied.every((o) => Math.hypot(o.x - x, o.y - y) > o.r + r + gap);
+      // Spiral outward from a centre until an unoccupied spot is found.
+      const freeSpot = (c, r) => {
+        if (fits(c.x, c.y, r)) return { x: c.x, y: c.y };
+        for (let ring = 1; ring < 80; ring++) {
+          const rad = ring * (r + gap);
+          const steps = Math.max(8, Math.round((2 * Math.PI * rad) / (r * 1.4 + gap)));
+          for (let s = 0; s < steps; s++) {
+            const a = (s / steps) * 2 * Math.PI + ring * 0.6;
+            const x = c.x + Math.cos(a) * rad;
+            const y = c.y + Math.sin(a) * rad;
+            if (fits(x, y, r)) return { x, y };
+          }
+        }
+        return { x: c.x, y: c.y };
+      };
+      for (const o of pending) {
+        const r = radiusOf(o.s);
+        const ck = clusterKey(o.s);
+        const mem = members.get(ck);
+        // Existing building → aim at its centroid; new building → near the rest.
+        const center = mem && mem.length ? centroid(mem) : overall;
+        const pos = freeSpot(center, r);
+        nodes.set(o.key, { x: pos.x, y: pos.y, vx: 0, vy: 0 });
+        occupied.push({ x: pos.x, y: pos.y, r });
+        if (!members.has(ck)) members.set(ck, []);
+        members.get(ck).push(pos);
+      }
     }
+    pinOverride.current.clear();
     setTick((t) => t + 1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [spaces]);
@@ -610,19 +666,20 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   useEffect(() => {
     alphaRef.current = Math.max(alphaRef.current, 0.35);
   }, [drafts]);
-  // Persist force strengths. Moving a slider runs a brief auto pass so the
-  // effect is visible live; the initial mount is skipped (no pass on open).
-  const forceTouched = useRef(false);
+  // Persist force strengths whenever they change. NOTE: this effect must never
+  // start an auto pass — under StrictMode it double-invokes on mount, which would
+  // run auto-layout on tab open. The live pass is triggered from the slider
+  // onChange (a real user action) via nudgeLayout() instead.
   useEffect(() => {
     localStorage.setItem('brieftrack.nodeforce', String(nodeForce));
     localStorage.setItem('brieftrack.buildingforce', String(buildingForce));
-    if (forceTouched.current) {
-      alphaRef.current = Math.max(alphaRef.current, 0.5);
-      autoRunRef.current = true;
-      setAutoRunning(true);
-    }
-    forceTouched.current = true;
   }, [nodeForce, buildingForce]);
+  // Re-energise the sim for a brief settling pass (used when a force slider moves).
+  const nudgeLayout = () => {
+    alphaRef.current = Math.max(alphaRef.current, 0.5);
+    autoRunRef.current = true;
+    setAutoRunning(true);
+  };
 
   // Force simulation — delegated to the hook. radiusOf/groupKey/instPin are
   // ref-wrapped inside useSimulation so they are always fresh without needing
@@ -808,9 +865,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     const space = byId.get(drag.spaceId);
     if (!space) return;
     if (drag.moved >= 6) {
-      // Dragging a bubble pins it (so it stays where you drop it) — unless an
-      // auto-layout pass is running, which is free to keep arranging it.
-      if (!autoRunRef.current || instPin(space, drag.idx)) await savePin(space, drag.idx, true);
+      // Dragging SAVES the room's position (so it stays where you drop it and
+      // reloads there) but does NOT lock it — locking is deliberate (Pin / P).
+      await saveDragPos(space, drag.idx);
       return;
     }
     await handleBubbleClick(drag.spaceId, drag.idx);
@@ -859,15 +916,46 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     debouncers.current.view = setTimeout(() => saveProject({ view_x: v.x, view_y: v.y }, { silent: true }), 500);
   }
 
-  async function savePin(space, idx, pinned) {
+  // Persist a room's position after a drag WITHOUT changing its locked state
+  // (a locked room dragged stays locked at its new spot; an unlocked one stays
+  // unlocked). This is what makes drags survive a reload without pinning.
+  async function saveDragPos(space, idx) {
+    const key = `${space.id}:${idx}`;
+    const node = nodesRef.current.get(key);
+    if (!node) return;
+    const pins = { ...pinsOf(space) };
+    const pos = { x: node.x, y: node.y };
+    pins[idx] = instLocked(space, idx) ? { ...pos, locked: true } : pos;
+    pinOverride.current.set(key, pins[idx]);
+    const before = { pin_json: space.pin_json ?? null, pin_x: space.pin_x ?? null, pin_y: space.pin_y ?? null };
+    const after = { pin_json: JSON.stringify(pins), pin_x: null, pin_y: null };
+    history.record({ label: 'move', undo: () => applySpace(space.id, before), redo: () => applySpace(space.id, after) });
+    setError(null);
+    try {
+      await applySpace(space.id, after);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  // Lock/unlock a single instance (Pin button / P). Locking captures the current
+  // position; unlocking keeps the position but frees it for auto-layout.
+  async function savePin(space, idx, locked) {
     const key = `${space.id}:${idx}`;
     const node = nodesRef.current.get(key);
     const pins = { ...pinsOf(space) };
-    if (pinned && node) ((pins[idx] = { x: node.x, y: node.y }), pinOverride.current.set(key, pins[idx]));
-    else ((delete pins[idx]), pinOverride.current.set(key, null));
+    const prev = pins[idx];
+    const pos = node ? { x: node.x, y: node.y } : prev ? { x: prev.x, y: prev.y } : null;
+    if (pos) {
+      pins[idx] = locked ? { ...pos, locked: true } : pos;
+      pinOverride.current.set(key, pins[idx]);
+    } else {
+      delete pins[idx];
+      pinOverride.current.set(key, null);
+    }
     const before = { pin_json: space.pin_json ?? null, pin_x: space.pin_x ?? null, pin_y: space.pin_y ?? null };
     const after = { pin_json: JSON.stringify(pins), pin_x: null, pin_y: null };
-    history.record({ label: pinned ? 'pin' : 'unpin', undo: () => applySpace(space.id, before), redo: () => applySpace(space.id, after) });
+    history.record({ label: locked ? 'pin' : 'unpin', undo: () => applySpace(space.id, before), redo: () => applySpace(space.id, after) });
     setError(null);
     try {
       await applySpace(space.id, after);
@@ -877,21 +965,25 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   }
 
   // Pin/unpin every instance of a space at once (so a multiplied space stays put).
-  async function savePinAll(space, pinned) {
+  async function savePinAll(space, locked) {
     const count = Math.max(1, space.count || 1);
-    const pins = {};
+    const pins = { ...pinsOf(space) };
     for (let i = 0; i < count; i++) {
       const key = `${space.id}:${i}`;
-      if (pinned) {
-        const n = nodesRef.current.get(key);
-        if (n) ((pins[i] = { x: n.x, y: n.y }), pinOverride.current.set(key, pins[i]));
+      const n = nodesRef.current.get(key);
+      const prev = pins[i];
+      const pos = n ? { x: n.x, y: n.y } : prev ? { x: prev.x, y: prev.y } : null;
+      if (pos) {
+        pins[i] = locked ? { ...pos, locked: true } : pos;
+        pinOverride.current.set(key, pins[i]);
       } else {
+        delete pins[i];
         pinOverride.current.set(key, null);
       }
     }
     const before = { pin_json: space.pin_json ?? null, pin_x: space.pin_x ?? null, pin_y: space.pin_y ?? null };
     const after = { pin_json: JSON.stringify(pins), pin_x: null, pin_y: null };
-    history.record({ label: pinned ? 'pin all' : 'unpin all', undo: () => applySpace(space.id, before), redo: () => applySpace(space.id, after) });
+    history.record({ label: locked ? 'pin all' : 'unpin all', undo: () => applySpace(space.id, before), redo: () => applySpace(space.id, after) });
     setError(null);
     try {
       await applySpace(space.id, after);
@@ -939,7 +1031,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     setMulti(hit);
   }
 
-  async function multiPin(pinned) {
+  async function multiPin(locked) {
     const bySpace = new Map();
     for (const { id, i, space } of multiList()) {
       if (!bySpace.has(id)) bySpace.set(id, { space, idxs: [] });
@@ -950,10 +1042,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       const before = { pin_json: space.pin_json ?? null, pin_x: space.pin_x ?? null, pin_y: space.pin_y ?? null };
       const pins = { ...pinsOf(space) };
       for (const i of idxs) {
-        if (pinned) {
-          const n = nodesRef.current.get(`${space.id}:${i}`);
-          if (n) pins[i] = { x: n.x, y: n.y };
-        } else delete pins[i];
+        const n = nodesRef.current.get(`${space.id}:${i}`);
+        const prev = pins[i];
+        const pos = n ? { x: n.x, y: n.y } : prev ? { x: prev.x, y: prev.y } : null;
+        if (pos) pins[i] = locked ? { ...pos, locked: true } : pos;
+        else delete pins[i];
       }
       changes.push({ id: space.id, before, after: { pin_json: JSON.stringify(pins), pin_x: null, pin_y: null } });
     }
@@ -988,7 +1081,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       const pins = { ...pinsOf(space) };
       for (const i of idxs) {
         const n = nodesRef.current.get(`${space.id}:${i}`);
-        if (n) pins[i] = { x: n.x, y: n.y };
+        if (n) pins[i] = pins[i]?.locked ? { x: n.x, y: n.y, locked: true } : { x: n.x, y: n.y };
       }
       changes.push({ id: space.id, before, after: { pin_json: JSON.stringify(pins), pin_x: null, pin_y: null } });
     }
@@ -1100,7 +1193,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       if (linkFrom === spaceId) return setLinkFrom(null);
       const a = linkFrom;
       setLinkFrom(null);
-      if (!findPair(a, spaceId)) await createLink(a, spaceId, 'desired');
+      if (!findPair(a, spaceId)) await createLink(a, spaceId, linkKind);
       return;
     }
     // Select mode: select the room; click again to deselect; re-target an instance.
@@ -1342,7 +1435,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
         if (Object.keys(pins).length === 0) continue;
         const np = {};
         for (const [i, p] of Object.entries(pins)) {
-          np[i] = tx(p);
+          np[i] = p.locked ? { ...tx(p), locked: true } : tx(p);
           pinOverride.current.set(`${s.id}:${i}`, np[i]);
         }
         pinUpdates.push({ id: s.id, pin_json: JSON.stringify(np) });
@@ -1927,12 +2020,12 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
               <div className="more-section">Auto-layout forces</div>
               <div className="more-row">
                 <span className="more-label">Rooms</span>
-                <input type="range" min="0" max="1.5" step="0.05" value={nodeForce} onChange={(e) => setNodeForce(Number(e.target.value))} title="How strongly rooms push apart and pull toward their links" />
+                <input type="range" min="0" max="1.5" step="0.05" value={nodeForce} onChange={(e) => { setNodeForce(Number(e.target.value)); nudgeLayout(); }} title="How strongly rooms push apart and pull toward their links" />
                 <span className="more-val mono">{Math.round(nodeForce * 100)}%</span>
               </div>
               <div className="more-row">
                 <span className="more-label">Buildings</span>
-                <input type="range" min="0" max="1.5" step="0.05" value={buildingForce} onChange={(e) => setBuildingForce(Number(e.target.value))} title="How strongly each building holds its shape and original position (0 = free to drift)" />
+                <input type="range" min="0" max="1.5" step="0.05" value={buildingForce} onChange={(e) => { setBuildingForce(Number(e.target.value)); nudgeLayout(); }} title="How strongly each building holds its shape and original position (0 = free to drift)" />
                 <span className="more-val mono">{Math.round(buildingForce * 100)}%</span>
               </div>
               <div className="more-divider" />
@@ -2455,7 +2548,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                   </title>
                   {pinned &&
                     (poly ? (
-                      <rect x={pb.minX - 5} y={pb.minY - 5} width={pb.maxX - pb.minX + 10} height={pb.maxY - pb.minY + 10} rx="3" className="pin-ring" />
+                      <path d={polyRingPath(poly, 6)} className="pin-ring" />
                     ) : box ? (
                       <rect x={-side / 2 - 5} y={-side / 2 - 5} width={side + 10} height={side + 10} rx="3" className="pin-ring" />
                     ) : (
@@ -2463,7 +2556,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                     ))}
                   {inMulti &&
                     (poly ? (
-                      <rect x={pb.minX - 7} y={pb.minY - 7} width={pb.maxX - pb.minX + 14} height={pb.maxY - pb.minY + 14} rx="4" className="multi-ring" />
+                      <path d={polyRingPath(poly, 9)} className="multi-ring" />
                     ) : box ? (
                       <rect x={-side / 2 - 7} y={-side / 2 - 7} width={side + 14} height={side + 14} rx="4" className="multi-ring" />
                     ) : (
@@ -2582,6 +2675,21 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                 </div>
               );
             }
+            // Link mode (no link selected) → choose the type new links get.
+            if (tool === 'link') {
+              return (
+                <div className="action-bar" onClick={(e) => e.stopPropagation()}>
+                  <span className="action-glyph">
+                    <svg width="15" height="15" viewBox="0 0 24 24" style={{ color: 'var(--accent2)' }}><circle cx="6" cy="17" r="3" fill="currentColor" /><circle cx="18" cy="7" r="3" fill="currentColor" /><line x1="8" y1="15" x2="16" y2="9" stroke="currentColor" strokeWidth="2" /></svg>
+                  </span>
+                  <span className="action-name">{linkFrom != null ? 'Pick the second room' : 'New link'}</span>
+                  <span className="seg seg-sm">
+                    <button className={linkKind === 'desired' ? 'active' : ''} onClick={() => setLinkKind('desired')}>Desired</button>
+                    <button className={linkKind === 'required' ? 'active' : ''} onClick={() => setLinkKind('required')}>Required</button>
+                  </span>
+                </div>
+              );
+            }
             // Multiple rooms → batch form.
             if (multi.size > 1) {
               return (
@@ -2602,7 +2710,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                   <datalist id="diagram-categories">
                     {departments.map((d) => <option key={d} value={d} />)}
                   </datalist>
-                  <button className="action-btn icon danger" onClick={multiDelete} title="Remove all — ⌫">⌫</button>
+                  <button className="action-btn icon danger" onClick={multiDelete} title="Remove all (Del)" aria-label="Remove all">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6h18" /><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6M14 11v6" /></svg>
+                  </button>
                 </div>
               );
             }
@@ -2633,13 +2743,15 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                 <datalist id="diagram-categories">
                   {departments.map((d) => <option key={d} value={d} />)}
                 </datalist>
-                <button className="action-btn icon danger" onClick={() => removeSpace(sel)} title="Remove — ⌫">⌫</button>
+                <button className="action-btn icon danger" onClick={() => removeSpace(sel)} title="Remove (Del)" aria-label="Remove">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6h18" /><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6M14 11v6" /></svg>
+                </button>
               </div>
             );
           })()}
 
           {/* Contextual hint — hidden while an action bar is showing. */}
-          {!selLink && multi.size === 0 && selected == null && (
+          {!selLink && multi.size === 0 && selected == null && tool !== 'link' && (
             <div className="stage-hint">
               {rotateLayer
                 ? 'Rotating image — drag the canvas to turn it. Toggle Rotate off when done.'

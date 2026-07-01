@@ -235,7 +235,12 @@ export default function BriefTab({ project, spaces, onChanged, selectedSpaceId =
     }
   }
 
-  const departments = [...new Set(spaces.map((s) => s.department).filter(Boolean))];
+  // Categories are a property of SPACES only — buildings/zones are a separate
+  // data type (kind), not a category. Buildings carry a placeholder
+  // department ('Building') that must never leak into the category list.
+  const departments = [
+    ...new Set(spaces.filter((s) => s.kind !== 'building').map((s) => s.department).filter(Boolean)),
+  ];
   const containers = spaces.filter((s) => isContainerKind(s));
   const tree = useMemo(() => orderedTree(spaces), [spaces]);
   const parents = useMemo(() => childIdSet(spaces), [spaces]);
@@ -418,7 +423,27 @@ export default function BriefTab({ project, spaces, onChanged, selectedSpaceId =
     }
   }
 
-  const parentOptions = containers.filter((c) => c.id !== editingId);
+  // Valid parents for the row being edited: any building/zone OR any space that
+  // already has children (so a nested room's real parent — e.g. a grouping space —
+  // is always offered), excluding the row itself and its descendants to prevent
+  // cycles. (Previously this listed only building/group *kinds*, so a room nested
+  // under a grouping space showed "Top level" and saving silently un-nested it.)
+  const parentOptions = useMemo(() => {
+    const banned = new Set(editingId != null ? [editingId] : []);
+    if (editingId != null) {
+      let added = true;
+      while (added) {
+        added = false;
+        for (const s of spaces) {
+          if (s.parent_id != null && banned.has(s.parent_id) && !banned.has(s.id)) {
+            banned.add(s.id);
+            added = true;
+          }
+        }
+      }
+    }
+    return spaces.filter((s) => !banned.has(s.id) && (isContainerKind(s) || parents.has(s.id)));
+  }, [spaces, editingId, parents]);
   const addingUnder = addParent != null ? byId.get(addParent) : null;
   const unit = project.units === 'ft2' ? 'ft²' : 'm²';
 
@@ -578,51 +603,70 @@ export default function BriefTab({ project, spaces, onChanged, selectedSpaceId =
               {tree.map(({ space: s, depth }) =>
                 editingId === s.id ? (
                   <tr key={s.id} className="editing">
-                    <td style={{ paddingLeft: 10 + depth * 20 }}>
-                      <input value={edit.name} onChange={(e) => setEdit({ ...edit, name: e.target.value })} />
-                    </td>
-                    <td>
-                      {edit.kind === 'building' ? (
-                        <span className="muted">—</span>
-                      ) : (
-                        <CategorySelect value={edit.department} options={departments} onChange={(v) => setEdit({ ...edit, department: v })} />
-                      )}
-                    </td>
-                    <td className="num">
-                      {edit.kind === 'building' ? <span className="muted">—</span> : <input type="number" min="1" value={edit.count} onChange={(e) => setEdit({ ...edit, count: e.target.value })} />}
-                    </td>
-                    <td className="num">
-                      {edit.kind === 'building' ? <span className="muted">—</span> : <input type="number" min="0.1" step="any" value={edit.target_area} onChange={(e) => setEdit({ ...edit, target_area: e.target.value })} />}
-                    </td>
-                    <td className="num">
-                      <div className="edit-extra">
-                        <select className="parent-select" value={edit.parent_id || ''} onChange={(e) => setEdit({ ...edit, parent_id: e.target.value })} title="Parent container">
-                          <option value="">Top level</option>
-                          {parentOptions.map((c) => (
-                            <option key={c.id} value={c.id}>
-                              in {c.name}
-                            </option>
-                          ))}
-                        </select>
-                        {edit.kind !== 'building' && hasChildren(s) && (
-                          <select className="mode-select" value={edit.child_mode} onChange={(e) => setEdit({ ...edit, child_mode: e.target.value })} title="How nested spaces relate to this one">
-                            <option value="group">Children: grouped (sum)</option>
-                            <option value="within">Children: within its area</option>
-                            <option value="attached">Children: attached (move together)</option>
-                          </select>
-                        )}
-                        {edit.kind !== 'building' && (
-                          <input className="level-input" placeholder="Level (e.g. Ground)" value={edit.level} onChange={(e) => setEdit({ ...edit, level: e.target.value })} title="Building level / storey" />
-                        )}
+                    <td colSpan="6" style={{ paddingLeft: 10 + depth * 20 }}>
+                      <div className="edit-form">
+                        <div className="edit-form-head">
+                          <span className="edit-form-title">
+                            Editing <strong>{s.kind === 'building' ? '🏢 ' : ''}{s.name || 'space'}</strong>
+                          </span>
+                          <span className={`kind-badge ${s.kind}`}>
+                            {s.kind === 'building' ? 'Building' : isContainerRow(s) ? 'Zone' : 'Space'}
+                          </span>
+                        </div>
+                        <div className="edit-grid">
+                          <label className="fld wide">
+                            <span>Name</span>
+                            <input autoFocus value={edit.name} onChange={(e) => setEdit({ ...edit, name: e.target.value })} />
+                          </label>
+                          {edit.kind !== 'building' && (
+                            <label className="fld">
+                              <span>Category</span>
+                              <CategorySelect value={edit.department} options={departments} onChange={(v) => setEdit({ ...edit, department: v })} />
+                            </label>
+                          )}
+                          {edit.kind !== 'building' && (
+                            <label className="fld sm">
+                              <span>Count</span>
+                              <input type="number" min="1" value={edit.count} onChange={(e) => setEdit({ ...edit, count: e.target.value })} />
+                            </label>
+                          )}
+                          {edit.kind !== 'building' && (
+                            <label className="fld sm">
+                              <span>Area each ({project.units === 'ft2' ? 'ft²' : 'm²'})</span>
+                              <input type="number" min="0.1" step="any" value={edit.target_area} onChange={(e) => setEdit({ ...edit, target_area: e.target.value })} />
+                            </label>
+                          )}
+                          <label className="fld">
+                            <span>Parent</span>
+                            <select value={edit.parent_id || ''} onChange={(e) => setEdit({ ...edit, parent_id: e.target.value })}>
+                              <option value="">Top level</option>
+                              {parentOptions.map((c) => (
+                                <option key={c.id} value={c.id}>in {c.name}</option>
+                              ))}
+                            </select>
+                          </label>
+                          {edit.kind !== 'building' && (
+                            <label className="fld">
+                              <span>Level / storey</span>
+                              <input placeholder="e.g. Ground" value={edit.level} onChange={(e) => setEdit({ ...edit, level: e.target.value })} />
+                            </label>
+                          )}
+                          {edit.kind !== 'building' && hasChildren(s) && (
+                            <label className="fld wide">
+                              <span>Nested spaces</span>
+                              <select value={edit.child_mode} onChange={(e) => setEdit({ ...edit, child_mode: e.target.value })}>
+                                <option value="group">Grouped — sum of children</option>
+                                <option value="within">Within its own area</option>
+                                <option value="attached">Attached — move together</option>
+                              </select>
+                            </label>
+                          )}
+                        </div>
+                        <div className="edit-form-actions">
+                          <button className="btn small primary" onClick={() => saveEdit(s.id)} type="button">Save</button>
+                          <button className="btn small ghost" onClick={() => setEditingId(null)} type="button">Cancel</button>
+                        </div>
                       </div>
-                    </td>
-                    <td className="row-actions">
-                      <button className="btn small primary" onClick={() => saveEdit(s.id)} type="button">
-                        Save
-                      </button>
-                      <button className="btn small ghost" onClick={() => setEditingId(null)} type="button">
-                        Cancel
-                      </button>
                     </td>
                   </tr>
                 ) : (
