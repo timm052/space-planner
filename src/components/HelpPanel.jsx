@@ -1,5 +1,28 @@
 // Modal overlay explaining the bubble diagram. Kept content-only so it stays
 // easy to extend as features grow.
+const SHORTCUTS = {
+  Mouse: [
+    ['Click', 'Select a room — or a link'],
+    ['Drag a room', 'Move it (pins where you drop it)'],
+    ['Drag empty canvas', 'Marquee multi-select'],
+    ['Shift-click', 'Add / remove from the selection'],
+    ['Hold Space + drag', 'Pan the view'],
+    ['Click a link', 'Edit it — desired / required / remove'],
+    ['Double-click north', 'Reset project north'],
+  ],
+  Keyboard: [
+    ['V', 'Select tool'],
+    ['L', 'Link tool — click two rooms'],
+    ['A', 'Auto-layout on / off'],
+    ['P', 'Pin / unpin'],
+    ['B', 'Box / bubble'],
+    ['S', 'Freeform shape'],
+    ['⌫ / Del', 'Remove selection'],
+    ['Esc', 'Deselect'],
+    ['Ctrl+Z / Ctrl+⇧+Z', 'Undo / redo'],
+  ],
+};
+
 const SECTIONS = [
   {
     title: 'Bubbles',
@@ -9,7 +32,7 @@ const SECTIONS = [
       ['Pin', 'Hover a bubble and press P (or select it and use the Pin button) to pin/unpin it. Pinned bubbles wear a dashed ring and never move.'],
       ['Box', 'Hover a bubble and press B to switch it between a circle and an equal-area square. Use “All boxes / All bubbles” to convert every space at once.'],
       ['Custom shape', 'Select a bubble and use the ✎ Shape button to give it a freeform outline. Drag the corner handles to make odd-shaped rooms, click a “＋” to add a corner, or double-click a corner to remove it. The area stays locked to the brief — only the outline changes — and the shape carries through the stacked, 3D and PDF views.'],
-      ['Multi-select', 'Drag across empty canvas to marquee-select bubbles, or Shift-click to add/remove them. A toolbar lets you pin, box or delete the whole selection at once. Esc clears it.'],
+      ['Multi-select', 'Drag across empty canvas to marquee-select bubbles, or Shift-click to add/remove them. The contextual action bar lets you pin, box, shape or delete the whole selection at once. Esc clears it.'],
       ['Move together', 'With several bubbles selected, drag any one of them to move the whole group; they pin where you drop them.'],
       ['Categories', 'Bubbles colour by category. Recolour any category by clicking its legend swatch. Select bubbles and use the Category box to reassign them — typing a new name creates that category.'],
       ['Style', 'Choose how bubbles are drawn: Solid, Outline, or a hand-drawn Sketch look.'],
@@ -20,11 +43,11 @@ const SECTIONS = [
   {
     title: 'Relationships',
     items: [
-      ['Link', 'Click one bubble, then another, to connect them. Each click cycles desired → required → removed.'],
+      ['Link', 'Switch to the Link tool (L), then click two rooms to connect them (defaults to desired). Click any link to select it, then toggle desired/required or remove it from the action bar.'],
       ['Matrix', 'Open ▦ Matrix for the classic triangular adjacency grid — click a cell to cycle the same desired → required → none.'],
       ['Group', 'In the Brief tab, drag a space onto a building to nest it, or onto the top-level zone to ungroup.'],
       ['Group hulls', 'Toggle ⬡ Groups to draw a soft hull behind each department or building so containment reads at a glance.'],
-      ['Lines', 'Required links are solid and pull rooms close; desired links are dashed and looser. Click a line to cycle it.'],
+      ['Lines', 'Required links are solid hairlines and pull rooms close; desired links are fine dotted and looser. Click a line to select and edit it.'],
       ['Adjacency score', 'With a scale set, the ◈ Adjacency badge shows what share of your relationships are actually satisfied (bubbles placed adjacent), weighting required links double. Click it to highlight the unmet links in red.'],
     ],
   },
@@ -42,7 +65,7 @@ const SECTIONS = [
     title: 'View & output',
     items: [
       ['Floors', 'When the brief uses levels, the ▤ Floors menu switches between all floors together, one floor at a time, or stacked views. Stacked · offset and · overlaid are flat isometric planes; Stacked · 3D is a real WebGL model you can orbit (drag to rotate, scroll to zoom, right-drag to pan) with rooms as spheres on each floor slab and the site image on the ground. The ⇕ slider sets the floor spacing and ⊞ Image shows/hides the site image. Stacked views are read-only — pick a single floor to edit.'],
-      ['Pan', 'The view is locked by default. Toggle Pan, then drag the canvas. Recentre returns to the middle.'],
+      ['Pan', 'Hold Space and drag the canvas to pan (or toggle the Pan button). Recentre returns to the middle.'],
       ['North', 'Drag the compass rose (top-right of the canvas) to set project north. Double-click it to reset to up.'],
       ['PDF', 'Export a scale-accurate PDF with the background images, scale bar, north arrow and a title block.'],
       ['Auto-layout', 'Turn it off to place every bubble by hand — positions are saved exactly where you drop them.'],
@@ -56,10 +79,23 @@ export default function HelpPanel({ onClose }) {
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal help-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
-          <h2>Bubble diagram — how it works</h2>
+          <h2>Diagram — shortcuts &amp; how it works</h2>
           <button className="btn ghost" onClick={onClose}>
             ✕
           </button>
+        </div>
+        <div className="help-shortcuts">
+          {Object.entries(SHORTCUTS).map(([col, rows]) => (
+            <div key={col} className="help-shortcut-col">
+              <h3>{col}</h3>
+              {rows.map(([k, desc]) => (
+                <div key={k} className="help-shortcut-row">
+                  <kbd>{k}</kbd>
+                  <span>{desc}</span>
+                </div>
+              ))}
+            </div>
+          ))}
         </div>
         <div className="help-grid">
           {SECTIONS.map((sec) => (

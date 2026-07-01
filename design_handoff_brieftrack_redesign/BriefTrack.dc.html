@@ -1,0 +1,1410 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body { font-family: 'Inter', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  ::selection { background: rgba(240,181,63,.3); }
+  *::-webkit-scrollbar { width: 9px; height: 9px; }
+  *::-webkit-scrollbar-thumb { background: rgba(140,150,168,.28); border-radius: 8px; }
+  *::-webkit-scrollbar-track { background: transparent; }
+  @keyframes bt-pop { from { opacity:0; transform: translateY(4px) scale(.98);} to { opacity:1; transform:none;} }
+</style>
+</helmet>
+
+<div ref="{{ setRoot }}" style="--bg:#0b0d12;--bg2:#0f131a;--panel:#161b24;--panel2:#1e242f;--panel3:#262d3a;--border:#2c3340;--border-soft:#222936;--text:#eef1f7;--muted:#8d96a8;--faint:#5b6478;--accent:#f0b53f;--accent-ink:#1a1308;--accent2:#57c7d4;--good:#4cc38a;--bad:#e5675f;--warn:#e8b04b;--shadow:0 12px 38px rgba(0,0,0,.42);--canvas-bg:#11151c;--grid:rgba(255,255,255,.035);--footprint:rgba(255,255,255,.045);--glass:rgba(18,22,30,.82);--glass-border:rgba(255,255,255,.09);--grid-major:rgba(255,255,255,.075);--ruler-bg:rgba(255,255,255,.022);--ruler-ink:#6b7486;--contour:rgba(255,255,255,.07); height:100vh; display:flex; flex-direction:column; background:var(--bg); color:var(--text); overflow:hidden; font-size:14px; line-height:1.5;">
+
+  <!-- ===================== TOP BAR ===================== -->
+  <div style="flex:none; height:54px; display:flex; align-items:center; justify-content:space-between; padding:0 22px; border-bottom:1px solid var(--border); background:linear-gradient(180deg,var(--panel),var(--bg2)); z-index:30;">
+    <div style="display:flex; align-items:center; gap:11px;">
+      <div style="width:30px; height:30px; border-radius:8px; background:var(--accent); display:flex; align-items:center; justify-content:center; box-shadow:0 2px 10px rgba(240,181,63,.35);">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="8" height="8" rx="1.5" fill="#1a1308"/><rect x="13" y="3" width="8" height="8" rx="1.5" fill="#1a1308" opacity=".45"/><rect x="3" y="13" width="8" height="8" rx="1.5" fill="#1a1308" opacity=".45"/><circle cx="17" cy="17" r="4" fill="#1a1308"/></svg>
+      </div>
+      <div style="display:flex; flex-direction:column; line-height:1.04;">
+        <div style="font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:17px; letter-spacing:-.01em;">Brief<span style="color:var(--accent);">Track</span></div>
+        <div style="color:var(--faint); font-size:9.5px; letter-spacing:.2em; text-transform:uppercase;">Programme Studio</div>
+      </div>
+    </div>
+    <div style="display:flex; align-items:center; gap:14px;">
+      <div style="display:flex; gap:2px;">
+        <div style="color:var(--muted); font-size:13px; font-weight:500; padding:7px 13px; border-radius:8px; cursor:pointer;">Projects</div>
+        <div style="color:var(--muted); font-size:13px; font-weight:500; padding:7px 13px; border-radius:8px; cursor:pointer;">Settings</div>
+      </div>
+      <!-- theme toggle -->
+      <div style="display:inline-flex; border:1px solid var(--border); border-radius:9px; overflow:hidden; background:var(--bg2);">
+        <button onClick="{{ setDark }}" style="{{ themeStyle.dark }}">Dark</button>
+        <button onClick="{{ setLight }}" style="{{ themeStyle.light }}">Light</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== PROJECT BAR ===================== -->
+  <div style="flex:none; display:flex; align-items:center; gap:20px; padding:9px 22px; border-bottom:1px solid var(--border); background:var(--bg2); z-index:20;">
+    <div style="display:flex; align-items:center; gap:7px; color:var(--muted); font-size:12.5px; cursor:pointer; white-space:nowrap;">
+      <span style="font-size:15px;">‹</span> Projects
+    </div>
+    <div style="display:flex; flex-direction:column; gap:1px; min-width:0;">
+      <div style="font-family:'Space Grotesk',sans-serif; font-size:17px; font-weight:600; letter-spacing:-.01em; white-space:nowrap;">Greenfield Community Library</div>
+      <div style="font-size:11.5px; color:var(--muted);">Town of Greenfield · Design Development · ±5% tolerance</div>
+    </div>
+    <div style="display:flex; gap:2px; margin:0 auto;">
+      <button onClick="{{ tab.dashboard }}" style="{{ tabStyle.dashboard }}">Dashboard</button>
+      <button onClick="{{ tab.diagram }}" style="{{ tabStyle.diagram }}">Diagram</button>
+      <button onClick="{{ tab.brief }}" style="{{ tabStyle.brief }}">Brief <span style="background:var(--panel3); border-radius:999px; font-size:11px; padding:1px 7px; color:var(--muted); font-family:'JetBrains Mono',monospace;">16</span></button>
+      <button onClick="{{ tab.milestones }}" style="{{ tabStyle.milestones }}">Milestones <span style="background:var(--panel3); border-radius:999px; font-size:11px; padding:1px 7px; color:var(--muted); font-family:'JetBrains Mono',monospace;">3</span></button>
+    </div>
+    <button style="background:var(--panel2); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:7px 13px; font:inherit; font-size:12.5px; cursor:pointer; white-space:nowrap;" style-hover="border-color:var(--faint);background:var(--panel3);">⤓ CSV</button>
+  </div>
+
+  <!-- ===================== MAIN ===================== -->
+  <div style="flex:1; min-height:0; display:flex; flex-direction:column;">
+
+    <!-- ============ DIAGRAM TAB ============ -->
+    <sc-if value="{{ isDiagram }}" hint-placeholder-val="{{ true }}">
+    <div style="flex:1; display:flex; min-height:0;">
+
+      <!-- LEFT TOOL DOCK (modes) -->
+      <div style="width:56px; flex:none; background:var(--bg2); border-right:1px solid var(--border); display:flex; flex-direction:column; align-items:center; padding:10px 0; gap:5px;">
+        <button title="Select &amp; move — V" onClick="{{ tool.select }}" style="{{ toolStyle.select }}" style-hover="background:var(--panel2);color:var(--text);">
+          <svg width="20" height="20" viewBox="0 0 24 24"><path d="M6 3 L6 19 L10 15 L13 21 L15.5 20 L12.5 14 L18 14 Z" fill="currentColor"/></svg><span style="position:absolute; bottom:2px; right:4px; font-size:8px; font-weight:700; font-family:'JetBrains Mono',monospace; opacity:.5;">V</span>
+        </button>
+        <button title="Link adjacency — L" onClick="{{ tool.link }}" style="{{ toolStyle.link }}" style-hover="background:var(--panel2);color:var(--text);">
+          <svg width="20" height="20" viewBox="0 0 24 24"><circle cx="6" cy="17" r="3" fill="currentColor"/><circle cx="18" cy="7" r="3" fill="currentColor"/><line x1="8" y1="15" x2="16" y2="9" stroke="currentColor" stroke-width="2"/></svg><span style="position:absolute; bottom:2px; right:4px; font-size:8px; font-weight:700; font-family:'JetBrains Mono',monospace; opacity:.5;">L</span>
+        </button>
+        <div style="width:26px; height:1px; background:var(--border); margin:6px 0;"></div>
+        <button title="Auto-layout (force) — A" onClick="{{ toggleAuto }}" style="{{ autoStyle }}" style-hover="background:var(--panel2);color:var(--text);">
+          <svg width="20" height="20" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="12" cy="12" r="2" fill="currentColor"/><circle cx="12" cy="4" r="1.9" fill="currentColor"/><circle cx="20" cy="15" r="1.9" fill="currentColor"/><circle cx="5" cy="16" r="1.9" fill="currentColor"/></svg><span style="position:absolute; bottom:2px; right:4px; font-size:8px; font-weight:700; font-family:'JetBrains Mono',monospace; opacity:.5;">A</span>
+        </button>
+        <button title="Recentre view" style="width:42px;height:42px;display:flex;align-items:center;justify-content:center;border-radius:11px;border:1px solid transparent;background:transparent;color:var(--muted);cursor:pointer;transition:all .12s;" style-hover="background:var(--panel2);color:var(--text);">
+          <svg width="20" height="20" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="1.7" fill="currentColor"/></svg>
+        </button>
+      </div>
+
+      <!-- CANVAS COLUMN -->
+      <div onClick="{{ clearSel }}" style="flex:1; position:relative; min-width:0; background:var(--canvas-bg); overflow:hidden; cursor:{{ canvasCursor }};">
+
+        <!-- the diagram -->
+        <div style="position:absolute; inset:0;">{{ canvas }}</div>
+        <!-- depth vignette -->
+        <div style="position:absolute; inset:0; pointer-events:none; background:radial-gradient(ellipse 90% 85% at 50% 46%, transparent 72%, rgba(0,0,0,.16));"></div>
+
+        <!-- TOP-LEFT: control cluster + legend stacked -->
+        <div style="position:absolute; top:14px; left:14px; display:flex; flex-direction:column; gap:10px; align-items:flex-start; max-width:calc(100% - 200px);">
+        <!-- view control cluster -->
+        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; background:var(--glass); backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); border:1px solid var(--glass-border); border-radius:12px; padding:7px 9px; box-shadow:var(--shadow);">
+          <div style="display:inline-flex; align-items:center; gap:7px;">
+            <span style="font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; color:var(--faint); font-weight:600;">Colour</span>
+            <div style="display:inline-flex; border:1px solid var(--border); border-radius:8px; overflow:hidden;">
+              <button onClick="{{ color.category }}" style="{{ colorStyle.category }}">Category</button>
+              <button onClick="{{ color.building }}" style="{{ colorStyle.building }}">Building</button>
+            </div>
+          </div>
+          <div style="width:1px; height:22px; background:var(--border);"></div>
+          <button onClick="{{ cycleFloor }}" style="display:inline-flex;align-items:center;gap:8px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:6px 11px;font:inherit;font-size:12.5px;color:var(--text);cursor:pointer;" style-hover="border-color:var(--faint);">
+            <span style="font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; color:var(--faint); font-weight:600;">Floors</span> {{ floor }} <span style="color:var(--faint);">▾</span>
+          </button>
+          <button onClick="{{ cycleScale }}" style="display:inline-flex;align-items:center;gap:8px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:6px 11px;font:inherit;font-size:12.5px;color:var(--text);cursor:pointer;font-family:'JetBrains Mono',monospace;" style-hover="border-color:var(--faint);">
+            <span style="font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; color:var(--faint); font-weight:600; font-family:'Inter',sans-serif;">Scale</span> {{ scale }} <span style="color:var(--faint);">▾</span>
+          </button>
+          <div style="width:1px; height:22px; background:var(--border);"></div>
+          <button onClick="{{ toggleLayers }}" style="{{ layersStyle }}" style-hover="border-color:var(--faint);">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3 3 8l9 5 9-5-9-5zM3 13l9 5 9-5M3 17l9 5 9-5" opacity=".9"/></svg> Layers
+          </button>
+        </div>
+        <!-- legend -->
+        <div style="display:flex; gap:13px; align-items:center; flex-wrap:wrap; background:var(--glass); backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); border:1px solid var(--glass-border); border-radius:11px; padding:7px 13px; box-shadow:var(--shadow);">
+          <sc-for list="{{ legend }}" as="c" hint-placeholder-count="4">
+            <div style="display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--text);">
+              <span style="width:10px; height:10px; border-radius:3px; background:{{ c.color }};"></span>{{ c.label }}
+            </div>
+          </sc-for>
+        </div>
+        </div>
+
+        <!-- TOP-RIGHT: actions -->
+        <div style="position:absolute; top:14px; right:14px; display:flex; align-items:center; gap:8px;">
+          <div style="display:inline-flex; border:1px solid var(--glass-border); border-radius:9px; overflow:hidden; background:var(--glass); backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); box-shadow:var(--shadow);">
+            <button title="Undo" style="background:transparent;border:none;color:var(--faint);padding:8px 11px;font-size:15px;cursor:not-allowed;">↶</button>
+            <div style="width:1px; background:var(--glass-border);"></div>
+            <button title="Redo" style="background:transparent;border:none;color:var(--faint);padding:8px 11px;font-size:15px;cursor:not-allowed;">↷</button>
+          </div>
+          <div title="Adjacency compliance — share of declared links placed adjacent. Click to highlight unmet links." style="display:inline-flex; align-items:center; gap:7px; background:var(--glass); backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); border:1px solid rgba(232,176,75,.5); border-radius:9px; padding:7px 12px; box-shadow:var(--shadow); cursor:pointer; color:var(--warn); font-weight:600; font-size:13px;">
+            <span style="width:8px; height:8px; border-radius:50%; background:var(--warn);"></span>
+            <span style="font-family:'JetBrains Mono',monospace;">62%</span>
+            <span style="color:var(--faint); font-weight:500; font-size:11.5px; font-family:'Inter',sans-serif;">adjacency</span>
+          </div>
+          <button style="display:inline-flex;align-items:center;gap:6px;background:var(--glass);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border:1px solid var(--glass-border);border-radius:9px;padding:8px 13px;font:inherit;font-size:12.5px;color:var(--text);cursor:pointer;box-shadow:var(--shadow);" style-hover="border-color:var(--accent);color:var(--accent);">⤓ PDF</button>
+          <button title="Shortcuts (?)" onClick="{{ toggleHelp }}" style="width:36px;height:36px;border-radius:9px;background:var(--glass);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border:1px solid var(--glass-border);color:var(--muted);cursor:pointer;font-size:15px;box-shadow:var(--shadow);" style-hover="border-color:var(--accent);color:var(--accent);">?</button>
+        </div>
+
+        <!-- LAYERS popover -->
+        <sc-if value="{{ showLayers }}" hint-placeholder-val="{{ false }}">
+        <div style="position:absolute; top:64px; left:14px; width:360px; max-width:calc(100% - 28px); background:var(--glass); backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px); border:1px solid var(--glass-border); border-radius:13px; padding:14px 16px; box-shadow:var(--shadow); z-index:9;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+            <div style="font-size:11px; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); font-weight:600;">Image Layers</div>
+            <button onClick="{{ toggleLayers }}" style="background:none;border:none;color:var(--faint);cursor:pointer;font-size:15px;">✕</button>
+          </div>
+          <div style="display:flex; align-items:center; gap:10px; padding:9px 0; border-bottom:1px solid var(--border);">
+            <span style="width:9px;height:9px;border-radius:2px;background:var(--accent2);"></span>
+            <span style="flex:1; font-size:12.5px;">Satellite — Esri World Imagery</span>
+            <span style="font-size:11px; color:var(--good);">calibrated</span>
+          </div>
+          <div style="display:flex; align-items:center; gap:10px; padding:9px 0;">
+            <span style="width:9px;height:9px;border-radius:2px;background:var(--faint);"></span>
+            <span style="flex:1; font-size:12.5px; color:var(--muted);">Site survey — not imported</span>
+            <button style="background:var(--panel2);border:1px solid var(--border);border-radius:7px;color:var(--text);font:inherit;font-size:11px;padding:4px 9px;cursor:pointer;">Import…</button>
+          </div>
+        </div>
+        </sc-if>
+
+        <!-- selection action bar — one contextual home for rooms (single / multi) and links -->
+        <sc-if value="{{ showRoomBar }}" hint-placeholder-val="{{ false }}">
+        <div onClick="{{ stop }}" style="position:absolute; bottom:14px; left:50%; transform:translateX(-50%); display:flex; align-items:center; gap:6px; flex-wrap:wrap; justify-content:center; max-width:92%; background:var(--glass); backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px); border:1px solid var(--glass-border); border-radius:13px; padding:7px 9px; box-shadow:var(--shadow); z-index:8;">
+          <div style="display:flex; align-items:center; gap:9px; padding:2px 9px;">
+            <span style="width:11px; height:11px; border-radius:3px; background:{{ selColor }}; flex:none;"></span>
+            <span style="font-size:13px; font-weight:600; white-space:nowrap;">{{ selectedName }}</span>
+            <span style="font-family:'JetBrains Mono',monospace; font-size:11.5px; color:var(--muted); white-space:nowrap;">{{ selArea }}</span>
+          </div>
+          <div style="width:1px; height:24px; background:var(--border);"></div>
+          <button onClick="{{ act.pin }}" style="{{ actStyle.pin }}" title="Pin / unpin — P">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5M9 3h6l-1 6 3 3H7l3-3-1-6z"/></svg> Pin
+          </button>
+          <button onClick="{{ act.box }}" style="{{ actStyle.box }}" title="Box / bubble — B">
+            <svg width="15" height="15" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2.5" fill="none" stroke="currentColor" stroke-width="2"/></svg> Box
+          </button>
+          <button onClick="{{ act.shape }}" style="{{ actStyle.shape }}" title="Freeform shape — S">
+            <svg width="15" height="15" viewBox="0 0 24 24"><path d="M12 3 L20 9 L17 19 L7 19 L4 9 Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg> Shape
+          </button>
+          <div style="width:1px; height:24px; background:var(--border);"></div>
+          <button style="display:inline-flex;align-items:center;gap:6px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:7px 11px;font:inherit;font-size:12.5px;color:var(--text);cursor:pointer;" title="Reassign category" style-hover="border-color:var(--faint);">Category <span style="color:var(--faint);">▾</span></button>
+          <button onClick="{{ act.del }}" style="display:inline-flex;align-items:center;justify-content:center;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:7px 10px;font:inherit;font-size:14px;color:var(--muted);cursor:pointer;" title="Remove — ⌫" style-hover="border-color:var(--bad);color:var(--bad);">⌫</button>
+        </div>
+        </sc-if>
+
+        <!-- multi-select bar — same actions, applied in bulk -->
+        <sc-if value="{{ showMultiBar }}" hint-placeholder-val="{{ false }}">
+        <div onClick="{{ stop }}" style="position:absolute; bottom:14px; left:50%; transform:translateX(-50%); display:flex; align-items:center; gap:6px; flex-wrap:wrap; justify-content:center; max-width:92%; background:var(--glass); backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px); border:1px solid var(--glass-border); border-radius:13px; padding:7px 9px; box-shadow:var(--shadow); z-index:8;">
+          <div style="display:flex; align-items:center; gap:8px; padding:2px 10px;">
+            <span style="font-family:'JetBrains Mono',monospace; font-size:13px; font-weight:700; color:var(--accent2);">{{ selCount }}</span>
+            <span style="font-size:13px; font-weight:600;">rooms selected</span>
+          </div>
+          <div style="width:1px; height:24px; background:var(--border);"></div>
+          <button onClick="{{ act.pin }}" style="display:inline-flex;align-items:center;gap:6px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:7px 11px;font:inherit;font-size:12.5px;color:var(--text);cursor:pointer;" title="Pin / unpin all — P">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5M9 3h6l-1 6 3 3H7l3-3-1-6z"/></svg> Pin all
+          </button>
+          <button onClick="{{ act.box }}" style="display:inline-flex;align-items:center;gap:6px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:7px 11px;font:inherit;font-size:12.5px;color:var(--text);cursor:pointer;" title="Box / bubble all — B">
+            <svg width="15" height="15" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2.5" fill="none" stroke="currentColor" stroke-width="2"/></svg> Box all
+          </button>
+          <button onClick="{{ act.shape }}" style="display:inline-flex;align-items:center;gap:6px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:7px 11px;font:inherit;font-size:12.5px;color:var(--text);cursor:pointer;" title="Freeform shape all — S">
+            <svg width="15" height="15" viewBox="0 0 24 24"><path d="M12 3 L20 9 L17 19 L7 19 L4 9 Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg> Shape all
+          </button>
+          <div style="width:1px; height:24px; background:var(--border);"></div>
+          <button onClick="{{ act.del }}" style="display:inline-flex;align-items:center;justify-content:center;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:7px 10px;font:inherit;font-size:14px;color:var(--muted);cursor:pointer;" title="Remove all — ⌫" style-hover="border-color:var(--bad);color:var(--bad);">⌫</button>
+        </div>
+        </sc-if>
+
+        <!-- link editor bar — replaces the old hidden 3-click cycle -->
+        <sc-if value="{{ showLinkBar }}" hint-placeholder-val="{{ false }}">
+        <div onClick="{{ stop }}" style="position:absolute; bottom:14px; left:50%; transform:translateX(-50%); display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:center; max-width:92%; background:var(--glass); backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px); border:1px solid var(--glass-border); border-radius:13px; padding:7px 11px; box-shadow:var(--shadow); z-index:8;">
+          <div style="display:flex; align-items:center; gap:7px; padding:2px 6px; font-size:13px; font-weight:600;">
+            <svg width="15" height="15" viewBox="0 0 24 24" style="color:var(--accent2);"><circle cx="6" cy="17" r="3" fill="currentColor"/><circle cx="18" cy="7" r="3" fill="currentColor"/><line x1="8" y1="15" x2="16" y2="9" stroke="currentColor" stroke-width="2"/></svg>
+            {{ linkA }} <span style="color:var(--faint);">—</span> {{ linkB }}
+          </div>
+          <div style="width:1px; height:24px; background:var(--border);"></div>
+          <div style="display:inline-flex; border:1px solid var(--border); border-radius:8px; overflow:hidden;">
+            <button onClick="{{ setDesired }}" style="{{ linkKindStyle.desired }}">Desired</button>
+            <button onClick="{{ setRequired }}" style="{{ linkKindStyle.required }}">Required</button>
+          </div>
+          <button onClick="{{ removeLink }}" style="display:inline-flex;align-items:center;gap:6px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:7px 11px;font:inherit;font-size:12.5px;color:var(--muted);cursor:pointer;" title="Remove link" style-hover="border-color:var(--bad);color:var(--bad);">Remove</button>
+        </div>
+        </sc-if>
+
+        <!-- scale bar (bottom-left) -->
+        <div style="position:absolute; bottom:14px; left:14px; display:flex; align-items:center; gap:10px; background:var(--glass); backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); border:1px solid var(--glass-border); border-radius:9px; padding:7px 13px; box-shadow:var(--shadow);">
+          <svg width="92" height="14" viewBox="0 0 92 14"><line x1="2" y1="9" x2="90" y2="9" stroke="var(--text)" stroke-width="1.5"/><line x1="2" y1="4" x2="2" y2="14" stroke="var(--text)" stroke-width="1.5"/><line x1="46" y1="6" x2="46" y2="12" stroke="var(--text)" stroke-width="1.5"/><line x1="90" y1="4" x2="90" y2="14" stroke="var(--text)" stroke-width="1.5"/></svg>
+          <span style="font-family:'JetBrains Mono',monospace; font-size:12px; color:var(--text); white-space:nowrap;">{{ scaleBarLabel }}</span>
+        </div>
+
+        <!-- contextual hint (bottom-center) — hidden while the selection action bar is up -->
+        <sc-if value="{{ showHint }}" hint-placeholder-val="{{ true }}">
+        <div style="position:absolute; bottom:14px; left:50%; transform:translateX(-50%); max-width:62%; text-align:center; font-size:12px; color:var(--muted); background:var(--glass); backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); border:1px solid var(--glass-border); border-radius:999px; padding:7px 18px; box-shadow:var(--shadow); pointer-events:none;">{{ hint }}</div>
+        </sc-if>
+
+        <!-- north rose (bottom-right) -->
+        <div style="position:absolute; bottom:14px; right:14px; width:52px; display:flex; flex-direction:column; align-items:center; background:var(--glass); backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); border:1px solid var(--glass-border); border-radius:11px; padding:6px; box-shadow:var(--shadow); cursor:grab;">
+          <svg width="36" height="36" viewBox="0 0 40 40"><polygon points="20,5 24,20 20,17 16,20" fill="var(--bad)"/><polygon points="20,35 16,20 20,23 24,20" fill="var(--muted)"/><text x="20" y="13" text-anchor="middle" fill="var(--text)" font-size="7" font-weight="700">N</text></svg>
+        </div>
+
+        <!-- SHORTCUTS panel -->
+        <sc-if value="{{ showHelp }}" hint-placeholder-val="{{ false }}">
+        <div onClick="{{ toggleHelp }}" style="position:absolute; inset:0; background:rgba(0,0,0,.5); display:flex; align-items:center; justify-content:center; padding:28px; z-index:60;">
+          <div onClick="{{ stop }}" style="background:var(--panel); border:1px solid var(--border); border-radius:16px; width:680px; max-width:100%; max-height:86%; overflow-y:auto; box-shadow:var(--shadow);">
+            <div style="display:flex; justify-content:space-between; align-items:center; padding:18px 22px; border-bottom:1px solid var(--border);">
+              <div style="font-size:17px; font-weight:700;">Shortcuts</div>
+              <button onClick="{{ toggleHelp }}" style="background:none; border:none; color:var(--muted); font-size:17px; cursor:pointer;">✕</button>
+            </div>
+            <div style="padding:16px 22px 4px; font-size:13px; color:var(--muted); line-height:1.6;">{{ helpIntro }}</div>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px 32px; padding:14px 22px 24px;">
+              <div>
+                <div style="font-size:11px; text-transform:uppercase; letter-spacing:.07em; color:var(--accent); font-weight:700; margin:6px 0 10px;">Mouse</div>
+                <sc-for list="{{ helpMouse }}" as="m" hint-placeholder-count="8">
+                  <div style="display:flex; align-items:baseline; gap:12px; margin-bottom:9px;">
+                    <span style="flex:none; min-width:118px; font-size:12px; font-weight:600; color:var(--text);">{{ m.k }}</span>
+                    <span style="font-size:12.5px; color:var(--muted);">{{ m.d }}</span>
+                  </div>
+                </sc-for>
+              </div>
+              <div>
+                <div style="font-size:11px; text-transform:uppercase; letter-spacing:.07em; color:var(--accent); font-weight:700; margin:6px 0 10px;">Keyboard</div>
+                <sc-for list="{{ helpKeys }}" as="k" hint-placeholder-count="10">
+                  <div style="display:flex; align-items:center; gap:12px; margin-bottom:9px;">
+                    <span style="flex:none; min-width:54px; display:inline-flex; justify-content:center; font-family:'JetBrains Mono',monospace; font-size:12px; font-weight:700; color:var(--text); background:var(--panel3); border:1px solid var(--border); border-bottom-width:2px; border-radius:5px; padding:2px 8px;">{{ k.k }}</span>
+                    <span style="font-size:12.5px; color:var(--muted);">{{ k.d }}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+          </div>
+        </div>
+        </sc-if>
+      </div>
+
+      <!-- RIGHT RAIL — program takeoff -->
+      <div style="width:336px; flex:none; border-left:1px solid var(--border); background:var(--panel); display:flex; flex-direction:column; min-height:0;">
+
+        <!-- A·01 AREAS -->
+        <div style="flex:2 1 0; min-height:0; overflow-y:auto; padding:16px 18px; border-bottom:1px solid var(--border);">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+            <div style="display:flex; align-items:center; gap:8px;"><span style="font-family:'JetBrains Mono',monospace; font-size:10px; font-weight:600; color:var(--accent); border:1px solid var(--border); border-radius:5px; padding:1px 5px;">A·01</span><span style="font-family:'Space Grotesk',sans-serif; font-size:13px; letter-spacing:.12em; color:var(--text); font-weight:600; text-transform:uppercase;">Areas</span></div>
+            <div style="display:inline-flex; border:1px solid var(--border); border-radius:7px; overflow:hidden;">
+              <button onClick="{{ railBy.building }}" style="{{ railByStyle.building }}">Building</button>
+              <button onClick="{{ railBy.category }}" style="{{ railByStyle.category }}">Category</button>
+            </div>
+          </div>
+
+          <!-- key plan: proportional split bar -->
+          <div style="display:flex; height:9px; border-radius:2px; overflow:hidden; margin-bottom:5px; border:1px solid var(--border);">
+            <sc-for list="{{ rail.key }}" as="k" hint-placeholder-count="2">
+              <div style="width:{{ k.pctW }}; background:{{ k.color }};"></div>
+            </sc-for>
+          </div>
+          <div style="display:flex; flex-wrap:wrap; gap:4px 12px; margin-bottom:20px;">
+            <sc-for list="{{ rail.key }}" as="k" hint-placeholder-count="2">
+              <div style="display:inline-flex; align-items:center; gap:5px; font-size:10.5px; color:var(--muted);">
+                <span style="width:7px; height:7px; background:{{ k.color }};"></span>{{ k.label }} <span style="font-family:'JetBrains Mono',monospace; color:var(--faint);">{{ k.pct }}%</span>
+              </div>
+            </sc-for>
+          </div>
+
+          <!-- groups as area takeoff -->
+          <sc-for list="{{ rail.groups }}" as="g" hint-placeholder-count="2">
+            <div style="margin-bottom:20px;">
+              <div style="display:flex; align-items:baseline; gap:8px; padding-bottom:7px; margin-bottom:9px; border-bottom:1px solid var(--border);">
+                <span style="width:10px; height:10px; background:{{ g.color }}; flex:none; transform:translateY(1px);"></span>
+                <span style="font-family:'Space Grotesk',sans-serif; font-size:13.5px; font-weight:600; color:var(--text);">{{ g.title }}</span>
+                <span style="font-size:10.5px; color:var(--faint);">{{ g.count }} spaces</span>
+                <span style="margin-left:auto; font-family:'JetBrains Mono',monospace; font-size:14px; font-weight:700; color:var(--text);">{{ g.totalFmt }}<span style="font-size:10px; color:var(--faint); font-weight:400;"> m²</span></span>
+              </div>
+              <sc-for list="{{ g.rooms }}" as="r" hint-placeholder-count="4">
+                <div onClick="{{ r.onSelect }}" style="display:flex; align-items:center; gap:9px; padding:6px 8px; border-radius:7px; cursor:pointer; margin:0 -8px; {{ r.rowStyle }}" style-hover="background:var(--panel2);">
+                  <span style="width:8px; height:8px; background:{{ r.color }}; flex:none;"></span>
+                  <span style="flex:none; max-width:62%; font-size:12px; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ r.name }}</span>
+                  <span style="flex:none; font-size:10px; color:var(--accent2); font-family:'JetBrains Mono',monospace;">{{ r.countBadge }}</span>
+                  <span style="flex:1; min-width:10px; border-bottom:1px dotted var(--border); transform:translateY(-3px);"></span>
+                  <span style="flex:none; font-family:'JetBrains Mono',monospace; font-size:11.5px; color:var(--muted); white-space:nowrap;">{{ r.areaFmt }} <span style="color:var(--faint); font-size:9.5px;">m²</span></span>
+                </div>
+              </sc-for>
+            </div>
+          </sc-for>
+        </div>
+
+        <!-- A·02 RELATIONSHIPS — adjacency schedule -->
+        <div style="flex:1 1 0; min-height:0; overflow-y:auto; padding:16px 18px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:13px;">
+            <div style="display:flex; align-items:center; gap:8px;"><span style="font-family:'JetBrains Mono',monospace; font-size:10px; font-weight:600; color:var(--accent2); border:1px solid var(--border); border-radius:5px; padding:1px 5px;">A·02</span><span style="font-family:'Space Grotesk',sans-serif; font-size:13px; letter-spacing:.12em; color:var(--text); font-weight:600; text-transform:uppercase;">Adjacency</span></div>
+            <div style="font-family:'JetBrains Mono',monospace; font-size:10.5px; color:var(--muted);">{{ relReq }} req · {{ relDes }} des</div>
+          </div>
+          <sc-for list="{{ relList }}" as="rel" hint-placeholder-count="5">
+            <div style="display:flex; align-items:center; gap:10px; padding:6px 0; border-bottom:1px solid var(--border-soft); font-size:12px;">
+              <svg width="30" height="10" viewBox="0 0 30 10" style="flex:none;"><circle cx="3" cy="5" r="2.4" fill="{{ rel.glyphColor }}"/><circle cx="27" cy="5" r="2.4" fill="{{ rel.glyphColor }}"/><line x1="5.5" y1="5" x2="24.5" y2="5" stroke="{{ rel.glyphColor }}" stroke-width="1.6" stroke-dasharray="{{ rel.dash }}"/></svg>
+              <span style="flex:1; min-width:0; color:{{ rel.labelColor }}; line-height:1.35;">{{ rel.a }} <span style="color:var(--faint);">/</span> {{ rel.b }}</span>
+            </div>
+          </sc-for>
+        </div>
+
+        <!-- Σ total medallion -->
+        <div style="flex:none; position:relative; overflow:hidden; padding:16px 18px; border-top:1px solid var(--border); background:var(--bg2);">
+          <svg width="150" height="150" viewBox="0 0 150 150" style="position:absolute; right:-30px; top:50%; transform:translateY(-50%); pointer-events:none;">
+            <circle cx="75" cy="75" r="20" fill="none" stroke="var(--contour)" stroke-width="1"/>
+            <circle cx="75" cy="75" r="35" fill="none" stroke="var(--contour)" stroke-width="1"/>
+            <circle cx="75" cy="75" r="50" fill="none" stroke="var(--contour)" stroke-width="1"/>
+            <circle cx="75" cy="75" r="65" fill="none" stroke="var(--contour)" stroke-width="1"/>
+          </svg>
+          <div style="position:relative; font-family:'JetBrains Mono',monospace; font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted);">Σ &nbsp;Brief net total</div>
+          <div style="position:relative; font-family:'Space Grotesk',sans-serif; font-size:34px; font-weight:700; letter-spacing:-.02em; color:var(--text); line-height:1.05; margin:3px 0 2px;">1,722 <span style="font-size:15px; color:var(--muted); font-weight:500;">m²</span></div>
+          <div style="position:relative; font-size:11px; color:var(--muted);">16 spaces · 2 buildings · 3 levels</div>
+        </div>
+      </div>
+    </div>
+    </sc-if>
+
+    <!-- ============ BRIEF TAB ============ -->
+    <sc-if value="{{ isBrief }}" hint-placeholder-val="{{ false }}">
+    <div style="flex:1; min-height:0; overflow-y:auto;">
+      <div style="display:flex; gap:24px; padding:24px 32px 44px; max-width:1500px; margin:0 auto; align-items:flex-start;">
+
+        <!-- left: stack / schedule -->
+        <div style="flex:1; min-width:0;">
+
+          <!-- view toggle -->
+          <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px;">
+            <div style="display:inline-flex; border:1px solid var(--border); border-radius:9px; overflow:hidden;">
+              <button onClick="{{ setStack }}" style="{{ viewStyle.stack }}">▦ Treemap</button>
+              <button onClick="{{ setSchedule }}" style="{{ viewStyle.schedule }}">≣ Schedule</button>
+            </div>
+            <span style="font-size:11.5px; color:var(--faint);">Every space drawn as a tile sized to its area · click to select it on the plan</span>
+          </div>
+
+          <!-- TREEMAP VIEW -->
+          <sc-if value="{{ isStack }}" hint-placeholder-val="{{ true }}">
+          <div style="background:var(--panel); border:1px solid var(--border); border-radius:13px; padding:14px;">
+            <div onClick="{{ clearSel }}" ref="{{ treeRef }}" style="position:relative; width:100%; height:{{ treemap.heightPx }}px; background:var(--bg2); border-radius:4px; overflow:hidden;">
+              <sc-for list="{{ treemap.cells }}" as="c" hint-placeholder-count="16">
+                <div onClick="{{ c.onSelect }}" title="{{ c.name }} · {{ c.areaFmt }}" style="position:absolute; box-sizing:border-box; left:{{ c.leftPx }}; top:{{ c.topPx }}; width:{{ c.wPx }}; height:{{ c.hPx }}; background:{{ c.bg }}; box-shadow:{{ c.shadow }}; z-index:{{ c.z }}; padding:6px 7px; cursor:pointer; overflow:hidden;" style-hover="filter:brightness(1.07);">
+                  <sc-if value="{{ c.showName }}" hint-placeholder-val="{{ true }}">
+                    <div style="font-family:'Space Grotesk',sans-serif; font-size:11.5px; font-weight:600; line-height:1.15; color:{{ c.ink }}; overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;">{{ c.name }}</div>
+                    <sc-if value="{{ c.showMeta }}" hint-placeholder-val="{{ false }}">
+                      <div style="font-family:'JetBrains Mono',monospace; font-size:10px; color:{{ c.ink }}; opacity:.82; margin-top:3px;">{{ c.pctFmt }}</div>
+                      <div style="font-family:'JetBrains Mono',monospace; font-size:9.5px; color:{{ c.ink }}; opacity:.62;">{{ c.areaFmt }}</div>
+                    </sc-if>
+                  </sc-if>
+                </div>
+              </sc-for>
+            </div>
+            <div style="display:flex; flex-wrap:wrap; gap:6px 16px; margin-top:12px;">
+              <div style="display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--muted);"><span style="width:9px;height:9px;background:#f0b53f;"></span>Public</div>
+              <div style="display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--muted);"><span style="width:9px;height:9px;background:#5b9dd9;"></span>Staff</div>
+              <div style="display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--muted);"><span style="width:9px;height:9px;background:#4cc38a;"></span>Support</div>
+              <div style="display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--muted);"><span style="width:9px;height:9px;background:#c678dd;"></span>Community</div>
+              <span style="margin-left:auto; font-size:10.5px; color:var(--faint); font-family:'JetBrains Mono',monospace;">tile area ∝ programme area · 1,722 m² total</span>
+            </div>
+          </div>
+          </sc-if>
+
+          <!-- SCHEDULE VIEW -->
+          <sc-if value="{{ isSchedule }}" hint-placeholder-val="{{ false }}">
+          <div>
+          <!-- add row -->
+          <div style="background:var(--panel); border:1px solid var(--border); border-radius:13px; padding:14px 16px; margin-bottom:14px;">
+            <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+              <div style="background:var(--panel2); border:1px solid var(--border); border-radius:8px; padding:9px 12px; font-size:13px; color:var(--text); display:inline-flex; gap:8px; align-items:center; cursor:pointer;">Space <span style="color:var(--faint);">▾</span></div>
+              <div style="background:var(--panel2); border:1px solid var(--border); border-radius:8px; padding:9px 12px; font-size:13px; color:var(--muted); display:inline-flex; gap:8px; align-items:center; cursor:pointer;">Category… <span style="color:var(--faint);">▾</span></div>
+              <div style="flex:1; min-width:180px; background:var(--panel2); border:1px solid var(--border); border-radius:8px; padding:9px 12px; font-size:13px; color:var(--faint);">Space name (e.g. Reading Room)</div>
+              <div style="width:64px; background:var(--panel2); border:1px solid var(--border); border-radius:8px; padding:9px 12px; font-size:13px; color:var(--text); font-family:'JetBrains Mono',monospace; text-align:center;">1</div>
+              <div style="width:130px; background:var(--panel2); border:1px solid var(--border); border-radius:8px; padding:9px 12px; font-size:13px; color:var(--faint);">Area each (m²)</div>
+              <button style="background:var(--accent); color:var(--accent-ink); border:none; border-radius:8px; padding:9px 18px; font:inherit; font-size:13px; font-weight:700; cursor:pointer;" style-hover="filter:brightness(1.08);">+ Add</button>
+            </div>
+            <div style="margin-top:9px; font-size:11.5px; color:var(--faint);">Adding at top level · use <span style="color:var(--accent);">“+ inside”</span> on a building row to nest</div>
+          </div>
+
+          <!-- keyboard hint -->
+          <div style="font-size:11.5px; color:var(--muted); margin:2px 2px 14px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+            Keyboard:
+            <span style="display:inline-flex; gap:4px; align-items:center;"><kbd style="background:var(--panel3);border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;padding:0 5px;font-size:11px;">↑</kbd><kbd style="background:var(--panel3);border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;padding:0 5px;font-size:11px;">↓</kbd> move</span>
+            <span><kbd style="background:var(--panel3);border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;padding:0 5px;font-size:11px;">Tab</kbd> nest</span>
+            <span><kbd style="background:var(--panel3);border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;padding:0 5px;font-size:11px;">Enter</kbd> edit</span>
+            <span><kbd style="background:var(--panel3);border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;padding:0 5px;font-size:11px;">N</kbd> notes</span>
+            <span><kbd style="background:var(--panel3);border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;padding:0 5px;font-size:11px;">Del</kbd> remove</span>
+          </div>
+
+          <!-- table -->
+          <div style="background:var(--panel); border:1px solid var(--border); border-radius:13px; overflow:hidden;">
+            <div style="display:grid; grid-template-columns:1fr 130px 64px 110px 120px; gap:0; padding:11px 18px; border-bottom:1px solid var(--border); font-size:10.5px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); font-weight:600;">
+              <div>Name</div><div>Category</div><div style="text-align:right;">Count</div><div style="text-align:right;">Area each</div><div style="text-align:right;">Total</div>
+            </div>
+            <sc-for list="{{ briefTree }}" as="bld" hint-placeholder-count="2">
+              <!-- building row -->
+              <div style="display:grid; grid-template-columns:1fr 130px 64px 110px 120px; align-items:center; padding:11px 18px; background:rgba(240,181,63,.07); border-bottom:1px solid var(--border); border-left:3px solid {{ bld.color }};">
+                <div style="display:flex; align-items:center; gap:10px; font-family:'Space Grotesk',sans-serif; font-weight:600; font-size:14px;"><span style="width:11px; height:11px; background:{{ bld.color }}; flex:none;"></span>{{ bld.b }}</div>
+                <div><span style="display:inline-block; padding:2px 9px; border-radius:4px; font-size:10px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; background:rgba(240,181,63,.15); color:var(--accent);">Building</span></div>
+                <div style="text-align:right; color:var(--faint); font-family:'JetBrains Mono',monospace;">—</div>
+                <div style="text-align:right; color:var(--faint); font-family:'JetBrains Mono',monospace;">—</div>
+                <div style="text-align:right; font-family:'JetBrains Mono',monospace; font-weight:700; font-size:14px; color:var(--text);">{{ bld.totalFmt }}</div>
+              </div>
+              <sc-for list="{{ bld.levels }}" as="lvl" hint-placeholder-count="1">
+                <!-- level subheader -->
+                <div style="padding:7px 18px 4px 32px; font-size:10.5px; text-transform:uppercase; letter-spacing:.07em; color:var(--faint); font-weight:600; background:var(--bg2); border-bottom:1px solid var(--border-soft);">{{ lvl.lv }}</div>
+                <sc-for list="{{ lvl.spaces }}" as="sp" hint-placeholder-count="4">
+                  <div onClick="{{ sp.onToggle }}" style="display:grid; grid-template-columns:1fr 130px 64px 110px 120px; align-items:center; padding:9px 18px 9px 40px; border-bottom:1px solid var(--border-soft); cursor:pointer; {{ sp.rowStyle }}" style-hover="background:var(--panel2);">
+                    <div style="display:flex; align-items:center; gap:9px; min-width:0;">
+                      <span style="width:8px; height:8px; background:{{ sp.color }}; flex:none;"></span>
+                      <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ sp.name }}</span>
+                      <span style="font-size:13px;">{{ sp.noteIcon }}</span>
+                    </div>
+                    <div style="font-size:12.5px; color:var(--muted);">{{ sp.cat }}</div>
+                    <div style="text-align:right; font-family:'JetBrains Mono',monospace; font-size:12.5px; color:var(--muted);">{{ sp.countDisp }}</div>
+                    <div style="text-align:right; font-family:'JetBrains Mono',monospace; font-size:12.5px; color:var(--muted);">{{ sp.eachFmt }}</div>
+                    <div style="text-align:right; font-family:'JetBrains Mono',monospace; font-size:13px; font-weight:600; color:var(--text);">{{ sp.totalFmt }}</div>
+                  </div>
+                  <sc-if value="{{ sp.expanded }}" hint-placeholder-val="{{ false }}">
+                    <div style="padding:14px 18px 16px 40px; background:var(--bg2); border-bottom:1px solid var(--border-soft);">
+                      <div style="font-size:10.5px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin-bottom:6px;">Notes</div>
+                      <div style="background:var(--panel2); border:1px solid var(--border); border-radius:8px; padding:10px 12px; font-size:13px; color:{{ sp.notesColor }}; min-height:40px;">{{ sp.notes }}</div>
+                    </div>
+                  </sc-if>
+                </sc-for>
+              </sc-for>
+            </sc-for>
+            <!-- footer -->
+            <div style="display:grid; grid-template-columns:1fr 130px 64px 110px 120px; align-items:center; padding:13px 18px; border-top:1px solid var(--border);">
+              <div style="font-weight:600; color:var(--muted);">Brief net total · all rooms</div>
+              <div></div><div></div><div></div>
+              <div style="text-align:right; font-family:'Space Grotesk',sans-serif; font-size:17px; font-weight:700; color:var(--accent);">1,722 <span style="font-size:11px; color:var(--faint); font-weight:500;">m²</span></div>
+            </div>
+          </div>
+          </div>
+          </sc-if>
+        </div>
+
+        <!-- right: summary — drafting schedule -->
+        <div style="width:300px; flex:none; display:flex; flex-direction:column; gap:14px; position:sticky; top:0;">
+
+          <!-- B·01 Σ net target medallion -->
+          <div style="position:relative; overflow:hidden; background:var(--panel); border:1px solid var(--border); border-radius:13px; padding:20px;">
+            <svg width="170" height="170" viewBox="0 0 170 170" style="position:absolute; right:-36px; top:50%; transform:translateY(-50%); pointer-events:none;">
+              <circle cx="85" cy="85" r="22" fill="none" stroke="var(--contour)" stroke-width="1"/>
+              <circle cx="85" cy="85" r="40" fill="none" stroke="var(--contour)" stroke-width="1"/>
+              <circle cx="85" cy="85" r="58" fill="none" stroke="var(--contour)" stroke-width="1"/>
+              <circle cx="85" cy="85" r="76" fill="none" stroke="var(--contour)" stroke-width="1"/>
+            </svg>
+            <div style="position:relative; display:flex; align-items:center; gap:8px; margin-bottom:6px;"><span style="font-family:'JetBrains Mono',monospace; font-size:10px; font-weight:600; color:var(--accent); border:1px solid var(--border); border-radius:5px; padding:1px 5px;">B·01</span><span style="font-family:'JetBrains Mono',monospace; font-size:10px; letter-spacing:.13em; text-transform:uppercase; color:var(--muted);">Σ Brief net target</span></div>
+            <div style="position:relative; font-family:'Space Grotesk',sans-serif; font-size:44px; font-weight:700; letter-spacing:-.02em; line-height:1.02; margin:2px 0 4px;">1,722 <span style="font-size:18px; color:var(--muted); font-weight:500;">m²</span></div>
+            <div style="position:relative; font-size:12px; color:var(--muted);">16 spaces · 2 buildings · 3 levels</div>
+          </div>
+
+          <!-- B·02 area by category -->
+          <div style="background:var(--panel); border:1px solid var(--border); border-radius:13px; padding:18px;">
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:14px;"><span style="font-family:'JetBrains Mono',monospace; font-size:10px; font-weight:600; color:var(--accent2); border:1px solid var(--border); border-radius:5px; padding:1px 5px;">B·02</span><span style="font-family:'Space Grotesk',sans-serif; font-size:12.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--text); font-weight:600;">Area by category</span></div>
+            <!-- flat split bar -->
+            <div style="display:flex; height:9px; overflow:hidden; margin-bottom:16px; border:1px solid var(--border);">
+              <sc-for list="{{ catSummary }}" as="c" hint-placeholder-count="4">
+                <div style="width:{{ c.pctW }}; background:{{ c.color }}; border-left:1px solid var(--panel);"></div>
+              </sc-for>
+            </div>
+            <sc-for list="{{ catSummary }}" as="c" hint-placeholder-count="4">
+              <div style="display:flex; align-items:center; gap:9px; margin-bottom:11px;">
+                <span style="width:9px; height:9px; background:{{ c.color }}; flex:none;"></span>
+                <span style="flex:none; font-size:12.5px; color:var(--text);">{{ c.cat }}</span>
+                <span style="flex:1; min-width:10px; border-bottom:1px dotted var(--border); transform:translateY(-3px);"></span>
+                <span style="font-family:'JetBrains Mono',monospace; font-size:12px; color:var(--muted); white-space:nowrap;">{{ c.areaFmt }}</span>
+                <span style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--faint); width:34px; text-align:right; white-space:nowrap;">{{ c.pct }}%</span>
+              </div>
+            </sc-for>
+          </div>
+
+          <!-- B·03 by building -->
+          <div style="background:var(--panel); border:1px solid var(--border); border-radius:13px; padding:18px;">
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:13px;"><span style="font-family:'JetBrains Mono',monospace; font-size:10px; font-weight:600; color:var(--accent2); border:1px solid var(--border); border-radius:5px; padding:1px 5px;">B·03</span><span style="font-family:'Space Grotesk',sans-serif; font-size:12.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--text); font-weight:600;">By building</span></div>
+            <div style="display:flex; align-items:center; gap:9px; padding:6px 0;">
+              <span style="width:9px; height:9px; background:#f0b53f; flex:none;"></span>
+              <span style="flex:none; font-size:12.5px; color:var(--text);">Main Library</span>
+              <span style="flex:1; min-width:10px; border-bottom:1px dotted var(--border); transform:translateY(-3px);"></span>
+              <span style="font-family:'JetBrains Mono',monospace; font-size:12px; color:var(--text);">1,358 <span style="color:var(--faint); font-size:10px;">m²</span></span>
+            </div>
+            <div style="display:flex; align-items:center; gap:9px; padding:6px 0;">
+              <span style="width:9px; height:9px; background:#57c7d4; flex:none;"></span>
+              <span style="flex:none; font-size:12.5px; color:var(--text);">Community Pavilion</span>
+              <span style="flex:1; min-width:10px; border-bottom:1px dotted var(--border); transform:translateY(-3px);"></span>
+              <span style="font-family:'JetBrains Mono',monospace; font-size:12px; color:var(--text);">364 <span style="color:var(--faint); font-size:10px;">m²</span></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    </sc-if>
+
+    <!-- ============ DASHBOARD TAB ============ -->
+    <sc-if value="{{ isDashboard }}" hint-placeholder-val="{{ false }}">
+    <div style="flex:1; min-height:0; overflow-y:auto;">
+      <div style="max-width:1500px; margin:0 auto; padding:24px 32px 48px;">
+
+        <!-- KPI row -->
+        <div style="display:grid; grid-template-columns:repeat(4, 1fr); gap:14px; margin-bottom:18px;">
+          <sc-for list="{{ dash.kpis }}" as="k" hint-placeholder-count="4">
+            <div style="position:relative; overflow:hidden; background:var(--panel); border:1px solid var(--border); border-radius:13px; padding:17px 18px;">
+              <div style="position:absolute; top:0; left:0; width:100%; height:3px; background:{{ k.toneColor }};"></div>
+              <div style="display:flex; align-items:center; gap:7px; margin-bottom:9px;"><span style="font-family:'JetBrains Mono',monospace; font-size:9.5px; font-weight:600; color:var(--faint); border:1px solid var(--border); border-radius:4px; padding:1px 4px;">{{ k.tag }}</span><span style="font-size:10.5px; letter-spacing:.05em; text-transform:uppercase; color:var(--muted); font-weight:600;">{{ k.label }}</span></div>
+              <div style="font-family:'Space Grotesk',sans-serif; font-size:32px; font-weight:700; letter-spacing:-.02em; line-height:1; color:{{ k.valueColor }};">{{ k.value }} <span style="font-size:14px; color:var(--faint); font-weight:500;">{{ k.unit }}</span></div>
+              <div style="font-size:11px; color:var(--muted); margin-top:7px;">{{ k.foot }}</div>
+            </div>
+          </sc-for>
+        </div>
+
+        <!-- drift chart -->
+        <div style="background:var(--panel); border:1px solid var(--border); border-radius:13px; padding:18px 20px 8px; margin-bottom:18px;">
+          <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;"><span style="font-family:'JetBrains Mono',monospace; font-size:10px; font-weight:600; color:var(--accent); border:1px solid var(--border); border-radius:5px; padding:1px 5px;">D·05</span><span style="font-family:'Space Grotesk',sans-serif; font-size:13px; letter-spacing:.1em; text-transform:uppercase; color:var(--text); font-weight:600;">Net area drift</span><span style="font-size:11px; color:var(--muted); margin-left:4px;">designed net per milestone vs. brief target ±5%</span></div>
+          <div style="height:250px;">{{ dash.drift }}</div>
+        </div>
+
+        <!-- two-col: rollup + flagged -->
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:18px;">
+          <!-- category rollup -->
+          <div style="background:var(--panel); border:1px solid var(--border); border-radius:13px; padding:18px 20px;">
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:14px;"><span style="font-family:'JetBrains Mono',monospace; font-size:10px; font-weight:600; color:var(--accent2); border:1px solid var(--border); border-radius:5px; padding:1px 5px;">D·06</span><span style="font-family:'Space Grotesk',sans-serif; font-size:13px; letter-spacing:.1em; text-transform:uppercase; color:var(--text); font-weight:600;">By category · {{ dash.latestLabel }}</span></div>
+            <div style="display:grid; grid-template-columns:1fr 76px 76px 64px; gap:0; padding-bottom:8px; border-bottom:1px solid var(--border); font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--faint); font-weight:600;">
+              <div>Category</div><div style="text-align:right;">Target</div><div style="text-align:right;">Designed</div><div style="text-align:right;">Δ</div>
+            </div>
+            <sc-for list="{{ dash.rollup }}" as="r" hint-placeholder-count="4">
+              <div style="display:grid; grid-template-columns:1fr 76px 76px 64px; align-items:center; padding:9px 0; border-bottom:1px solid var(--border-soft);">
+                <div style="display:flex; align-items:center; gap:9px; min-width:0;"><span style="width:9px; height:9px; background:{{ r.color }}; flex:none;"></span><span style="font-size:12.5px; color:var(--text);">{{ r.dept }}</span></div>
+                <div style="text-align:right; font-family:'JetBrains Mono',monospace; font-size:12px; color:var(--muted);">{{ r.targetFmt }}</div>
+                <div style="text-align:right; font-family:'JetBrains Mono',monospace; font-size:12px; color:var(--text);">{{ r.designedFmt }}</div>
+                <div style="text-align:right; font-family:'JetBrains Mono',monospace; font-size:12px; font-weight:600; color:{{ r.statusColor }};">{{ r.pctFmt }}</div>
+              </div>
+            </sc-for>
+          </div>
+
+          <!-- flagged -->
+          <div style="background:var(--panel); border:1px solid var(--border); border-radius:13px; padding:18px 20px;">
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:14px;"><span style="font-family:'JetBrains Mono',monospace; font-size:10px; font-weight:600; color:var(--bad); border:1px solid var(--border); border-radius:5px; padding:1px 5px;">D·07</span><span style="font-family:'Space Grotesk',sans-serif; font-size:13px; letter-spacing:.1em; text-transform:uppercase; color:var(--text); font-weight:600;">Flagged spaces</span><span style="margin-left:auto; font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted);">{{ dash.flaggedCount }} outside ±5%</span></div>
+            <sc-for list="{{ dash.flagged }}" as="f" hint-placeholder-count="5">
+              <div style="display:flex; align-items:center; gap:9px; padding:8px 0; border-bottom:1px solid var(--border-soft);">
+                <span style="width:9px; height:9px; background:{{ f.color }}; flex:none;"></span>
+                <span style="flex:none; max-width:46%; font-size:12.5px; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ f.name }}</span>
+                <span style="flex:1; min-width:8px; border-bottom:1px dotted var(--border); transform:translateY(-3px);"></span>
+                <span style="font-family:'JetBrains Mono',monospace; font-size:11.5px; color:var(--muted); white-space:nowrap;">{{ f.targetFmt }} → {{ f.designedFmt }}</span>
+                <span style="font-family:'JetBrains Mono',monospace; font-size:11.5px; font-weight:700; color:{{ f.statusColor }}; width:52px; text-align:right;">{{ f.pctFmt }}</span>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+    </div>
+    </sc-if>
+
+    <!-- ============ MILESTONES TAB ============ -->
+    <sc-if value="{{ isMilestones }}" hint-placeholder-val="{{ false }}">
+    <div style="flex:1; min-height:0; overflow-y:auto;">
+      <div style="max-width:1100px; margin:0 auto; padding:24px 32px 48px;">
+
+        <!-- milestone schedule -->
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:14px;"><span style="font-family:'JetBrains Mono',monospace; font-size:10px; font-weight:600; color:var(--accent); border:1px solid var(--border); border-radius:5px; padding:1px 5px;">M·01</span><span style="font-family:'Space Grotesk',sans-serif; font-size:13px; letter-spacing:.1em; text-transform:uppercase; color:var(--text); font-weight:600;">Recorded milestones</span></div>
+        <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:14px; margin-bottom:28px;">
+          <sc-for list="{{ ms.list }}" as="m" hint-placeholder-count="3">
+            <div style="position:relative; overflow:hidden; background:var(--panel); border:1px solid var(--border); border-radius:13px; padding:18px; {{ m.cardStyle }}">
+              <div style="position:absolute; top:0; left:0; width:100%; height:3px; background:{{ m.statusColor }};"></div>
+              <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px;">
+                <span style="font-family:'JetBrains Mono',monospace; font-size:9.5px; font-weight:600; color:var(--faint); border:1px solid var(--border); border-radius:4px; padding:1px 5px;">{{ m.tag }}</span>
+                <span style="flex:1;"></span>
+                <span style="font-size:10px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; color:{{ m.statusColor }};">{{ m.varFmt }}</span>
+              </div>
+              <div style="font-family:'Space Grotesk',sans-serif; font-size:16px; font-weight:600; color:var(--text); margin-bottom:2px;">{{ m.label }}</div>
+              <div style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); margin-bottom:14px;">{{ m.date }}</div>
+              <div style="font-family:'Space Grotesk',sans-serif; font-size:30px; font-weight:700; letter-spacing:-.02em; line-height:1;">{{ m.netFmt }} <span style="font-size:13px; color:var(--faint); font-weight:500;">m² net</span></div>
+              <div style="display:flex; gap:16px; margin-top:14px; padding-top:12px; border-top:1px solid var(--border-soft);">
+                <div><div style="font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:var(--faint);">Gross</div><div style="font-family:'JetBrains Mono',monospace; font-size:13px; color:var(--text); margin-top:2px; white-space:nowrap;">{{ m.grossFmt }} m²</div></div>
+                <div><div style="font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:var(--faint);">Efficiency</div><div style="font-family:'JetBrains Mono',monospace; font-size:13px; color:var(--text); margin-top:2px;">{{ m.effPct }}</div></div>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+
+        <!-- comparison -->
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:14px;">
+          <span style="font-family:'JetBrains Mono',monospace; font-size:10px; font-weight:600; color:var(--accent2); border:1px solid var(--border); border-radius:5px; padding:1px 5px;">M·02</span>
+          <span style="font-family:'Space Grotesk',sans-serif; font-size:13px; letter-spacing:.1em; text-transform:uppercase; color:var(--text); font-weight:600;">Change · {{ ms.fromLabel }} → {{ ms.toLabel }}</span>
+          <span style="margin-left:auto; font-size:12px; color:var(--muted);">Net change <span style="font-family:'JetBrains Mono',monospace; font-weight:700; color:{{ ms.netDeltaColor }};">{{ ms.netDeltaFmt }}</span> across {{ ms.changeCount }} spaces</span>
+        </div>
+        <div style="background:var(--panel); border:1px solid var(--border); border-radius:13px; padding:8px 20px;">
+          <sc-for list="{{ ms.changes }}" as="c" hint-placeholder-count="8">
+            <div style="display:flex; align-items:center; gap:10px; padding:9px 0; border-bottom:1px solid var(--border-soft);">
+              <span style="width:9px; height:9px; background:{{ c.color }}; flex:none;"></span>
+              <span style="flex:none; min-width:160px; font-size:12.5px; color:var(--text);">{{ c.name }}</span>
+              <span style="font-size:11px; color:var(--faint);">{{ c.dept }}</span>
+              <span style="flex:1; min-width:10px; border-bottom:1px dotted var(--border); transform:translateY(-3px);"></span>
+              <span style="font-family:'JetBrains Mono',monospace; font-size:11.5px; color:var(--muted);">{{ c.from }} → {{ c.to }}</span>
+              <span style="font-family:'JetBrains Mono',monospace; font-size:11.5px; font-weight:700; color:{{ c.deltaColor }}; width:54px; text-align:right;">{{ c.glyph }} {{ c.deltaFmt }}</span>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </div>
+    </sc-if>
+
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:900},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;default&quot;:&quot;dark&quot;,&quot;tsType&quot;:&quot;'dark'|'light'&quot;},&quot;accentColor&quot;:{&quot;editor&quot;:&quot;color&quot;,&quot;default&quot;:&quot;#f0b53f&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;showGrid&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;}}">
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    const fmt = (n) => n.toLocaleString('en-US');
+    this.fmt = fmt;
+    this.catColor = { Public: '#f0b53f', Staff: '#5b9dd9', Support: '#4cc38a', Community: '#c678dd' };
+    this.bldColor = { main: '#f0b53f', pavilion: '#57c7d4' };
+
+    // ---- programme tracking data (real seed) ----
+    this.spaceMeta = [
+      ['Entrance & Foyer', 'Public', 'main'], ['Welcome / Returns Desk', 'Public', 'main'], ["Children's Library", 'Public', 'main'],
+      ['Teen Zone', 'Public', 'main'], ['Café', 'Public', 'main'], ['Open Office', 'Staff', 'main'], ['Workroom / Sorting', 'Staff', 'main'],
+      ['Staff Lounge', 'Staff', 'main'], ['Book Storage', 'Support', 'main'], ['IT / Server', 'Support', 'main'], ['Loading & Receiving', 'Support', 'main'],
+      ['Adult Collection', 'Public', 'main'], ['Quiet Reading Room', 'Public', 'main'], ['Multipurpose Hall', 'Community', 'pavilion'],
+      ['Meeting Rooms', 'Community', 'pavilion'], ['Maker Space', 'Community', 'pavilion'],
+    ];
+    this.briefTargets = [110, 35, 200, 85, 75, 90, 65, 38, 80, 18, 42, 380, 140, 180, 84, 100];
+    this.msData = [
+      { label: 'Concept Design', short: 'Concept', date: '12 Feb 2026', gross: 2480, areas: [116, 36, 208, 88, 78, 93, 67, 39, 83, 19, 44, 392, 146, 186, 86, 104] },
+      { label: 'Schematic Design', short: 'Schematic', date: '08 Apr 2026', gross: 2410, areas: [112, 35, 201, 84, 75, 90, 65, 38, 80, 18, 42, 378, 140, 181, 84, 100] },
+      { label: 'Design Development', short: 'Design Dev', date: '05 Jun 2026', gross: 2440, areas: [108, 34, 196, 80, 72, 88, 63, 36, 78, 19, 46, 372, 150, 178, 82, 96] },
+    ];
+    this.tolerance = 0.05;
+    this.grossTarget = 0.72;
+    this.briefTotal = 1722;
+    this.statusColor = { on: '#4cc38a', over: '#e8b04b', under: '#57c7d4' };
+    this.statusLabel = { on: 'On target', over: 'Over', under: 'Under' };
+
+    // rooms: r ≈ 3·√area (true-to-scale bubble radii); x,y on a 1000×680 viewBox
+    this.rooms = [
+      { id: 1,  name: 'Entrance & Foyer',      cat: 'Public',    building: 'main',     level: 'Ground Floor', count: 1, area: 110, x: 362, y: 384, r: 32 },
+      { id: 2,  name: 'Welcome / Returns Desk', cat: 'Public',   building: 'main',     level: 'Ground Floor', count: 1, area: 35,  x: 322, y: 318, r: 18 },
+      { id: 3,  name: "Children's Library",    cat: 'Public',    building: 'main',     level: 'Ground Floor', count: 1, area: 200, x: 256, y: 456, r: 42 },
+      { id: 4,  name: 'Teen Zone',             cat: 'Public',    building: 'main',     level: 'Ground Floor', count: 1, area: 85,  x: 196, y: 556, r: 28 },
+      { id: 5,  name: 'Café',                  cat: 'Public',    building: 'main',     level: 'Ground Floor', count: 1, area: 75,  x: 454, y: 312, r: 26 },
+      { id: 6,  name: 'Open Office',           cat: 'Staff',     building: 'main',     level: 'Ground Floor', count: 1, area: 90,  x: 478, y: 470, r: 28 },
+      { id: 7,  name: 'Workroom / Sorting',    cat: 'Staff',     building: 'main',     level: 'Ground Floor', count: 1, area: 65,  x: 452, y: 562, r: 24 },
+      { id: 8,  name: 'Staff Lounge',          cat: 'Staff',     building: 'main',     level: 'Ground Floor', count: 1, area: 38,  x: 552, y: 522, r: 19 },
+      { id: 9,  name: 'Book Storage',          cat: 'Support',   building: 'main',     level: 'Ground Floor', count: 1, area: 80,  x: 372, y: 568, r: 27 },
+      { id: 10, name: 'IT / Server',           cat: 'Support',   building: 'main',     level: 'Ground Floor', count: 1, area: 18,  x: 300, y: 608, r: 13 },
+      { id: 11, name: 'Loading & Receiving',   cat: 'Support',   building: 'main',     level: 'Ground Floor', count: 1, area: 42,  x: 298, y: 552, r: 19 },
+      { id: 12, name: 'Adult Collection',      cat: 'Public',    building: 'main',     level: 'First Floor',  count: 1, area: 380, x: 356, y: 230, r: 58 },
+      { id: 13, name: 'Quiet Reading Room',    cat: 'Public',    building: 'main',     level: 'First Floor',  count: 1, area: 140, x: 246, y: 196, r: 36 },
+      { id: 14, name: 'Multipurpose Hall',     cat: 'Community', building: 'pavilion', level: 'Ground Floor', count: 1, area: 180, x: 730, y: 374, r: 40 },
+      { id: 15, name: 'Meeting Rooms',         cat: 'Community', building: 'pavilion', level: 'Ground Floor', count: 3, area: 28,  x: 826, y: 298, r: 17 },
+      { id: 16, name: 'Maker Space',           cat: 'Community', building: 'pavilion', level: 'Ground Floor', count: 1, area: 100, x: 802, y: 470, r: 30 },
+    ];
+    this.roomsById = {};
+    this.rooms.forEach((r) => (this.roomsById[r.id] = r));
+
+    this.links = [
+      { a: 1, b: 2, kind: 'required' }, { a: 1, b: 3, kind: 'required' }, { a: 6, b: 7, kind: 'required' },
+      { a: 7, b: 9, kind: 'required' }, { a: 9, b: 11, kind: 'required' }, { a: 12, b: 13, kind: 'required' },
+      { a: 1, b: 5, kind: 'desired' }, { a: 1, b: 12, kind: 'desired' }, { a: 1, b: 14, kind: 'desired' },
+      { a: 3, b: 4, kind: 'desired' }, { a: 4, b: 16, kind: 'desired' }, { a: 14, b: 15, kind: 'desired' },
+      { a: 14, b: 16, kind: 'desired' }, { a: 14, b: 5, kind: 'desired' }, { a: 6, b: 8, kind: 'desired' },
+      { a: 10, b: 6, kind: 'desired' },
+    ];
+
+    this.notes = {
+      3: 'Double-height volume, north daylight. Pram parking and buggy store at entry. Direct sightline from the Welcome desk for supervision.',
+      14: 'Sprung floor, demountable stage, blackout capability. 200-seat capacity; acoustic separation from the Café and Meeting Rooms.',
+    };
+
+    this.floorOpts = ['All floors', 'Ground Floor', 'First Floor', 'Stacked · offset'];
+    this.scaleOpts = ['1:200', '1:500', '1:1000', '1:2000'];
+    this.scaleMeters = { '1:200': '10 m', '1:500': '25 m', '1:1000': '50 m', '1:2000': '100 m' };
+
+    this.darkVars = {
+      '--bg': '#0b0d12', '--bg2': '#0f131a', '--panel': '#161b24', '--panel2': '#1e242f', '--panel3': '#262d3a',
+      '--border': '#2c3340', '--border-soft': '#222936', '--text': '#eef1f7', '--muted': '#8d96a8', '--faint': '#5b6478',
+      '--accent': '#f0b53f', '--accent-ink': '#1a1308', '--accent2': '#57c7d4', '--good': '#4cc38a', '--bad': '#e5675f',
+      '--warn': '#e8b04b', '--shadow': '0 12px 38px rgba(0,0,0,.42)', '--canvas-bg': '#11151c',
+      '--grid': 'rgba(255,255,255,.035)', '--footprint': 'rgba(255,255,255,.045)',
+      '--glass': 'rgba(18,22,30,.82)', '--glass-border': 'rgba(255,255,255,.09)',
+      '--grid-major': 'rgba(255,255,255,.075)', '--ruler-bg': 'rgba(255,255,255,.022)', '--ruler-ink': '#6b7486', '--contour': 'rgba(255,255,255,.07)',
+    };
+    this.lightVars = {
+      '--bg': '#edebe4', '--bg2': '#f6f5f1', '--panel': '#ffffff', '--panel2': '#f3f1ea', '--panel3': '#e6e3d9',
+      '--border': '#d8d4c8', '--border-soft': '#e6e3da', '--text': '#1b2029', '--muted': '#5f6878', '--faint': '#9aa1ad',
+      '--accent': '#c5841a', '--accent-ink': '#ffffff', '--accent2': '#1c8499', '--good': '#2f9d6b', '--bad': '#cc4a42',
+      '--warn': '#b3812a', '--shadow': '0 10px 30px rgba(40,40,60,.14)', '--canvas-bg': '#e7e4dc',
+      '--grid': 'rgba(40,50,70,.055)', '--footprint': 'rgba(40,50,70,.045)',
+      '--glass': 'rgba(255,255,255,.82)', '--glass-border': 'rgba(0,0,0,.08)',
+      '--grid-major': 'rgba(40,50,70,.1)', '--ruler-bg': 'rgba(40,50,70,.03)', '--ruler-ink': '#8a93a3', '--contour': 'rgba(40,50,70,.08)',
+    };
+
+    this.setRoot = (el) => { this.rootRef = el; if (el) this.applyTheme(); };
+
+    this.treeRef = (el) => {
+      if (this.ro) this.ro.disconnect();
+      this.treeEl = el;
+      if (el) {
+        this.ro = new ResizeObserver(() => { const w = el.clientWidth; if (w && Math.abs(w - this.state.treeW) > 1) this.setState({ treeW: w }); });
+        this.ro.observe(el);
+        const w = el.clientWidth; if (w && Math.abs(w - this.state.treeW) > 1) this.setState({ treeW: w });
+      }
+    };
+
+    this.state = {
+      theme: props.theme === 'light' ? 'light' : 'dark',
+      tab: 'diagram', tool: 'select', colorBy: 'category', floorIdx: 0, scaleIdx: 1,
+      selIds: [], selLink: null, showLayers: false, autoLayout: true, expanded: null, railBy: 'building',
+      pinned: {}, boxed: {}, shaped: {}, removed: {}, linkFrom: null, spaceHeld: false, showHelp: false,
+      briefView: 'stack',
+      treeW: 820,
+    };
+  }
+
+  componentDidMount() {
+    window.addEventListener('keydown', this.onKey);
+    window.addEventListener('keyup', this.onKeyUp);
+    this.applyTheme();
+  }
+  componentWillUnmount() {
+    window.removeEventListener('keydown', this.onKey);
+    window.removeEventListener('keyup', this.onKeyUp);
+    if (this.ro) this.ro.disconnect();
+  }
+
+  onKey = (e) => {
+    if (this.state.tab !== 'diagram') return;
+    const t = e.target;
+    if (t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
+    if (e.key === 'Escape') { this.setState({ selIds: [], selLink: null, linkFrom: null, showHelp: false }); return; }
+    if (e.key === ' ') { if (!this.state.spaceHeld) this.setState({ spaceHeld: true }); e.preventDefault(); return; }
+    if (e.metaKey || e.ctrlKey) return;
+    const k = e.key.toLowerCase();
+    if (k === 'v') this.setState({ tool: 'select', linkFrom: null });
+    else if (k === 'l') this.setState({ tool: 'link' });
+    else if (k === 'a') this.setState((s) => ({ autoLayout: !s.autoLayout }));
+    else if (k === 'p') this.togglePin();
+    else if (k === 'b') this.toggleBox();
+    else if (k === 's') this.toggleShape();
+    else if (e.key === 'Delete' || e.key === 'Backspace') this.removeSel();
+    else if (k === '?' || (e.shiftKey && k === '/')) this.setState((s) => ({ showHelp: !s.showHelp }));
+  };
+  onKeyUp = (e) => { if (e.key === ' ') this.setState({ spaceHeld: false }); };
+
+  togglePin() {
+    const ids = this.state.selIds; if (!ids.length) return;
+    this.setState((s) => { const m = { ...s.pinned }; const allOn = ids.every((id) => m[id]); ids.forEach((id) => { if (allOn) delete m[id]; else m[id] = true; }); return { pinned: m }; });
+  }
+  toggleBox() {
+    const ids = this.state.selIds; if (!ids.length) return;
+    this.setState((s) => { const b = { ...s.boxed }, sh = { ...s.shaped }; const allOn = ids.every((id) => b[id]); ids.forEach((id) => { if (allOn) delete b[id]; else { b[id] = true; delete sh[id]; } }); return { boxed: b, shaped: sh }; });
+  }
+  toggleShape() {
+    const ids = this.state.selIds; if (!ids.length) return;
+    this.setState((s) => { const sh = { ...s.shaped }, b = { ...s.boxed }; const allOn = ids.every((id) => sh[id]); ids.forEach((id) => { if (allOn) delete sh[id]; else { sh[id] = true; delete b[id]; } }); return { shaped: sh, boxed: b }; });
+  }
+  removeSel() {
+    const ids = this.state.selIds; if (!ids.length) return;
+    this.setState((s) => { const rm = { ...s.removed }; ids.forEach((id) => (rm[id] = true)); return { removed: rm, selIds: [] }; });
+  }
+  linkClick(id) {
+    const from = this.state.linkFrom;
+    if (from == null) { this.setState({ linkFrom: id }); return; }
+    if (from === id) { this.setState({ linkFrom: null }); return; }
+    const exists = this.links.some((l) => (l.a === from && l.b === id) || (l.a === id && l.b === from));
+    if (!exists) this.links.push({ a: from, b: id, kind: 'desired' });
+    this.setState({ linkFrom: null });
+  }
+
+  applyTheme() {
+    const el = this.rootRef;
+    if (!el) return;
+    const v = this.state.theme === 'light' ? this.lightVars : this.darkVars;
+    for (const k in v) el.style.setProperty(k, v[k]);
+    if (this.props.accentColor) {
+      el.style.setProperty('--accent', this.props.accentColor);
+      el.style.setProperty('--accent-ink', this.state.theme === 'light' ? '#ffffff' : '#1a1308');
+    }
+  }
+  setTheme(t) { this.setState({ theme: t }, () => this.applyTheme()); }
+
+  selectRoom(id, additive) {
+    this.setState((s) => {
+      if (additive) {
+        const set = new Set(s.selIds);
+        set.has(id) ? set.delete(id) : set.add(id);
+        return { selIds: [...set], selLink: null };
+      }
+      const only = s.selIds.length === 1 && s.selIds[0] === id;
+      return { selIds: only ? [] : [id], selLink: null };
+    });
+  }
+  selectLink(i) { this.setState({ selLink: i, selIds: [] }); }
+  setLinkKind(k) { const i = this.state.selLink; if (i == null) return; this.links[i] = { ...this.links[i], kind: k }; this.forceUpdate(); }
+  removeLink() { const i = this.state.selLink; if (i == null) return; this.links.splice(i, 1); this.setState({ selLink: null }); }
+  clearSel() { if (this.state.selIds.length || this.state.selLink != null) this.setState({ selIds: [], selLink: null }); }
+  toggleExpand(id) { this.setState((s) => ({ expanded: s.expanded === id ? null : id })); }
+
+  wrapName(name) {
+    if (name.length <= 11) return [name];
+    const words = name.split(/[ /]+/);
+    if (words.length === 1) return [name];
+    const half = name.length / 2;
+    const lines = [''];
+    for (const w of words) {
+      const cur = lines[lines.length - 1];
+      if (cur && lines.length < 2 && cur.length + w.length + 1 > half) lines.push(w);
+      else lines[lines.length - 1] = cur ? cur + ' ' + w : w;
+    }
+    return lines.slice(0, 2);
+  }
+
+  buildCanvas() {
+    const h = React.createElement;
+    const colorBy = this.state.colorBy;
+    const { pinned, boxed, shaped, removed, linkFrom, selLink } = this.state;
+    const selSet = new Set(this.state.selIds);
+    const colorOf = (r) => (colorBy === 'building' ? this.bldColor[r.building] : this.catColor[r.cat]);
+
+    let connected = null;
+    if (selSet.size) {
+      connected = new Set(selSet);
+      this.links.forEach((l) => { if (selSet.has(l.a)) connected.add(l.b); if (selSet.has(l.b)) connected.add(l.a); });
+    }
+
+    const layers = [];
+
+    // ---- defs: dimensional bubble gradients + soft shadow ----
+    const lighten = (hex, amt) => {
+      const n = parseInt(hex.slice(1), 16);
+      let r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+      r = Math.round(r + (255 - r) * amt); g = Math.round(g + (255 - g) * amt); b = Math.round(b + (255 - b) * amt);
+      return 'rgb(' + r + ',' + g + ',' + b + ')';
+    };
+    const darken = (hex, amt) => {
+      const n = parseInt(hex.slice(1), 16);
+      let r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+      r = Math.round(r * (1 - amt)); g = Math.round(g * (1 - amt)); b = Math.round(b * (1 - amt));
+      return 'rgb(' + r + ',' + g + ',' + b + ')';
+    };
+    const palette = ['#f0b53f', '#5b9dd9', '#4cc38a', '#c678dd', '#57c7d4'];
+
+    // ---- ground: faint topographic site contours around each building (replaces the grid) ----
+    const sites = [ { cx: 348, cy: 398, rx: 232, ry: 256, color: '#f0b53f', label: 'MAIN LIBRARY', ly: 130 }, { cx: 778, cy: 388, rx: 122, ry: 144, color: '#57c7d4', label: 'COMMUNITY PAVILION', ly: 228 } ];
+    const contourEls = [];
+    sites.forEach((c, ci) => {
+      for (let k = 0; k <= 5; k++) {
+        const s = 0.46 + (k / 5) * 0.66;
+        contourEls.push(h('ellipse', { key: 'ct' + ci + '_' + k, cx: c.cx, cy: c.cy, rx: c.rx * s, ry: c.ry * s, fill: 'none', stroke: 'var(--contour)', strokeWidth: 1, opacity: 0.95 - k * 0.13 }));
+      }
+    });
+    layers.push(h('g', { key: 'contours' }, contourEls));
+
+    // ---- building boundaries + labels (fine dashed hulls) ----
+    const hullEls = [];
+    sites.forEach((c, ci) => {
+      hullEls.push(h('ellipse', { key: 'h' + ci, cx: c.cx, cy: c.cy, rx: c.rx, ry: c.ry, fill: 'none', stroke: c.color, strokeWidth: 1.5, strokeDasharray: '2 7', strokeLinecap: 'round', strokeOpacity: 0.55 }));
+      hullEls.push(h('text', { key: 't' + ci, x: c.cx, y: c.ly, textAnchor: 'middle', fill: c.color, fontSize: 12.5, fontWeight: 600, opacity: 0.92, letterSpacing: '0.16em', fontFamily: 'Space Grotesk, sans-serif' }, c.label));
+    });
+    layers.push(h('g', { key: 'hulls' }, hullEls));
+
+    // links (+ invisible hit-areas so a link can be selected & edited)
+    const linkEls = [];
+    this.links.forEach((l, i) => {
+      const a = this.roomsById[l.a], b = this.roomsById[l.b];
+      if (removed[l.a] || removed[l.b]) return;
+      const touchesSel = selSet.size && (selSet.has(l.a) || selSet.has(l.b));
+      const isSelLink = selLink === i;
+      const faded = (selSet.size && !touchesSel) || (selLink != null && !isSelLink);
+      const required = l.kind === 'required';
+      const stroke = isSelLink || touchesSel ? '#57c7d4' : 'var(--text)';
+      linkEls.push(h('line', {
+        key: 'l' + i, x1: a.x, y1: a.y, x2: b.x, y2: b.y, stroke,
+        strokeWidth: isSelLink ? 3 : touchesSel ? 2.5 : required ? 2 : 1.4,
+        strokeDasharray: required ? undefined : '1 5',
+        opacity: faded ? 0.1 : (isSelLink || touchesSel) ? 0.95 : required ? 0.5 : 0.42, strokeLinecap: 'round',
+      }));
+      linkEls.push(h('line', {
+        key: 'lh' + i, x1: a.x, y1: a.y, x2: b.x, y2: b.y, stroke: 'transparent', strokeWidth: 16,
+        style: { cursor: 'pointer' }, onClick: (e) => { e.stopPropagation(); this.selectLink(i); },
+      }));
+    });
+    layers.push(h('g', { key: 'links' }, linkEls));
+
+    // bubbles
+    const SQ = Math.sqrt(Math.PI); // circle → equal-area square side factor ≈ 1.772
+    const bubbleEls = this.rooms.filter((r) => !removed[r.id]).map((r) => {
+      const color = colorOf(r);
+      const isSel = selSet.has(r.id);
+      const isFrom = linkFrom === r.id;
+      const op = connected && !connected.has(r.id) ? 0.3 : 1;
+      const lines = this.wrapName(r.name);
+      const fs = r.r >= 40 ? 12 : r.r >= 24 ? 10 : 8.5;
+      const showArea = r.r >= 24;
+      const kids = [];
+      if (pinned[r.id]) kids.push(h('circle', { key: 'pin', r: r.r + 5, fill: 'none', stroke: 'var(--text)', strokeWidth: 1.4, strokeDasharray: '1 4', strokeLinecap: 'round', opacity: 0.6 }));
+      if (isSel || isFrom) kids.push(h('circle', { key: 'ring', r: r.r + 8, fill: 'none', stroke: isFrom ? '#57c7d4' : 'var(--text)', strokeWidth: 2, strokeDasharray: isFrom ? '5 4' : undefined, opacity: 0.95 }));
+      const keyline = isSel ? darken(color, 0.55) : darken(color, 0.4);
+      const kw = isSel ? 2.5 : 2;
+      const fop = 0.95;
+      if (shaped[r.id]) {
+        const f = [1.06, 0.9, 1.13, 0.92, 1.1, 0.95], pts = [];
+        for (let i = 0; i < 6; i++) { const a = (-90 + i * 60) * Math.PI / 180, rr = r.r * f[i]; pts.push([rr * Math.cos(a), rr * Math.sin(a)]); }
+        kids.push(h('polygon', { key: 'sh', points: pts.map((p) => p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' '), fill: color, fillOpacity: fop, stroke: keyline, strokeWidth: kw, strokeLinejoin: 'round' }));
+        if (isSel) pts.forEach((p, i) => kids.push(h('circle', { key: 'hd' + i, cx: p[0], cy: p[1], r: 4, fill: '#fff', stroke: keyline, strokeWidth: 1.5, style: { pointerEvents: 'none' } })));
+      } else if (boxed[r.id]) {
+        const s = r.r * SQ;
+        kids.push(h('rect', { key: 'bx', x: -s / 2, y: -s / 2, width: s, height: s, fill: color, fillOpacity: fop, stroke: keyline, strokeWidth: kw }));
+      } else {
+        kids.push(h('circle', { key: 'c', r: r.r, fill: color, fillOpacity: fop, stroke: keyline, strokeWidth: kw }));
+      }
+      const nameBlockH = lines.length * (fs + 1);
+      const startY = -(nameBlockH) / 2 + fs / 2 - (showArea ? 4 : 0);
+      const ink = darken(color, 0.62);
+      lines.forEach((ln, li) => kids.push(h('text', {
+        key: 'n' + li, x: 0, y: startY + li * (fs + 1), textAnchor: 'middle', dominantBaseline: 'middle',
+        fill: ink, fontSize: fs, fontWeight: 600, fontFamily: 'Space Grotesk, sans-serif', style: { pointerEvents: 'none' },
+      }, ln)));
+      if (showArea) kids.push(h('text', {
+        key: 'a', x: 0, y: startY + lines.length * (fs + 1) + 2, textAnchor: 'middle', dominantBaseline: 'middle',
+        fill: ink, fontSize: 9, fontFamily: 'JetBrains Mono, monospace', opacity: 0.72, style: { pointerEvents: 'none' },
+      }, r.count > 1 ? '×' + r.count : r.area + ' m²'));
+      return h('g', {
+        key: r.id, transform: 'translate(' + r.x + ',' + r.y + ')', opacity: op,
+        style: { cursor: 'pointer', transition: 'opacity .15s' },
+        onClick: (e) => { e.stopPropagation(); this.state.tool === 'link' ? this.linkClick(r.id) : this.selectRoom(r.id, e.shiftKey); },
+      }, kids);
+    });
+    layers.push(h('g', { key: 'bubbles' }, bubbleEls));
+
+    return h('svg', { viewBox: '0 0 1000 680', preserveAspectRatio: 'xMidYMid meet', width: '100%', height: '100%', style: { display: 'block' } }, layers);
+  }
+
+  buildBrief() {
+    const fmt = this.fmt;
+    const pick = (b, l) => this.rooms.filter((r) => r.building === b && r.level === l).map((r) => ({
+      id: r.id, name: r.name, cat: r.cat, color: this.catColor[r.cat],
+      countDisp: r.count > 1 ? '×' + r.count : '1',
+      eachFmt: fmt(r.area) + ' m²', totalFmt: fmt(r.area * r.count) + ' m²',
+      expanded: this.state.expanded === r.id,
+      noteIcon: this.notes[r.id] ? '📝' : '',
+      notes: this.notes[r.id] || 'No notes yet — click to add design notes, client requirements or references.',
+      notesColor: this.notes[r.id] ? 'var(--text)' : 'var(--faint)',
+      rowStyle: this.state.expanded === r.id ? 'background:var(--panel2);' : '',
+      onToggle: () => this.toggleExpand(r.id),
+    }));
+    return [
+      { b: 'Main Library', color: '#f0b53f', totalFmt: '1,358 m²', levels: [
+        { lv: 'Ground Floor', spaces: pick('main', 'Ground Floor') },
+        { lv: 'First Floor', spaces: pick('main', 'First Floor') },
+      ] },
+      { b: 'Community Pavilion', color: '#57c7d4', totalFmt: '364 m²', levels: [
+        { lv: 'Ground Floor', spaces: pick('pavilion', 'Ground Floor') },
+      ] },
+    ];
+  }
+
+  buildRail() {
+    const fmt = this.fmt;
+    const sel = this.state.selIds;
+    const maxArea = Math.max(...this.rooms.map((r) => r.area * r.count));
+    const mk = (rs) => rs.map((r) => {
+      const a = r.area * r.count;
+      return {
+        id: r.id, name: r.name, color: this.catColor[r.cat], areaFmt: fmt(a),
+        barW: Math.max(3, (a / maxArea) * 100).toFixed(1) + '%',
+        countBadge: r.count > 1 ? '×' + r.count : '',
+        selected: sel.includes(r.id),
+        rowStyle: sel.includes(r.id) ? 'background:var(--panel2);' : '',
+        onSelect: () => this.selectRoom(r.id),
+      };
+    });
+    const TOTAL = 1722;
+    const build = (defs) => defs.map(({ title, color, rs }) => {
+      const total = rs.reduce((s, r) => s + r.area * r.count, 0);
+      return { title, color, totalFmt: fmt(total), count: rs.length, pct: Math.round((total / TOTAL) * 100), pctW: ((total / TOTAL) * 100).toFixed(1) + '%', rooms: mk(rs) };
+    });
+    let groups;
+    if (this.state.railBy === 'category') {
+      groups = build(['Public', 'Staff', 'Support', 'Community'].map((cat) => ({ title: cat, color: this.catColor[cat], rs: this.rooms.filter((r) => r.cat === cat) })));
+    } else {
+      groups = build([['main', 'Main Library', '#f0b53f'], ['pavilion', 'Community Pavilion', '#57c7d4']].map(([b, title, color]) => ({ title, color, rs: this.rooms.filter((r) => r.building === b) })));
+    }
+    const key = groups.map((g) => ({ color: g.color, label: g.title, pctW: g.pctW, pct: g.pct }));
+    return { groups, key };
+  }
+
+  // ---- programme tracking helpers ----
+  darkHex(hex, amt) { const n = parseInt(hex.slice(1), 16); let r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255; r = Math.round(r * (1 - amt)); g = Math.round(g * (1 - amt)); b = Math.round(b * (1 - amt)); return 'rgb(' + r + ',' + g + ',' + b + ')'; }
+
+  // squarified treemap (Bruls et al.) — items:[{id,value}] into W×H, returns [{id,x,y,w,h}]
+  squarify(items, W, H) {
+    const total = items.reduce((s, d) => s + d.value, 0) || 1;
+    const scale = (W * H) / total;
+    const data = items.map((d) => ({ id: d.id, area: d.value * scale }));
+    const result = [];
+    let rect = { x: 0, y: 0, w: W, h: H };
+    let row = [];
+    const worst = (rw, side) => {
+      if (!rw.length) return Infinity;
+      let sum = 0, mx = -Infinity, mn = Infinity;
+      rw.forEach((d) => { sum += d.area; if (d.area > mx) mx = d.area; if (d.area < mn) mn = d.area; });
+      const s2 = sum * sum, w2 = side * side;
+      return Math.max((w2 * mx) / s2, s2 / (w2 * mn));
+    };
+    const layout = () => {
+      const side = Math.min(rect.w, rect.h);
+      const sum = row.reduce((s, d) => s + d.area, 0);
+      const thick = sum / side;
+      if (rect.w <= rect.h) {
+        let cx = rect.x;
+        row.forEach((d) => { const cw = d.area / thick; result.push({ id: d.id, x: cx, y: rect.y, w: cw, h: thick }); cx += cw; });
+        rect = { x: rect.x, y: rect.y + thick, w: rect.w, h: rect.h - thick };
+      } else {
+        let cy = rect.y;
+        row.forEach((d) => { const ch = d.area / thick; result.push({ id: d.id, x: rect.x, y: cy, w: thick, h: ch }); cy += ch; });
+        rect = { x: rect.x + thick, y: rect.y, w: rect.w - thick, h: rect.h };
+      }
+      row = [];
+    };
+    let i = 0;
+    while (i < data.length) {
+      const d = data[i];
+      const side = Math.min(rect.w, rect.h);
+      if (row.length === 0 || worst(row.concat(d), side) <= worst(row, side)) { row.push(d); i++; }
+      else layout();
+    }
+    if (row.length) layout();
+    return result;
+  }
+
+  buildTreemap() {
+    const fmt = this.fmt, sel = this.state.selIds;
+    const W = Math.max(360, this.state.treeW || 820);
+    const H = Math.max(420, Math.min(640, Math.round(W * 0.62)));
+    const rooms = this.rooms.map((r) => ({ r, value: r.area * r.count })).sort((a, b) => b.value - a.value);
+    const rects = this.squarify(rooms.map((x) => ({ id: x.r.id, value: x.value })), W, H);
+    const byId = {}; rooms.forEach((x) => (byId[x.r.id] = x));
+    const cells = rects.map((rc) => {
+      const x = byId[rc.id], r = x.r, color = this.catColor[r.cat];
+      const isSel = sel.includes(r.id);
+      const pct = (x.value / this.briefTotal) * 100;
+      return {
+        id: r.id, name: r.name, areaFmt: fmt(x.value) + ' m²', pctFmt: pct.toFixed(1) + '%',
+        leftPx: rc.x.toFixed(1) + 'px', topPx: rc.y.toFixed(1) + 'px', wPx: rc.w.toFixed(1) + 'px', hPx: rc.h.toFixed(1) + 'px',
+        bg: color, ink: this.darkHex(color, 0.62),
+        showName: rc.w > 46 && rc.h > 24, showMeta: rc.w > 66 && rc.h > 50,
+        z: isSel ? '3' : '1',
+        shadow: isSel ? 'inset 0 0 0 2.5px var(--text)' : 'inset 0 0 0 1px rgba(0,0,0,.16)',
+        onSelect: (e) => { e.stopPropagation(); this.selectRoom(r.id, e.shiftKey); },
+      };
+    });
+    return { cells, heightPx: H };
+  }
+
+  buildStack() {
+    const fmt = this.fmt, sel = this.state.selIds;
+    const SCALE = 0.3, MINH = 52;
+    const defs = [
+      { b: 'Main Library', color: '#f0b53f', building: 'main', levels: ['First Floor', 'Ground Floor'] },
+      { b: 'Community Pavilion', color: '#57c7d4', building: 'pavilion', levels: ['Ground Floor'] },
+    ];
+    return defs.map((d) => {
+      const levels = d.levels.map((lv) => {
+        const rs = this.rooms.filter((r) => r.building === d.building && r.level === lv);
+        const lvTotal = rs.reduce((s, r) => s + r.area * r.count, 0);
+        const rooms = rs.map((r) => {
+          const a = r.area * r.count;
+          const pct = a / lvTotal;
+          const isSel = sel.includes(r.id);
+          return {
+            id: r.id, name: r.name, areaFmt: fmt(a), wide: pct > 0.1,
+            widthPct: (pct * 100).toFixed(3) + '%',
+            bg: this.catColor[r.cat],
+            ink: this.darkHex(this.catColor[r.cat], 0.6),
+            shadow: isSel ? 'inset 0 0 0 2px var(--text)' : 'none',
+            onSelect: () => this.selectRoom(r.id),
+          };
+        });
+        return { lv, totalFmt: fmt(lvTotal), heightPx: Math.max(MINH, Math.round(lvTotal * SCALE)), rooms };
+      });
+      const total = this.rooms.filter((r) => r.building === d.building).reduce((s, r) => s + r.area * r.count, 0);
+      return { b: d.b, color: d.color, totalFmt: fmt(total), levels };
+    });
+  }
+
+  msNet(m) { return m.areas.reduce((s, a) => s + a, 0); }
+  sp(x) { return (x > 0 ? '+' : x < 0 ? '−' : '') + Math.abs(x * 100).toFixed(1) + '%'; }
+  statusOf(pct) { return Math.abs(pct) <= this.tolerance ? 'on' : pct > 0 ? 'over' : 'under'; }
+
+  buildDashboard() {
+    const fmt = this.fmt, sp = (x) => this.sp(x);
+    const latest = this.msData[this.msData.length - 1];
+    const net = this.msNet(latest);
+    const target = this.briefTotal;
+    const variance = (net - target) / target;
+    const eff = net / latest.gross;
+    const varOk = Math.abs(variance) <= this.tolerance;
+    const effOk = eff >= this.grossTarget;
+
+    const kpis = [
+      { label: 'Brief net target', value: fmt(target), unit: 'm²', foot: '16 spaces in programme', tone: 'neutral', tag: 'D·01' },
+      { label: 'Designed net · ' + latest.short, value: fmt(net), unit: 'm²', foot: latest.date, tone: 'neutral', tag: 'D·02' },
+      { label: 'Programme variance', value: sp(variance), unit: '', foot: 'tolerance ±5%', tone: varOk ? 'good' : 'bad', tag: 'D·03' },
+      { label: 'Net : gross efficiency', value: (eff * 100).toFixed(0) + '%', unit: '', foot: 'target ≥ 72%', tone: effOk ? 'good' : 'bad', tag: 'D·04' },
+    ].map((k) => ({
+      ...k,
+      toneColor: k.tone === 'good' ? 'var(--good)' : k.tone === 'bad' ? 'var(--bad)' : 'var(--border)',
+      valueColor: k.tone === 'good' ? 'var(--good)' : k.tone === 'bad' ? 'var(--bad)' : 'var(--text)',
+    }));
+
+    const cats = ['Public', 'Staff', 'Support', 'Community'];
+    const rollup = cats.map((cat) => {
+      let t = 0, d = 0;
+      this.spaceMeta.forEach((m, i) => { if (m[1] === cat) { t += this.briefTargets[i]; d += latest.areas[i]; } });
+      const pct = (d - t) / t, status = this.statusOf(pct);
+      return { dept: cat, color: this.catColor[cat], targetFmt: fmt(t), designedFmt: fmt(d), pctFmt: sp(pct), status, statusLabel: this.statusLabel[status], statusColor: this.statusColor[status] };
+    });
+
+    const flagged = [];
+    this.spaceMeta.forEach((m, i) => {
+      const t = this.briefTargets[i], d = latest.areas[i], pct = (d - t) / t;
+      if (Math.abs(pct) > this.tolerance) flagged.push({ name: m[0], dept: m[1], color: this.catColor[m[1]], targetFmt: fmt(t), designedFmt: fmt(d), pct, pctFmt: sp(pct), status: this.statusOf(pct), statusLabel: this.statusLabel[this.statusOf(pct)], statusColor: this.statusColor[this.statusOf(pct)] });
+    });
+    flagged.sort((a, b) => Math.abs(b.pct) - Math.abs(a.pct));
+
+    return { kpis, rollup, flagged, flaggedCount: flagged.length, latestLabel: latest.label, drift: this.buildDrift() };
+  }
+
+  buildDrift() {
+    const h = React.createElement;
+    const W = 760, H = 230, PAD = { t: 22, r: 84, b: 40, l: 50 };
+    const target = this.briefTotal, tol = this.tolerance;
+    const pts = this.msData.map((m, i) => ({ short: m.short, date: m.date, net: this.msNet(m), i, status: this.statusOf((this.msNet(m) - target) / target) }));
+    const vals = [target * (1 - tol), target * (1 + tol), ...pts.map((p) => p.net)];
+    const min = Math.min(...vals) - 28, max = Math.max(...vals) + 28;
+    const X = (i) => PAD.l + (i / (pts.length - 1)) * (W - PAD.l - PAD.r);
+    const Y = (v) => PAD.t + (1 - (v - min) / (max - min)) * (H - PAD.t - PAD.b);
+    const els = [];
+    // tolerance band
+    els.push(h('rect', { key: 'band', x: PAD.l, y: Y(target * (1 + tol)), width: W - PAD.l - PAD.r, height: Y(target * (1 - tol)) - Y(target * (1 + tol)), fill: 'var(--accent)', fillOpacity: 0.07 }));
+    els.push(h('line', { key: 'bt', x1: PAD.l, x2: W - PAD.r, y1: Y(target * (1 + tol)), y2: Y(target * (1 + tol)), stroke: 'var(--accent)', strokeWidth: 1, strokeDasharray: '2 4', opacity: 0.4 }));
+    els.push(h('line', { key: 'bb', x1: PAD.l, x2: W - PAD.r, y1: Y(target * (1 - tol)), y2: Y(target * (1 - tol)), stroke: 'var(--accent)', strokeWidth: 1, strokeDasharray: '2 4', opacity: 0.4 }));
+    // target line
+    els.push(h('line', { key: 'tgt', x1: PAD.l, x2: W - PAD.r, y1: Y(target), y2: Y(target), stroke: 'var(--accent)', strokeWidth: 1.5 }));
+    els.push(h('text', { key: 'tgl', x: PAD.l, y: Y(target * (1 + tol)) - 6, fill: 'var(--accent)', fontSize: 10.5, fontWeight: 600, fontFamily: 'JetBrains Mono, monospace' }, 'BRIEF TARGET 1,722 · ±5%'));
+    // y gridlines + labels
+    for (let k = 0; k <= 4; k++) {
+      const v = min + (k / 4) * (max - min);
+      els.push(h('line', { key: 'g' + k, x1: PAD.l, x2: W - PAD.r, y1: Y(v), y2: Y(v), stroke: 'var(--border-soft)', strokeWidth: 1, opacity: 0.6 }));
+      els.push(h('text', { key: 'yl' + k, x: W - PAD.r + 8, y: Y(v) + 4, fill: 'var(--faint)', fontSize: 10, fontFamily: 'JetBrains Mono, monospace', opacity: k === 2 ? 0 : 1 }, Math.round(v).toLocaleString()));
+    }
+    // series line
+    els.push(h('path', { key: 'line', d: pts.map((p, i) => (i ? 'L' : 'M') + ' ' + X(i) + ' ' + Y(p.net)).join(' '), fill: 'none', stroke: 'var(--text)', strokeWidth: 2, strokeLinejoin: 'round' }));
+    // dots + labels
+    pts.forEach((p) => {
+      els.push(h('circle', { key: 'd' + p.i, cx: X(p.i), cy: Y(p.net), r: 6, fill: 'var(--canvas-bg)', stroke: this.statusColor[p.status], strokeWidth: 3 }));
+      els.push(h('text', { key: 'nv' + p.i, x: X(p.i), y: Y(p.net) - 14, textAnchor: 'middle', fill: 'var(--text)', fontSize: 12, fontWeight: 700, fontFamily: 'JetBrains Mono, monospace' }, p.net.toLocaleString()));
+      els.push(h('text', { key: 'xl' + p.i, x: X(p.i), y: H - PAD.b + 18, textAnchor: 'middle', fill: 'var(--text)', fontSize: 11.5, fontWeight: 600, fontFamily: 'Space Grotesk, sans-serif' }, p.short));
+      els.push(h('text', { key: 'xd' + p.i, x: X(p.i), y: H - PAD.b + 33, textAnchor: 'middle', fill: 'var(--faint)', fontSize: 10, fontFamily: 'JetBrains Mono, monospace' }, p.date));
+    });
+    return h('svg', { viewBox: '0 0 ' + W + ' ' + H, width: '100%', height: '100%', style: { display: 'block' }, preserveAspectRatio: 'xMidYMid meet' }, els);
+  }
+
+  buildMilestones() {
+    const fmt = this.fmt, sp = (x) => this.sp(x);
+    const target = this.briefTotal;
+    const list = this.msData.map((m, i) => {
+      const net = this.msNet(m), variance = (net - target) / target, eff = net / m.gross, status = this.statusOf(variance);
+      return {
+        tag: 'M·0' + (i + 1), label: m.label, date: m.date, netFmt: fmt(net), grossFmt: fmt(m.gross),
+        effPct: (eff * 100).toFixed(0) + '%', varFmt: sp(variance), status, statusColor: this.statusColor[status], statusLabel: this.statusLabel[status],
+        latest: i === this.msData.length - 1, cardStyle: i === this.msData.length - 1 ? 'border-color:var(--accent);' : '',
+      };
+    });
+    // comparison: schematic -> DD
+    const a = this.msData[1], b = this.msData[2];
+    const changes = [];
+    this.spaceMeta.forEach((m, i) => {
+      const d = b.areas[i] - a.areas[i];
+      if (d !== 0) changes.push({ name: m[0], dept: m[1], color: this.catColor[m[1]], from: a.areas[i], to: b.areas[i], delta: d, deltaFmt: (d > 0 ? '+' : '−') + Math.abs(d), grew: d > 0, glyph: d > 0 ? '▲' : '▼', deltaColor: d > 0 ? '#e8b04b' : '#57c7d4' });
+    });
+    changes.sort((x, y) => Math.abs(y.delta) - Math.abs(x.delta));
+    const netDelta = this.msNet(b) - this.msNet(a);
+    return { list, changes, fromLabel: a.short, toLabel: b.short, netDeltaFmt: (netDelta > 0 ? '+' : '−') + Math.abs(netDelta) + ' m²', netDeltaColor: netDelta > 0 ? '#e8b04b' : '#57c7d4', changeCount: changes.length };
+  }
+
+  renderVals() {
+    const st = this.state;
+    const segOn = 'padding:6px 13px;border:none;font:inherit;font-size:12px;font-weight:600;cursor:pointer;background:var(--accent);color:var(--accent-ink);';
+    const segOff = 'padding:6px 13px;border:none;font:inherit;font-size:12px;font-weight:500;cursor:pointer;background:var(--panel2);color:var(--muted);';
+    const seg = (on) => (on ? segOn : segOff);
+
+    const dockBase = 'position:relative;width:42px;height:42px;display:flex;align-items:center;justify-content:center;border-radius:11px;border:1px solid transparent;background:transparent;color:var(--muted);cursor:pointer;transition:all .12s;';
+    const dockOn = 'position:relative;width:42px;height:42px;display:flex;align-items:center;justify-content:center;border-radius:11px;border:1px solid var(--accent);background:var(--accent);color:var(--accent-ink);cursor:pointer;transition:all .12s;';
+    const dock = (id) => (st.tool === id ? dockOn : dockBase);
+
+    const actBase = 'display:inline-flex;align-items:center;gap:6px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:7px 11px;font:inherit;font-size:12.5px;color:var(--text);cursor:pointer;transition:all .12s;';
+    const actOn = 'display:inline-flex;align-items:center;gap:6px;background:rgba(240,181,63,.16);border:1px solid var(--accent);border-radius:8px;padding:7px 11px;font:inherit;font-size:12.5px;color:var(--accent);cursor:pointer;transition:all .12s;';
+    const act = (on) => (on ? actOn : actBase);
+
+    const tabBase = (name) => {
+      const on = st.tab === name;
+      return 'padding:9px 15px;border:none;border-radius:9px;font:inherit;font-family:\'Space Grotesk\',sans-serif;font-size:14px;cursor:pointer;display:inline-flex;align-items:center;gap:7px;font-weight:' +
+        (on ? 600 : 500) + ';background:' + (on ? 'var(--panel2)' : 'transparent') + ';color:' + (on ? 'var(--accent)' : 'var(--muted)') + ';';
+    };
+
+    const themeBtn = (t) => {
+      const on = st.theme === t;
+      return 'padding:6px 13px;border:none;font:inherit;font-size:12.5px;font-weight:' + (on ? 700 : 500) +
+        ';cursor:pointer;background:' + (on ? 'var(--accent)' : 'transparent') + ';color:' + (on ? 'var(--accent-ink)' : 'var(--muted)') + ';';
+    };
+
+    const layersBtnOff = 'display:inline-flex;align-items:center;gap:7px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:6px 12px;font:inherit;font-size:12.5px;color:var(--text);cursor:pointer;';
+    const layersBtnOn = 'display:inline-flex;align-items:center;gap:7px;background:rgba(240,181,63,.14);border:1px solid var(--accent);border-radius:8px;padding:6px 12px;font:inherit;font-size:12.5px;color:var(--accent);cursor:pointer;';
+
+    const railSeg = (on) => 'padding:5px 11px;border:none;font:inherit;font-size:11.5px;font-weight:600;cursor:pointer;background:' +
+      (on ? 'var(--accent)' : 'var(--panel2)') + ';color:' + (on ? 'var(--accent-ink)' : 'var(--muted)') + ';';
+
+    const hints = {
+      select: 'Click a room to select · drag to move · Shift-click for several · hold Space to pan · press ? for shortcuts',
+      link: st.linkFrom != null ? 'Now click the room to connect it to' : 'Click one room, then another, to connect them',
+    };
+
+    const relList = [...this.links].sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'required' ? -1 : 1)).map((l, i) => ({
+      a: this.roomsById[l.a].name, b: this.roomsById[l.b].name, kind: l.kind, required: l.kind === 'required',
+      glyphColor: l.kind === 'required' ? 'var(--text)' : 'var(--faint)',
+      labelColor: l.kind === 'required' ? 'var(--text)' : 'var(--muted)',
+      dash: l.kind === 'required' ? '0' : '1.5 3',
+    }));
+    const relReq = relList.filter((r) => r.required).length;
+    const relDes = relList.length - relReq;
+
+    const tot = 1722;
+    const catSummary = [
+      { cat: 'Public', color: '#f0b53f', area: 1025 },
+      { cat: 'Staff', color: '#5b9dd9', area: 193 },
+      { cat: 'Support', color: '#4cc38a', area: 140 },
+      { cat: 'Community', color: '#c678dd', area: 364 },
+    ].map((c) => ({ ...c, areaFmt: this.fmt(c.area) + ' m²', pct: Math.round((c.area / tot) * 100), pctW: ((c.area / tot) * 100).toFixed(1) + '%' }));
+
+    const scaleVal = this.scaleOpts[st.scaleIdx];
+    const ids = st.selIds;
+    const single = ids.length === 1 ? this.roomsById[ids[0]] : null;
+    const multi = ids.length > 1;
+    const linkSel = st.selLink != null ? this.links[st.selLink] : null;
+    const showRoomBar = !!single && st.tool !== 'link';
+    const showMultiBar = multi && st.tool !== 'link';
+    const showLinkBar = !!linkSel;
+
+    return {
+      setRoot: this.setRoot,
+      isDiagram: st.tab === 'diagram', isBrief: st.tab === 'brief',
+      isDashboard: st.tab === 'dashboard', isMilestones: st.tab === 'milestones',
+      dash: st.tab === 'dashboard' ? this.buildDashboard() : null,
+      ms: st.tab === 'milestones' ? this.buildMilestones() : null,
+
+      themeStyle: { dark: themeBtn('dark'), light: themeBtn('light') },
+      setDark: () => this.setTheme('dark'), setLight: () => this.setTheme('light'),
+
+      tabStyle: { dashboard: tabBase('dashboard'), diagram: tabBase('diagram'), brief: tabBase('brief'), milestones: tabBase('milestones') },
+      tab: {
+        dashboard: () => this.setState({ tab: 'dashboard' }), diagram: () => this.setState({ tab: 'diagram' }),
+        brief: () => this.setState({ tab: 'brief' }), milestones: () => this.setState({ tab: 'milestones' }),
+      },
+
+      toolStyle: { select: dock('select'), link: dock('link') },
+      tool: {
+        select: () => this.setState({ tool: 'select', linkFrom: null }),
+        link: () => this.setState({ tool: 'link' }),
+      },
+      autoStyle: st.autoLayout ? dockOn : dockBase,
+      toggleAuto: () => this.setState((s) => ({ autoLayout: !s.autoLayout })),
+
+      colorStyle: { category: seg(st.colorBy === 'category'), building: seg(st.colorBy === 'building') },
+      color: { category: () => this.setState({ colorBy: 'category' }), building: () => this.setState({ colorBy: 'building' }) },
+
+      floor: this.floorOpts[st.floorIdx],
+      cycleFloor: () => this.setState((s) => ({ floorIdx: (s.floorIdx + 1) % this.floorOpts.length })),
+      scale: scaleVal,
+      cycleScale: () => this.setState((s) => ({ scaleIdx: (s.scaleIdx + 1) % this.scaleOpts.length })),
+      scaleBarLabel: this.scaleMeters[scaleVal] + ' · ' + scaleVal,
+
+      layersStyle: st.showLayers ? layersBtnOn : layersBtnOff,
+      toggleLayers: () => this.setState((s) => ({ showLayers: !s.showLayers })),
+      showLayers: st.showLayers,
+
+      clearSel: () => this.clearSel(),
+
+      // one contextual bar serves rooms (single / multi) and links
+      showRoomBar, showMultiBar, showLinkBar,
+      showHint: !(showRoomBar || showMultiBar || showLinkBar),
+
+      // single-room bar
+      selectedName: single ? single.name : '',
+      selColor: single ? (st.colorBy === 'building' ? this.bldColor[single.building] : this.catColor[single.cat]) : '#888',
+      selArea: single ? (single.count > 1 ? this.fmt(single.area * single.count) + ' m² · ×' + single.count : this.fmt(single.area) + ' m²') : '',
+      actStyle: {
+        pin: act(single && !!st.pinned[single.id]),
+        box: act(single && !!st.boxed[single.id]),
+        shape: act(single && !!st.shaped[single.id]),
+      },
+      act: { pin: () => this.togglePin(), box: () => this.toggleBox(), shape: () => this.toggleShape(), del: () => this.removeSel() },
+
+      // multi-select bar
+      selCount: ids.length,
+
+      // link editor bar
+      linkA: linkSel ? this.roomsById[linkSel.a].name : '',
+      linkB: linkSel ? this.roomsById[linkSel.b].name : '',
+      linkKindStyle: { desired: seg(linkSel && linkSel.kind === 'desired'), required: seg(linkSel && linkSel.kind === 'required') },
+      setDesired: () => this.setLinkKind('desired'),
+      setRequired: () => this.setLinkKind('required'),
+      removeLink: () => this.removeLink(),
+
+      // canvas cursor — pan is a transient Space-held gesture, not a mode
+      canvasCursor: st.spaceHeld ? 'grab' : st.tool === 'link' ? 'crosshair' : 'default',
+
+      // shortcuts panel
+      showHelp: st.showHelp,
+      toggleHelp: () => this.setState((s) => ({ showHelp: !s.showHelp })),
+      stop: (e) => e.stopPropagation(),
+      helpIntro: 'Select does almost everything. Pan by holding Space, connect rooms with the Link tool, and act on whatever’s selected from the bar at the bottom.',
+      helpMouse: [
+        { k: 'Click', d: 'Select a room' },
+        { k: 'Drag', d: 'Move a room — it pins where you drop it' },
+        { k: 'Drag canvas', d: 'Marquee-select several rooms' },
+        { k: 'Shift-click', d: 'Add / remove from the selection' },
+        { k: 'Hold Space + drag', d: 'Pan the canvas' },
+        { k: 'Scroll', d: 'Zoom in / out' },
+        { k: 'Double-click', d: 'Rename & edit area inline' },
+        { k: 'Link · click two rooms', d: 'Connect them (defaults to desired)' },
+        { k: 'Click a link', d: 'Edit it — Desired / Required / Remove' },
+      ],
+      helpKeys: [
+        { k: 'V', d: 'Select tool' }, { k: 'L', d: 'Link tool' }, { k: 'A', d: 'Auto-layout on / off' },
+        { k: 'P', d: 'Pin / unpin' }, { k: 'B', d: 'Box / bubble' }, { k: 'S', d: 'Freeform shape' },
+        { k: '⌫', d: 'Remove selection' }, { k: 'Esc', d: 'Deselect' }, { k: '⌘ Z', d: 'Undo' }, { k: '⌘ ⇧ Z', d: 'Redo' },
+      ],
+
+      canvas: this.buildCanvas(),
+      legend: [
+        { label: 'Public', color: '#f0b53f' }, { label: 'Staff', color: '#5b9dd9' },
+        { label: 'Support', color: '#4cc38a' }, { label: 'Community', color: '#c678dd' },
+      ],
+      hint: hints[st.tool] + ' · ' + scaleVal,
+
+      railByStyle: { building: railSeg(st.railBy === 'building'), category: railSeg(st.railBy === 'category') },
+      railBy: { building: () => this.setState({ railBy: 'building' }), category: () => this.setState({ railBy: 'category' }) },
+      rail: this.buildRail(),
+      relList, relReq, relDes,
+
+      briefTree: this.buildBrief(),
+      briefView: st.briefView,
+      isStack: st.briefView === 'stack', isSchedule: st.briefView === 'schedule',
+      treemap: st.tab === 'brief' && st.briefView === 'stack' ? this.buildTreemap() : { cells: [], heightPx: 480 },
+      treeRef: this.treeRef,
+      viewStyle: { stack: seg(st.briefView === 'stack'), schedule: seg(st.briefView === 'schedule') },
+      setStack: () => this.setState({ briefView: 'stack' }),
+      setSchedule: () => this.setState({ briefView: 'schedule' }),
+      catSummary,
+    };
+  }
+}
+</script>
+</body>
+</html>

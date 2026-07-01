@@ -1,18 +1,35 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from './api.js';
+import { useTheme } from './theme.jsx';
 import ProjectList from './components/ProjectList.jsx';
 import ProjectView from './components/ProjectView.jsx';
 import SettingsPage from './components/SettingsPage.jsx';
 
 function BrandLogo() {
-  // A drafting mark: nested plan squares with an adjacency bubble + link.
+  // Amber rounded square holding a 4-cell drafting glyph (3 plates + a bubble).
   return (
-    <svg className="brand-logo" viewBox="0 0 32 32" fill="none" aria-hidden="true">
-      <rect x="2.5" y="2.5" width="27" height="27" rx="6" stroke="var(--accent)" strokeWidth="2" />
-      <rect x="8" y="8" width="9" height="9" rx="2" stroke="var(--muted)" strokeWidth="1.6" />
-      <line x1="16.5" y1="16.5" x2="21" y2="21" stroke="var(--muted)" strokeWidth="1.6" />
-      <circle cx="22" cy="22" r="4" fill="var(--accent)" />
-    </svg>
+    <span className="brand-mark" aria-hidden="true">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none">
+        <rect x="3" y="3" width="8" height="8" rx="1.5" fill="var(--accent-ink)" />
+        <rect x="13" y="3" width="8" height="8" rx="1.5" fill="var(--accent-ink)" opacity=".45" />
+        <rect x="3" y="13" width="8" height="8" rx="1.5" fill="var(--accent-ink)" opacity=".45" />
+        <circle cx="17" cy="17" r="4" fill="var(--accent-ink)" />
+      </svg>
+    </span>
+  );
+}
+
+function ThemeToggle() {
+  const { theme, setTheme } = useTheme();
+  return (
+    <div className="theme-toggle" role="group" aria-label="Color theme">
+      <button className={theme === 'dark' ? 'active' : ''} onClick={() => setTheme('dark')}>
+        Dark
+      </button>
+      <button className={theme === 'light' ? 'active' : ''} onClick={() => setTheme('light')}>
+        Light
+      </button>
+    </div>
   );
 }
 
@@ -55,14 +72,17 @@ export default function App() {
             <span className="brand-tag">Programme Studio</span>
           </div>
         </div>
-        <nav className="topnav">
-          <button className={`navlink ${page === 'projects' && !inProject ? 'active' : ''}`} onClick={goHome}>
-            Projects
-          </button>
-          <button className={`navlink ${page === 'settings' ? 'active' : ''}`} onClick={() => setPage('settings')}>
-            Settings
-          </button>
-        </nav>
+        <div className="topbar-right">
+          <nav className="topnav">
+            <button className={`navlink ${page === 'projects' && !inProject ? 'active' : ''}`} onClick={goHome}>
+              Projects
+            </button>
+            <button className={`navlink ${page === 'settings' ? 'active' : ''}`} onClick={() => setPage('settings')}>
+              Settings
+            </button>
+          </nav>
+          <ThemeToggle />
+        </div>
       </header>
 
       <main className="main">
