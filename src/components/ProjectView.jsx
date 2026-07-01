@@ -12,6 +12,9 @@ export default function ProjectView({ projectId, onBack }) {
   const [data, setData] = useState(null);
   const [tab, setTab] = useState('Bubble Diagram');
   const [error, setError] = useState(null);
+  // Shared selection: a space selected on the Diagram highlights in the Brief
+  // (and vice-versa). null = nothing selected.
+  const [selectedSpaceId, setSelectedSpaceId] = useState(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -73,22 +76,30 @@ export default function ProjectView({ projectId, onBack }) {
 
       <div className={`project-content ${isDiagram ? 'full' : ''}`}>
         {tab === 'Dashboard' && (
-          <div className="page">
-            <Dashboard project={project} spaces={spaces} snapshots={snapshots} />
-          </div>
+          <Dashboard project={project} spaces={spaces} snapshots={snapshots} />
         )}
         {isDiagram && (
-          <BubbleTab project={project} spaces={spaces} adjacencies={adjacencies} images={images} onChanged={refresh} />
+          <BubbleTab
+            project={project}
+            spaces={spaces}
+            adjacencies={adjacencies}
+            images={images}
+            onChanged={refresh}
+            selectedSpaceId={selectedSpaceId}
+            onSelectSpace={setSelectedSpaceId}
+          />
         )}
         {tab === 'Brief' && (
-          <div className="page">
-            <BriefTab project={project} spaces={spaces} onChanged={refresh} />
-          </div>
+          <BriefTab
+            project={project}
+            spaces={spaces}
+            onChanged={refresh}
+            selectedSpaceId={selectedSpaceId}
+            onSelectSpace={setSelectedSpaceId}
+          />
         )}
         {tab === 'Milestones' && (
-          <div className="page">
-            <SnapshotsTab project={project} spaces={spaces} snapshots={snapshots} onChanged={refresh} />
-          </div>
+          <SnapshotsTab project={project} spaces={spaces} snapshots={snapshots} onChanged={refresh} />
         )}
       </div>
     </div>

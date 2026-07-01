@@ -3,6 +3,7 @@ import { api } from '../api.js';
 import { fmtArea, areaToM2, distToMeters, distUnit, leafSpaces, rootContainer } from '../compute.js';
 // pdfExport is lazy-loaded on demand — keeps jsPDF out of the initial bundle.
 import { useHistory } from '../useHistory.js';
+import { darkHex } from '../viz.js';
 import { SCALE_PRESETS, ratioToScale, scaleToRatio, zoomAbout } from '../scale.js';
 import { convexHull, smoothHullPath, pinsOf, filterCss, IMAGE_FILTERS,
   parsePoly, normalizePolygon, polygonPath, polyBounds, regularPolygon,
@@ -40,7 +41,7 @@ const layoutCache = new Map(); // projectId → Map(instanceKey → {x,y})
  *
  * Tiny bubbles (r ≤ 13) fall back to a single label below the circle.
  */
-function BubbleLabel({ label, r, areaStr }) {
+function BubbleLabel({ label, r, areaStr, ink }) {
   const fontSize = Math.max(9, Math.min(14, r / 3.2));
   const lineH    = fontSize * 1.22;
   const charW    = fontSize * 0.55;
@@ -50,7 +51,7 @@ function BubbleLabel({ label, r, areaStr }) {
   // Tiny bubble: single line sitting below the circle
   if (r <= 13) {
     return (
-      <text textAnchor="middle" dy={r + 11} className="bubble-name" style={{ fontSize }}>
+      <text textAnchor="middle" dy={r + 11} className="bubble-name" style={{ fontSize, fill: ink }}>
         {label}
       </text>
     );
@@ -78,18 +79,18 @@ function BubbleLabel({ label, r, areaStr }) {
   const startDy    = -((totalLines - 1) * lineH) / 2 + fontSize * 0.35;
 
   return (
-    <text textAnchor="middle" className="bubble-name" style={{ fontSize }}>
+    <text textAnchor="middle" className="bubble-name" style={{ fontSize, fill: ink }}>
       {lines.map((ln, i) => (
         <tspan key={i} x="0" dy={i === 0 ? startDy : lineH}>{ln}</tspan>
       ))}
       {showArea && (
-        <tspan x="0" dy={lineH} className="bubble-area">{areaStr}</tspan>
+        <tspan x="0" dy={lineH} className="bubble-area" style={ink ? { fill: ink, fillOpacity: 0.72 } : undefined}>{areaStr}</tspan>
       )}
     </text>
   );
 }
 
-export default function BubbleTab({ project, spaces, adjacencies, images = [], onChanged }) {
+export default function BubbleTab({ project, spaces, adjacencies, images = [], onChanged, selectedSpaceId = null, onSelectSpace }) {
   const [selected, setSelected] = useState(null);
   const [selectedInst, setSelectedInst] = useState(0); // which instance of the selected space
   const [, setTick] = useState(0);
@@ -125,6 +126,21 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const [areaMode, setAreaMode] = useState('category'); // Areas panel grouping
   const [collapsed, setCollapsed] = useState(() => new Set()); // collapsed Areas groups
   const [editShape, setEditShape] = useState(null); // space id whose polygon is being edited
+  const [tool, setTool] = useState('select'); // 'select' | 'link' — canvas mode
+  const [linkKind, setLinkKind] = useState('desired'); // relationship type new links get in Link mode
+  const [spaceHeld, setSpaceHeld] = useState(false); // transient pan while Space is held
+  // Auto-layout force strengths (user-adjustable). Buildings barely move by
+  // default so clusters hold their position; rooms move more freely.
+  const [nodeForce, setNodeForce] = useState(() => {
+    const v = localStorage.getItem('brieftrack.nodeforce');
+    return v == null ? 1 : Number(v);
+  });
+  const [buildingForce, setBuildingForce] = useState(() => {
+    const v = localStorage.getItem('brieftrack.buildingforce');
+    return v == null ? 0.5 : Number(v);
+  });
+  const [selLink, setSelLink] = useState(null); // { space_a, space_b } of the selected link
+  const [linkFrom, setLinkFrom] = useState(null); // first room picked in Link mode
 
   const draftTimers = useRef(new Map());
   const nodesRef = useRef(new Map());
@@ -170,7 +186,19 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   }, [project.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const units = project.units;
-  const simEnabled = !!project.sim_enabled;
+
+  // Auto-layout is a MOMENTARY action, not a persistent toggle. Pressing it
+  // re-energises the force sim for a single settling pass that cools to a stop
+  // (the hook clears `autoRunRef` once it settles). Leaving the sim permanently
+  // on made rooms keep drifting after every edit. Genuinely new rooms still
+  // auto-settle on spawn (see the [spaces] effect below).
+  const autoRunRef = useRef(false);
+  const [autoRunning, setAutoRunning] = useState(false);
+  function runAutoLayout() {
+    autoRunRef.current = true;
+    setAutoRunning(true);
+    alphaRef.current = 1;
+  }
 
 
   // Scale auto-fit uses the first visible, calibrated image.
@@ -204,6 +232,15 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       return root ? root.name : 'Unassigned';
     }
     return s.department || 'General';
+  };
+  // Spatial clustering for the force layout — always by building (so the two
+  // buildings settle into clearly separated clusters that match their hulls),
+  // independent of how bubbles are coloured. Falls back to category when a
+  // project has no buildings.
+  const clusterKey = (s) => {
+    if (!hasBuildings) return s.department || 'General';
+    const root = rootContainer(s, byId);
+    return root ? root.name : 'Unassigned';
   };
   const groups = [...new Set(leaves.map(groupKey))];
   // All department names (the categories), regardless of the current colour mode.
@@ -275,13 +312,22 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     return 16 + 50 * Math.sqrt(ea(s) / maxEach);
   };
 
-  const instPin = (s, i) => {
+  // A room's SAVED position (persists to pin_json, seeds the sim node). Set by
+  // dragging; it does NOT lock the room. pinOverride holds the optimistic value
+  // before a refetch. An entry may carry `locked: true`.
+  const savedOf = (s, i) => {
     const key = `${s.id}:${i}`;
     if (pinOverride.current.has(key)) return pinOverride.current.get(key);
     return pinsOf(s)[i] ?? null;
   };
+  // LOCKED = protected from auto-layout + shows the pin marker. Toggled only by
+  // the Pin button / P. A saved-but-unlocked room stays where it was dropped but
+  // is free to be rearranged by an auto-layout pass.
+  const instLocked = (s, i) => !!savedOf(s, i)?.locked;
+  // The simulation's fixed point exists only while a room is locked.
+  const instPin = (s, i) => (instLocked(s, i) ? savedOf(s, i) : null);
   const anyPinned = (s) =>
-    Array.from({ length: Math.max(1, s.count || 1) }, (_, i) => i).some((i) => instPin(s, i));
+    Array.from({ length: Math.max(1, s.count || 1) }, (_, i) => i).some((i) => instLocked(s, i));
 
   useEffect(() => () => Object.values(debouncers.current).forEach(clearTimeout), []);
 
@@ -307,29 +353,78 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [spaces]);
 
-  // Global shortcuts: undo/redo, clear selection, delete the multi-selection.
+  // Global shortcuts: tools (V/L/A), undo/redo, clear selection, delete, Space-pan.
   useEffect(() => {
     function onKey(e) {
       if (e.target.matches?.('input, select, textarea')) return;
       const mod = e.ctrlKey || e.metaKey;
+      // Hold Space → transient pan gesture (so empty-canvas drag stays marquee).
+      if (e.code === 'Space' && !mod) {
+        e.preventDefault();
+        setSpaceHeld(true);
+        return;
+      }
       if (mod && e.key.toLowerCase() === 'z') {
         e.preventDefault();
         e.shiftKey ? history.redo() : history.undo();
       } else if (mod && e.key.toLowerCase() === 'y') {
         e.preventDefault();
         history.redo();
+      } else if (e.key.toLowerCase() === 'v' && !mod) {
+        setTool('select');
+        setLinkFrom(null);
+      } else if (e.key.toLowerCase() === 'l' && !mod) {
+        setTool('link');
+        setSelected(null);
+        setSelLink(null);
+      } else if (e.key.toLowerCase() === 'a' && !mod) {
+        runAutoLayout();
       } else if (e.key === 'Escape') {
         if (multi.size) setMulti(new Set());
         setSelected(null);
+        onSelectSpace?.(null);
+        setSelLink(null);
+        setLinkFrom(null);
       } else if ((e.key === 'Delete' || e.key === 'Backspace') && multi.size) {
         e.preventDefault();
         multiDelete();
       }
     }
+    function onKeyUp(e) {
+      if (e.code === 'Space') setSpaceHeld(false);
+    }
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    window.addEventListener('keyup', onKeyUp);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('keyup', onKeyUp);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [multi]);
+
+  // Effective pan state: explicit Pan toggle OR a held Space key.
+  const panActive = panMode || spaceHeld;
+
+  // Shared selection sync (Diagram ↔ Brief). Inbound only: an external
+  // selection (e.g. a Brief tile) drives the canvas selection. This effect
+  // can't loop — setSelected doesn't change selectedSpaceId. Outbound
+  // propagation is event-driven via pickSpace()/clearPick() at the actual
+  // selection points, which avoids an effect feedback cycle.
+  useEffect(() => {
+    setSelected(selectedSpaceId);
+    setSelectedInst(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSpaceId]);
+  // Select a space and notify the shared state (no-ops to onSelectSpace are cheap).
+  const pickSpace = (id, inst = 0) => {
+    setSelected(id);
+    setSelectedInst(inst);
+    onSelectSpace?.(id);
+  };
+  const clearPick = () => {
+    setSelected(null);
+    onSelectSpace?.(null);
+  };
 
   const shapeOf = (s) => {
     if (s.shape === 'poly' && parsePoly(s)) return 'poly';
@@ -372,6 +467,19 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     if (!np) return null;
     const f = polyScaleOf(s);
     return np.map((p) => ({ x: p.x * f, y: p.y * f }));
+  };
+  // A selection/pin/multi outline that HUGS a custom (poly) room instead of a
+  // bounding box: the room's own curve scaled outward by ~pad px about its
+  // centroid (≈ origin, since poly verts are centred on the node).
+  const polyRingPath = (verts, pad) => {
+    let cx = 0, cy = 0;
+    for (const p of verts) ((cx += p.x), (cy += p.y));
+    cx /= verts.length; cy /= verts.length;
+    let avgR = 0;
+    for (const p of verts) avgR += Math.hypot(p.x - cx, p.y - cy);
+    avgR = avgR / verts.length || 1;
+    const f = (avgR + pad) / avgR;
+    return polygonPath(verts.map((p) => ({ x: cx + (p.x - cx) * f, y: cy + (p.y - cy) * f })));
   };
 
   // Apply field updates to a space and refetch. Returns a promise.
@@ -463,29 +571,81 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     polyDragRef.current = { space, vi, verts: np.map((p) => ({ ...p })), moved: 0 };
   }
 
-  // Keep simulation nodes in sync with the leaves (per instance). New nodes seed
-  // from a pin, then the saved layout cache, then a spawn ring; only genuinely
-  // new (uncached, unpinned) nodes re-energise the sim.
+  // Keep simulation nodes in sync with the leaves (per instance). Existing nodes
+  // seed from a pin, then the saved layout cache. A genuinely-new room is dropped
+  // into free space NEAR its building's existing rooms (inside the cluster if
+  // there's room, otherwise just outside its edge); a room belonging to a
+  // brand-new building lands near the existing buildings. Auto-layout is NEVER
+  // started here — it only runs when the user triggers it (A / the Auto-layout
+  // button), so opening the tab never rearranges the diagram.
   useEffect(() => {
     const nodes = nodesRef.current;
     const cache = layoutCache.get(project.id);
     const keys = new Set(instances.map((o) => o.key));
-    let newSpawn = false;
     for (const key of [...nodes.keys()]) if (!keys.has(key)) nodes.delete(key);
-    instances.forEach((o, idx) => {
+
+    // 1. Seed pinned + cached nodes first so new rooms can be placed relative to
+    //    the rooms that already have a home.
+    const pending = [];
+    const pendingKeys = new Set();
+    instances.forEach((o) => {
       if (nodes.has(o.key)) return;
       const pin = pinsOf(o.s)[o.i] ?? null;
       const cached = cache?.get(o.key);
       if (pin) nodes.set(o.key, { x: pin.x, y: pin.y, vx: 0, vy: 0 });
       else if (cached) nodes.set(o.key, { x: cached.x, y: cached.y, vx: 0, vy: 0 });
-      else {
-        const angle = (idx / Math.max(instances.length, 1)) * Math.PI * 2;
-        nodes.set(o.key, { x: W / 2 + Math.cos(angle) * 190 + o.i * 9, y: H / 2 + Math.sin(angle) * 150 + o.i * 9, vx: 0, vy: 0 });
-        newSpawn = true;
-      }
+      else ((pending.push(o), pendingKeys.add(o.key)));
     });
+
+    // 2. Place genuinely-new rooms in free space near their building.
+    if (pending.length) {
+      const gap = effScale ? 14 : 20;
+      const occupied = []; // discs already placed: {x, y, r}
+      const members = new Map(); // building key → placed positions in that building
+      for (const o of instances) {
+        if (pendingKeys.has(o.key)) continue;
+        const n = nodes.get(o.key);
+        if (!n) continue;
+        occupied.push({ x: n.x, y: n.y, r: radiusOf(o.s) });
+        const ck = clusterKey(o.s);
+        if (!members.has(ck)) members.set(ck, []);
+        members.get(ck).push(n);
+      }
+      const centroid = (arr) => ({
+        x: arr.reduce((t, p) => t + p.x, 0) / arr.length,
+        y: arr.reduce((t, p) => t + p.y, 0) / arr.length,
+      });
+      const overall = occupied.length ? centroid(occupied) : { x: W / 2, y: H / 2 };
+      const fits = (x, y, r) => occupied.every((o) => Math.hypot(o.x - x, o.y - y) > o.r + r + gap);
+      // Spiral outward from a centre until an unoccupied spot is found.
+      const freeSpot = (c, r) => {
+        if (fits(c.x, c.y, r)) return { x: c.x, y: c.y };
+        for (let ring = 1; ring < 80; ring++) {
+          const rad = ring * (r + gap);
+          const steps = Math.max(8, Math.round((2 * Math.PI * rad) / (r * 1.4 + gap)));
+          for (let s = 0; s < steps; s++) {
+            const a = (s / steps) * 2 * Math.PI + ring * 0.6;
+            const x = c.x + Math.cos(a) * rad;
+            const y = c.y + Math.sin(a) * rad;
+            if (fits(x, y, r)) return { x, y };
+          }
+        }
+        return { x: c.x, y: c.y };
+      };
+      for (const o of pending) {
+        const r = radiusOf(o.s);
+        const ck = clusterKey(o.s);
+        const mem = members.get(ck);
+        // Existing building → aim at its centroid; new building → near the rest.
+        const center = mem && mem.length ? centroid(mem) : overall;
+        const pos = freeSpot(center, r);
+        nodes.set(o.key, { x: pos.x, y: pos.y, vx: 0, vy: 0 });
+        occupied.push({ x: pos.x, y: pos.y, r });
+        if (!members.has(ck)) members.set(ck, []);
+        members.get(ck).push(pos);
+      }
+    }
     pinOverride.current.clear();
-    if (newSpawn) alphaRef.current = 1;
     setTick((t) => t + 1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [spaces]);
@@ -506,11 +666,25 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   useEffect(() => {
     alphaRef.current = Math.max(alphaRef.current, 0.35);
   }, [drafts]);
+  // Persist force strengths whenever they change. NOTE: this effect must never
+  // start an auto pass — under StrictMode it double-invokes on mount, which would
+  // run auto-layout on tab open. The live pass is triggered from the slider
+  // onChange (a real user action) via nudgeLayout() instead.
+  useEffect(() => {
+    localStorage.setItem('brieftrack.nodeforce', String(nodeForce));
+    localStorage.setItem('brieftrack.buildingforce', String(buildingForce));
+  }, [nodeForce, buildingForce]);
+  // Re-energise the sim for a brief settling pass (used when a force slider moves).
+  const nudgeLayout = () => {
+    alphaRef.current = Math.max(alphaRef.current, 0.5);
+    autoRunRef.current = true;
+    setAutoRunning(true);
+  };
 
   // Force simulation — delegated to the hook. radiusOf/groupKey/instPin are
   // ref-wrapped inside useSimulation so they are always fresh without needing
   // to be listed in the effect deps.
-  useSimulation({ instances, leaves, adjacencies, byId, simEnabled, effScale, nodesRef, alphaRef, dragRef, radiusOf, instPin, groupKey, setTick });
+  useSimulation({ instances, leaves, adjacencies, byId, autoRunRef, setAutoRunning, effScale, nodesRef, alphaRef, dragRef, radiusOf, instPin, groupKey, clusterKey, nodeForce, buildingForce, setTick });
 
   // Closest instance pair between two spaces — used by PDF export, adjacency
   // rendering, and the scale bar. Reads nodesRef so it is always current.
@@ -562,7 +736,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       if (im) layerMoveRef.current = { id: moveLayer, sx: e.clientX, sy: e.clientY, lx: im.x || 0, ly: im.y || 0 };
       return;
     }
-    if (panMode) {
+    if (panActive) {
       if (!dragRef.current) panRef.current = { sx: e.clientX, sy: e.clientY, vx: view.x, vy: view.y };
       return;
     }
@@ -691,18 +865,22 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     const space = byId.get(drag.spaceId);
     if (!space) return;
     if (drag.moved >= 6) {
-      // Dragging a bubble pins it (so it stays where you drop it).
-      if (!simEnabled || instPin(space, drag.idx)) await savePin(space, drag.idx, true);
+      // Dragging SAVES the room's position (so it stays where you drop it and
+      // reloads there) but does NOT lock it — locking is deliberate (Pin / P).
+      await saveDragPos(space, drag.idx);
       return;
     }
     await handleBubbleClick(drag.spaceId, drag.idx);
   }
 
   function onBubbleDown(e, o) {
-    if (scalePoints || panMode || moveLayer || rotateLayer) return;
+    if (scalePoints || panActive || moveLayer || rotateLayer) return;
     if (e.shiftKey) {
       // Shift-click toggles a bubble in the multi-selection (no drag, no marquee).
       e.stopPropagation();
+      setSelLink(null);
+      setSelected(null);
+      onSelectSpace?.(null);
       toggleMulti(o.key);
       return;
     }
@@ -738,15 +916,46 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     debouncers.current.view = setTimeout(() => saveProject({ view_x: v.x, view_y: v.y }, { silent: true }), 500);
   }
 
-  async function savePin(space, idx, pinned) {
+  // Persist a room's position after a drag WITHOUT changing its locked state
+  // (a locked room dragged stays locked at its new spot; an unlocked one stays
+  // unlocked). This is what makes drags survive a reload without pinning.
+  async function saveDragPos(space, idx) {
+    const key = `${space.id}:${idx}`;
+    const node = nodesRef.current.get(key);
+    if (!node) return;
+    const pins = { ...pinsOf(space) };
+    const pos = { x: node.x, y: node.y };
+    pins[idx] = instLocked(space, idx) ? { ...pos, locked: true } : pos;
+    pinOverride.current.set(key, pins[idx]);
+    const before = { pin_json: space.pin_json ?? null, pin_x: space.pin_x ?? null, pin_y: space.pin_y ?? null };
+    const after = { pin_json: JSON.stringify(pins), pin_x: null, pin_y: null };
+    history.record({ label: 'move', undo: () => applySpace(space.id, before), redo: () => applySpace(space.id, after) });
+    setError(null);
+    try {
+      await applySpace(space.id, after);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  // Lock/unlock a single instance (Pin button / P). Locking captures the current
+  // position; unlocking keeps the position but frees it for auto-layout.
+  async function savePin(space, idx, locked) {
     const key = `${space.id}:${idx}`;
     const node = nodesRef.current.get(key);
     const pins = { ...pinsOf(space) };
-    if (pinned && node) ((pins[idx] = { x: node.x, y: node.y }), pinOverride.current.set(key, pins[idx]));
-    else ((delete pins[idx]), pinOverride.current.set(key, null));
+    const prev = pins[idx];
+    const pos = node ? { x: node.x, y: node.y } : prev ? { x: prev.x, y: prev.y } : null;
+    if (pos) {
+      pins[idx] = locked ? { ...pos, locked: true } : pos;
+      pinOverride.current.set(key, pins[idx]);
+    } else {
+      delete pins[idx];
+      pinOverride.current.set(key, null);
+    }
     const before = { pin_json: space.pin_json ?? null, pin_x: space.pin_x ?? null, pin_y: space.pin_y ?? null };
     const after = { pin_json: JSON.stringify(pins), pin_x: null, pin_y: null };
-    history.record({ label: pinned ? 'pin' : 'unpin', undo: () => applySpace(space.id, before), redo: () => applySpace(space.id, after) });
+    history.record({ label: locked ? 'pin' : 'unpin', undo: () => applySpace(space.id, before), redo: () => applySpace(space.id, after) });
     setError(null);
     try {
       await applySpace(space.id, after);
@@ -756,21 +965,25 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   }
 
   // Pin/unpin every instance of a space at once (so a multiplied space stays put).
-  async function savePinAll(space, pinned) {
+  async function savePinAll(space, locked) {
     const count = Math.max(1, space.count || 1);
-    const pins = {};
+    const pins = { ...pinsOf(space) };
     for (let i = 0; i < count; i++) {
       const key = `${space.id}:${i}`;
-      if (pinned) {
-        const n = nodesRef.current.get(key);
-        if (n) ((pins[i] = { x: n.x, y: n.y }), pinOverride.current.set(key, pins[i]));
+      const n = nodesRef.current.get(key);
+      const prev = pins[i];
+      const pos = n ? { x: n.x, y: n.y } : prev ? { x: prev.x, y: prev.y } : null;
+      if (pos) {
+        pins[i] = locked ? { ...pos, locked: true } : pos;
+        pinOverride.current.set(key, pins[i]);
       } else {
+        delete pins[i];
         pinOverride.current.set(key, null);
       }
     }
     const before = { pin_json: space.pin_json ?? null, pin_x: space.pin_x ?? null, pin_y: space.pin_y ?? null };
     const after = { pin_json: JSON.stringify(pins), pin_x: null, pin_y: null };
-    history.record({ label: pinned ? 'pin all' : 'unpin all', undo: () => applySpace(space.id, before), redo: () => applySpace(space.id, after) });
+    history.record({ label: locked ? 'pin all' : 'unpin all', undo: () => applySpace(space.id, before), redo: () => applySpace(space.id, after) });
     setError(null);
     try {
       await applySpace(space.id, after);
@@ -806,7 +1019,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     const minY = Math.min(box.y0, box.y1), maxY = Math.max(box.y0, box.y1);
     // A near-zero drag is a click on empty canvas → clear selection.
     if (maxX - minX < 4 && maxY - minY < 4) {
-      if (!m.additive) (setMulti(new Set()), setSelected(null));
+      if (!m.additive) (setMulti(new Set()), setSelected(null), onSelectSpace?.(null), setSelLink(null), setLinkFrom(null));
       return;
     }
     const hit = new Set(m.additive ? multi : []);
@@ -814,10 +1027,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       const n = nodesRef.current.get(o.key);
       if (n && n.x >= minX && n.x <= maxX && n.y >= minY && n.y <= maxY) hit.add(o.key);
     }
+    if (hit.size) { setSelLink(null); setSelected(null); onSelectSpace?.(null); }
     setMulti(hit);
   }
 
-  async function multiPin(pinned) {
+  async function multiPin(locked) {
     const bySpace = new Map();
     for (const { id, i, space } of multiList()) {
       if (!bySpace.has(id)) bySpace.set(id, { space, idxs: [] });
@@ -828,10 +1042,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       const before = { pin_json: space.pin_json ?? null, pin_x: space.pin_x ?? null, pin_y: space.pin_y ?? null };
       const pins = { ...pinsOf(space) };
       for (const i of idxs) {
-        if (pinned) {
-          const n = nodesRef.current.get(`${space.id}:${i}`);
-          if (n) pins[i] = { x: n.x, y: n.y };
-        } else delete pins[i];
+        const n = nodesRef.current.get(`${space.id}:${i}`);
+        const prev = pins[i];
+        const pos = n ? { x: n.x, y: n.y } : prev ? { x: prev.x, y: prev.y } : null;
+        if (pos) pins[i] = locked ? { ...pos, locked: true } : pos;
+        else delete pins[i];
       }
       changes.push({ id: space.id, before, after: { pin_json: JSON.stringify(pins), pin_x: null, pin_y: null } });
     }
@@ -866,7 +1081,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       const pins = { ...pinsOf(space) };
       for (const i of idxs) {
         const n = nodesRef.current.get(`${space.id}:${i}`);
-        if (n) pins[i] = { x: n.x, y: n.y };
+        if (n) pins[i] = pins[i]?.locked ? { x: n.x, y: n.y, locked: true } : { x: n.x, y: n.y };
       }
       changes.push({ id: space.id, before, after: { pin_json: JSON.stringify(pins), pin_x: null, pin_y: null } });
     }
@@ -918,6 +1133,20 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       setError(e.message);
     }
   }
+  // Delete a single space from the brief (action-bar ⌫).
+  async function removeSpace(space) {
+    if (!space) return;
+    if (!window.confirm(`Delete "${space.name}" from the brief? Its recorded areas and links are removed too.`)) return;
+    setError(null);
+    try {
+      await api.deleteSpace(space.id);
+      setSelected(null);
+      history.clear();
+      onChanged();
+    } catch (e) {
+      setError(e.message);
+    }
+  }
   function toggleHulls() {
     setHulls((v) => {
       localStorage.setItem('brieftrack.hulls', v ? '0' : '1');
@@ -957,14 +1186,23 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
 
   async function handleBubbleClick(spaceId, idx = 0) {
     setError(null);
-    if (selected == null) return (setSelected(spaceId), setSelectedInst(idx));
-    if (selected === spaceId) {
-      // Same space: re-target a different instance, or deselect if it's the same one.
-      if (selectedInst !== idx) return setSelectedInst(idx);
-      return setSelected(null);
+    setSelLink(null);
+    // Link mode: pick a first room, then a second to connect them (default desired).
+    if (tool === 'link') {
+      if (linkFrom == null) return setLinkFrom(spaceId);
+      if (linkFrom === spaceId) return setLinkFrom(null);
+      const a = linkFrom;
+      setLinkFrom(null);
+      if (!findPair(a, spaceId)) await createLink(a, spaceId, linkKind);
+      return;
     }
-    await cyclePair(selected, spaceId);
-    setSelected(null);
+    // Select mode: select the room; click again to deselect; re-target an instance.
+    if (selected == null) return pickSpace(spaceId, idx);
+    if (selected === spaceId) {
+      if (selectedInst !== idx) return setSelectedInst(idx);
+      return clearPick();
+    }
+    pickSpace(spaceId, idx);
   }
 
   // findPair reads the latest adjacencies via a ref so history closures stay
@@ -997,8 +1235,32 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     }
   }
 
-  async function onLinkClick(l) {
-    await cyclePair(l.space_a, l.space_b);
+  // Create or set a pair to a strength (undoable). Used by Link mode + action bar.
+  async function setLinkStrength(a, b, strength) {
+    const cur = findPair(a, b)?.strength ?? null;
+    if (cur === strength) return;
+    history.record({ label: strength ? 'link' : 'remove link', undo: () => setPair(a, b, cur), redo: () => setPair(a, b, strength) });
+    setError(null);
+    try {
+      await setPair(a, b, strength);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+  const createLink = (a, b, strength = 'desired') => setLinkStrength(a, b, strength);
+  async function removeSelLink() {
+    if (!selLink) return;
+    await setLinkStrength(selLink.space_a, selLink.space_b, null);
+    setSelLink(null);
+  }
+
+  // Clicking a link selects it (Select mode) → shows the link action bar.
+  function onLinkClick(l) {
+    setSelected(null);
+    onSelectSpace?.(null);
+    setMulti(new Set());
+    setLinkFrom(null);
+    setSelLink({ space_a: l.space_a, space_b: l.space_b });
   }
 
   async function saveProject(fields, { silent } = {}) {
@@ -1173,7 +1435,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
         if (Object.keys(pins).length === 0) continue;
         const np = {};
         for (const [i, p] of Object.entries(pins)) {
-          np[i] = tx(p);
+          np[i] = p.locked ? { ...tx(p), locked: true } : tx(p);
           pinOverride.current.set(`${s.id}:${i}`, np[i]);
         }
         pinUpdates.push({ id: s.id, pin_json: JSON.stringify(np) });
@@ -1671,16 +1933,21 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     return m;
   })();
   const areaRow = (s) => (
-    <div key={s.id} className={`split-row ${selected === s.id ? 'selected' : ''}`} onClick={() => setSelected(selected === s.id ? null : s.id)}>
+    <div key={s.id} className={`split-row ${selected === s.id ? 'selected' : ''}`} onClick={() => (selected === s.id ? clearPick() : pickSpace(s.id))}>
+      <span className="swatch" style={{ background: colorOf(s) }} />
       <span className="split-name" title={s.name}>
         {anyPinned(s) && <span className="split-pin">◉</span>}
         {s.name}
         {s.count > 1 ? ` ×${s.count}` : ''}
       </span>
+      <span className="split-lead" />
       <input type="number" min="0.1" step="any" value={drafts[s.id] ?? s.target_area} onChange={(e) => onAreaDraft(s, e.target.value)} onClick={(e) => e.stopPropagation()} />
-      <span className="split-total">{fmtArea((s.count || 1) * ea(s), units)}</span>
     </div>
   );
+
+  // Adjacency strength tallies for the rail header (e.g. "6 req · 10 des").
+  const reqCount = adjacencies.filter((l) => l.strength === 'required').length;
+  const desCount = adjacencies.length - reqCount;
 
   return (
     <div
@@ -1693,157 +1960,167 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       )}
 
       <div className="diagram-main">
-        <div className="diagram-toolbar">
-          <div className="toolbar-group">
-            <label className="switch" title="When on, bubbles auto-arrange and avoid overlaps. Turn off to place them by hand.">
-              <input type="checkbox" checked={simEnabled} onChange={(e) => saveProject({ sim_enabled: e.target.checked ? 1 : 0 })} />
-              Auto-layout
-            </label>
-            <button className={`btn small ${panMode ? 'on' : ''}`} onClick={() => (setPanMode((v) => !v), setMoveLayer(null), setRotateLayer(null))} title="Toggle panning — drag the canvas to move the view.">
-              ✋ Pan
-            </button>
-            {viewMoved && (
-              <button className="btn small ghost" onClick={() => ((setView({ x: 0, y: 0 })), commitView({ x: 0, y: 0 }))} title="Recentre the view">
-                ⌖ Recentre
-              </button>
-            )}
-          </div>
-          <div className="toolbar-sep" />
-          <div className="toolbar-group">
-            <button className="btn small ghost" onClick={history.undo} disabled={!history.canUndo} title={history.canUndo ? `Undo ${history.undoLabel} (Ctrl+Z)` : 'Nothing to undo'}>
-              ↶ Undo
-            </button>
-            <button className="btn small ghost" onClick={history.redo} disabled={!history.canRedo} title={history.canRedo ? `Redo ${history.redoLabel} (Ctrl+Shift+Z)` : 'Nothing to redo'}>
-              ↷ Redo
-            </button>
-          </div>
-          <div className="toolbar-sep" />
-          <div className="toolbar-group">
-            <label className="scale-label" title="Drawing scale. Bubbles and images draw true-to-scale; the PDF matches.">
-              Scale
-              <select className="scale-select" value={scaleValue} onChange={(e) => onScaleSelect(e.target.value)}>
-                <option value="auto">{fitScale ? 'Auto (fit image)' : 'Relative'}</option>
-                {presets.map(([r, label]) => (
-                  <option key={r} value={r}>
-                    {label}
-                  </option>
-                ))}
-                {scaleValue !== 'auto' && !presets.some(([r]) => String(r) === scaleValue) && (
-                  <option value={scaleValue}>≈ 1:{scaleValue}</option>
-                )}
-              </select>
-            </label>
+        <div className="bubble-stage" ref={stageRef}>
+          {/* One responsive top bar: controls on the left, actions on the
+              right. Wrapping inside a single flex row prevents the two glass
+              clusters from overlapping when the stage is narrow. */}
+          <div className="stage-topbar">
+          {/* Top-left control cluster (glass). */}
+          <div className="stage-controls">
             {hasBuildings && (
-              <label className="scale-label" title="Colour bubbles by category or by building.">
-                Colour
-                <select className="scale-select" value={colorBy} onChange={(e) => setColorBy(e.target.value)}>
-                  <option value="department">Category</option>
-                  <option value="building">Building</option>
-                </select>
-              </label>
+              <div className="ctrl-field">
+                <span className="ctrl-label">Colour</span>
+                <div className="seg seg-sm">
+                  <button className={colorBy === 'department' ? 'active' : ''} onClick={() => setColorBy('department')}>Category</button>
+                  <button className={colorBy === 'building' ? 'active' : ''} onClick={() => setColorBy('building')}>Building</button>
+                </div>
+              </div>
             )}
-          </div>
-          <div className="toolbar-sep" />
-          <div className="toolbar-group">
-            <button className={`btn small ${panel === 'layers' ? 'on' : ''}`} onClick={() => setPanel(panel === 'layers' ? null : 'layers')} title="Satellite & imported images, each with its own scale and rotation.">
-              🗺 Layers
-            </button>
-            <button className={`btn small ${split ? 'on' : ''}`} onClick={toggleSplit} title="Show or hide the Areas & Relationships panel.">
-              ◫ Panel
-            </button>
-          </div>
-          <div className="toolbar-sep" />
-          <div className="toolbar-group">
-            <button className="btn small" onClick={() => convertAll(leaves.every((s) => shapeOf(s) === 'box') ? 'bubble' : 'box')} title="Convert every space to boxes (or back to bubbles)">
-              {leaves.every((s) => shapeOf(s) === 'box') ? '○ All bubbles' : '▢ All boxes'}
-            </button>
-            <label className="scale-label" title="How bubbles are drawn">
-              Style
-              <select className="scale-select" value={bubbleStyle} onChange={(e) => setBubbleStyle(e.target.value)}>
-                <option value="solid">Solid</option>
-                <option value="outline">Outline</option>
-                <option value="sketch">Sketch</option>
-              </select>
-            </label>
-            <button className={`btn small ${hulls ? 'on' : ''}`} onClick={toggleHulls} title="Show a soft hull behind each category group (building hulls always show).">
-              ⬡ Categories
-            </button>
-            {(hulls || hasBuildings) && (
-              <label className="hull-size" title="Hull padding around the bubbles">
-                <input type="range" min="6" max="80" step="2" value={hullPad} onChange={(e) => setHullSize(Number(e.target.value))} />
-              </label>
-            )}
-            <button className={`btn small ${showMatrix ? 'on' : ''}`} onClick={() => setShowMatrix(true)} title="Edit relationships as an adjacency matrix.">
-              ▦ Matrix
-            </button>
             {hasLevels && (
-              <label className={`scale-label ${floorMode !== 'all' ? 'floors-active' : ''}`} title="View all floors together, one floor at a time, or stack the floor plans — offset apart, or overlaid on top of each other.">
-                ▤ Floors
-                <select className="scale-select" value={floorMode} onChange={(e) => setFloorView(e.target.value)}>
+              <label className="ctrl-field">
+                <span className="ctrl-label">Floors</span>
+                <select className="ctrl-select" value={floorMode} onChange={(e) => setFloorView(e.target.value)}>
                   <option value="all">All floors</option>
-                  {levels.map((l) => (
-                    <option key={l} value={l}>{l}</option>
-                  ))}
+                  {levels.map((l) => <option key={l} value={l}>{l}</option>)}
                   <option value="offset">Stacked · offset</option>
                   <option value="overlaid">Stacked · overlaid</option>
                   <option value="3d">Stacked · 3D</option>
                 </select>
               </label>
             )}
-            {hasLevels && (floorMode === 'offset' || floorMode === '3d') && (
-              <label className="hull-size" title="Spacing between stacked floors">
-                ⇕
-                <input type="range" min="0.2" max="1.3" step="0.05" value={floorGap} onChange={(e) => setFloorGap(Number(e.target.value))} />
-              </label>
-            )}
-            {is3D && (
-              <label className="scale-label" title="3-D camera projection / view">
-                <select className="scale-select" value={cam3d} onChange={(e) => setCam3d(e.target.value)}>
-                  <option value="persp">Perspective</option>
-                  <option value="iso">Isometric</option>
-                  <option value="ortho">Orthographic</option>
-                  <option value="top">Top / plan</option>
-                  <option value="front">Front</option>
-                  <option value="side">Side</option>
-                </select>
-              </label>
-            )}
-            {stackMode && (
-              <label className="scale-label" title="3-D camera angle">
-                <select className="scale-select" value={camKey} onChange={(e) => setCamKey(e.target.value)}>
-                  {Object.entries(CAMERAS).map(([k, c]) => (
-                    <option key={k} value={k}>{c.label}</option>
-                  ))}
-                </select>
-              </label>
-            )}
-            {(stackMode || is3D) && imgLayers.length > 0 && (
-              <button className={`btn small ${stackImages ? 'on' : ''}`} onClick={() => setStackImages((v) => !v)} title="Show or hide the site image on the stacked floors">
-                ⊞ Image
-              </button>
-            )}
-            {showScore && (
-              <button
-                className={`btn small adj-score ${scoreBand(adjResult.score) || ''} ${highlightGaps ? 'active' : ''}`}
-                onClick={() => setHighlightGaps((v) => !v)}
-                title={`Adjacency compliance: ${adjResult.met}/${adjResult.total} relationships satisfied (required links weigh double). Click to highlight the ${adjResult.unmet.length} unmet link${adjResult.unmet.length === 1 ? '' : 's'} on the diagram.`}
-              >
-                ◈ Adjacency {adjResult.score == null ? '—' : `${Math.round(adjResult.score * 100)}%`}
-              </button>
-            )}
+            <label className="ctrl-field">
+              <span className="ctrl-label">Scale</span>
+              <select className="ctrl-select" value={scaleValue} onChange={(e) => onScaleSelect(e.target.value)}>
+                <option value="auto">{fitScale ? 'Auto' : 'Relative'}</option>
+                {presets.map(([r, label]) => <option key={r} value={r}>{label}</option>)}
+                {scaleValue !== 'auto' && !presets.some(([r]) => String(r) === scaleValue) && <option value={scaleValue}>≈ 1:{scaleValue}</option>}
+              </select>
+            </label>
+            <button className={`ctrl-btn ${panel === 'layers' ? 'active' : ''}`} onClick={() => setPanel(panel === 'layers' ? null : 'layers')} title="Image & satellite layers">⧉ Layers</button>
+            <button className={`ctrl-btn ${panel === 'more' ? 'active' : ''}`} onClick={() => setPanel(panel === 'more' ? null : 'more')} title="More options">⋯</button>
           </div>
-          <div className="toolbar-spacer" />
-          <div className="toolbar-group">
-            <button className="btn small" onClick={exportPdf} title="Export a scale-accurate PDF with the background images.">
-              ⤓ PDF
-            </button>
-            <button className="btn small ghost" onClick={() => setShowHelp(true)} title="How the bubble diagram works">
-              ?
-            </button>
-          </div>
-        </div>
 
-        <div className="bubble-stage" ref={stageRef}>
+          {/* Top-right actions cluster (glass). */}
+          <div className="stage-actions">
+            <button className="act-btn" onClick={history.undo} disabled={!history.canUndo} title={history.canUndo ? `Undo ${history.undoLabel} (Ctrl+Z)` : 'Nothing to undo'}>↶</button>
+            <button className="act-btn" onClick={history.redo} disabled={!history.canRedo} title={history.canRedo ? `Redo ${history.redoLabel} (Ctrl+Shift+Z)` : 'Nothing to redo'}>↷</button>
+            {showScore && (
+              <button className={`adj-badge ${highlightGaps ? 'active' : ''}`} onClick={() => setHighlightGaps((v) => !v)} title={`${adjResult.met}/${adjResult.total} relationships satisfied — click to highlight the ${adjResult.unmet.length} unmet`}>
+                <span className="adj-dot" /> {adjResult.score == null ? '—' : `${Math.round(adjResult.score * 100)}%`} adjacency
+              </button>
+            )}
+            <button className="act-btn wide" onClick={exportPdf} title="Export a scale-accurate PDF">↓ PDF</button>
+            <button className="act-btn" onClick={() => setShowHelp(true)} title="Shortcuts & help (?)">?</button>
+          </div>
+          </div>
+
+          {/* More options popover — the diagram extras. */}
+          {panel === 'more' && (
+            <div className="stage-popover more-popover">
+              <div className="more-section">Auto-layout forces</div>
+              <div className="more-row">
+                <span className="more-label">Rooms</span>
+                <input type="range" min="0" max="1.5" step="0.05" value={nodeForce} onChange={(e) => { setNodeForce(Number(e.target.value)); nudgeLayout(); }} title="How strongly rooms push apart and pull toward their links" />
+                <span className="more-val mono">{Math.round(nodeForce * 100)}%</span>
+              </div>
+              <div className="more-row">
+                <span className="more-label">Buildings</span>
+                <input type="range" min="0" max="1.5" step="0.05" value={buildingForce} onChange={(e) => { setBuildingForce(Number(e.target.value)); nudgeLayout(); }} title="How strongly each building holds its shape and original position (0 = free to drift)" />
+                <span className="more-val mono">{Math.round(buildingForce * 100)}%</span>
+              </div>
+              <div className="more-divider" />
+              <div className="more-row">
+                <span className="more-label">Style</span>
+                <select className="ctrl-select" value={bubbleStyle} onChange={(e) => setBubbleStyle(e.target.value)}>
+                  <option value="solid">Solid (flat)</option>
+                  <option value="outline">Outline</option>
+                  <option value="sketch">Sketch</option>
+                </select>
+              </div>
+              <div className="more-row">
+                <button className="btn small" onClick={() => convertAll(leaves.every((s) => shapeOf(s) === 'box') ? 'bubble' : 'box')}>
+                  {leaves.every((s) => shapeOf(s) === 'box') ? '○ All bubbles' : '▢ All boxes'}
+                </button>
+                <button className={`btn small ${hulls ? 'on' : ''}`} onClick={toggleHulls}>⬡ Category hulls</button>
+              </div>
+              {(hulls || hasBuildings) && (
+                <div className="more-row">
+                  <span className="more-label">Hull pad</span>
+                  <input type="range" min="6" max="80" step="2" value={hullPad} onChange={(e) => setHullSize(Number(e.target.value))} />
+                </div>
+              )}
+              <div className="more-row">
+                <button className={`btn small ${showMatrix ? 'on' : ''}`} onClick={() => setShowMatrix(true)}>▦ Adjacency matrix</button>
+                <button className={`btn small ${split ? 'on' : ''}`} onClick={toggleSplit}>◫ Side panel</button>
+              </div>
+              {hasLevels && (floorMode === 'offset' || floorMode === '3d') && (
+                <div className="more-row">
+                  <span className="more-label">Floor gap</span>
+                  <input type="range" min="0.2" max="1.3" step="0.05" value={floorGap} onChange={(e) => setFloorGap(Number(e.target.value))} />
+                </div>
+              )}
+              {is3D && (
+                <div className="more-row">
+                  <span className="more-label">3D camera</span>
+                  <select className="ctrl-select" value={cam3d} onChange={(e) => setCam3d(e.target.value)}>
+                    <option value="persp">Perspective</option>
+                    <option value="iso">Isometric</option>
+                    <option value="ortho">Orthographic</option>
+                    <option value="top">Top / plan</option>
+                    <option value="front">Front</option>
+                    <option value="side">Side</option>
+                  </select>
+                </div>
+              )}
+              {stackMode && (
+                <div className="more-row">
+                  <span className="more-label">Camera</span>
+                  <select className="ctrl-select" value={camKey} onChange={(e) => setCamKey(e.target.value)}>
+                    {Object.entries(CAMERAS).map(([k, c]) => <option key={k} value={k}>{c.label}</option>)}
+                  </select>
+                </div>
+              )}
+              {(stackMode || is3D) && imgLayers.length > 0 && (
+                <div className="more-row">
+                  <button className={`btn small ${stackImages ? 'on' : ''}`} onClick={() => setStackImages((v) => !v)}>⊞ Site image on floors</button>
+                </div>
+              )}
+            </div>
+          )}
+          <div className="tool-dock">
+            <button
+              className={`tool-btn ${tool === 'select' ? 'active' : ''}`}
+              onClick={() => { setTool('select'); setLinkFrom(null); }}
+              title="Select & move — V"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 3l7 17 2.5-7L20 11z" /></svg>
+              <span className="tool-key">V</span>
+            </button>
+            <button
+              className={`tool-btn ${tool === 'link' ? 'active' : ''}`}
+              onClick={() => { setTool('link'); setSelected(null); setSelLink(null); }}
+              title="Link adjacency — L"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="6" cy="17" r="3" /><circle cx="18" cy="7" r="3" /><line x1="8" y1="15" x2="16" y2="9" strokeLinecap="round" /></svg>
+              <span className="tool-key">L</span>
+            </button>
+            <div className="tool-dock-sep" />
+            <button
+              className={`tool-btn ${autoRunning ? 'active' : ''}`}
+              onClick={runAutoLayout}
+              title="Auto-layout — run a force pass (A)"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="6" cy="6" r="2.5" /><circle cx="18" cy="6" r="2.5" /><circle cx="12" cy="17" r="2.5" /><line x1="7.5" y1="7.8" x2="10.5" y2="15" /><line x1="16.5" y1="7.8" x2="13.5" y2="15" /></svg>
+              <span className="tool-key">A</span>
+            </button>
+            <button
+              className="tool-btn"
+              onClick={() => { setView({ x: 0, y: 0 }); commitView({ x: 0, y: 0 }); }}
+              title="Recentre view"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3" /><line x1="12" y1="2" x2="12" y2="6" strokeLinecap="round" /><line x1="12" y1="18" x2="12" y2="22" strokeLinecap="round" /><line x1="2" y1="12" x2="6" y2="12" strokeLinecap="round" /><line x1="18" y1="12" x2="22" y2="12" strokeLinecap="round" /></svg>
+            </button>
+          </div>
           {is3D && scene3d && (
             <div className="stage-3d">
               <Stacked3D scene={scene3d} gap={floorGap} showImage={stackImages} camMode={cam3d} />
@@ -1953,7 +2230,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
           <svg
             ref={svgRef}
             viewBox={`${originX} ${originY} ${vb.w} ${vb.h}`}
-            className={`bubble-svg ${scalePoints ? 'scaling' : ''} ${panMode || moveLayer || rotateLayer ? 'panning' : ''}`}
+            className={`bubble-svg ${scalePoints ? 'scaling' : ''} ${panActive || moveLayer || rotateLayer ? 'panning' : ''} ${tool === 'link' ? 'linking' : ''}`}
             onPointerDown={onSvgPointerDown}
             onPointerMove={onMove}
             onPointerUp={onUp}
@@ -2013,6 +2290,52 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
               if (!stack || !stack.groundTransform) return imgs;
               if (!stackImages) return null;
               return <g transform={stack.groundTransform}>{imgs}</g>;
+            })()}
+
+            {/* Topographic site contours — concentric rings that echo each
+                building's convex-hull SHAPE (not a generic ellipse), replacing
+                the grid (flat site-plan field). Grouped by clusterKey (building),
+                so each building gets ONE field that matches its hull, independent
+                of the bubble colour mode. */}
+            {!stackMode && (() => {
+              // Padded sample points per building (same construction the hulls use),
+              // so the contour outline matches the building hull exactly.
+              const byG = new Map();
+              for (const o of instances) {
+                if (!levelVisible(o.s)) continue;
+                const n = nodes.get(o.key);
+                if (!n) continue;
+                const g = clusterKey(o.s);
+                if (!byG.has(g)) byG.set(g, []);
+                const r = radiusOf(o.s) + hullPad;
+                for (let a = 0; a < Math.PI * 2; a += Math.PI / 4)
+                  byG.get(g).push({ x: n.x + Math.cos(a) * r, y: n.y + Math.sin(a) * r });
+              }
+              const rings = [];
+              for (const [g, pts] of byG) {
+                const hull = convexHull(pts);
+                if (hull.length < 3) continue;
+                const cx = hull.reduce((s, p) => s + p.x, 0) / hull.length;
+                const cy = hull.reduce((s, p) => s + p.y, 0) / hull.length;
+                // Concentric contours = the hull outline scaled about its centroid,
+                // from just inside the hull outward into the surrounding "terrain".
+                for (let k = 1; k <= 6; k++) {
+                  const f = k / 6;
+                  const scale = 0.4 + f * 1.2; // 0.6 (inner) … 1.6 (outer)
+                  const scaled = hull.map((p) => ({ x: cx + (p.x - cx) * scale, y: cy + (p.y - cy) * scale }));
+                  const d = smoothHullPath(scaled);
+                  if (!d) continue;
+                  rings.push(
+                    <path
+                      key={`contour:${g}:${k}`}
+                      d={d}
+                      className="site-contour"
+                      style={{ opacity: 0.9 - f * 0.6 }}
+                    />
+                  );
+                }
+              }
+              return rings;
             })()}
 
             {(() => {
@@ -2158,6 +2481,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                 if (!levelVisible(sa) || !levelVisible(sb)) return null;
                 const pair = closestPair(sa, sb);
                 if (!pair) return null;
+                const isSelLink = selLink && ((selLink.space_a === l.space_a && selLink.space_b === l.space_b) || (selLink.space_a === l.space_b && selLink.space_b === l.space_a));
+                const connected = selected != null && (l.space_a === selected || l.space_b === selected);
                 return (
                   <g key={l.id} className="link-hit" onClick={() => onLinkClick(l)}>
                     <line x1={pair.a.x} y1={pair.a.y} x2={pair.b.x} y2={pair.b.y} className="link-hitarea" />
@@ -2166,7 +2491,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                       y1={pair.a.y}
                       x2={pair.b.x}
                       y2={pair.b.y}
-                      className={`link ${l.strength}${highlightGaps && unmetLinkIds.has(l.id) ? ' unmet' : ''}`}
+                      className={`link ${l.strength}${isSelLink || connected ? ' selected' : ''}${highlightGaps && unmetLinkIds.has(l.id) ? ' unmet' : ''}`}
                     />
                   </g>
                 );
@@ -2197,8 +2522,14 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
               const sw = isSel ? 3 : pinned ? 2.5 : 1.5;
               const outline = bubbleStyle === 'outline';
               const sketch = bubbleStyle === 'sketch';
-              const fillOpEff = outline ? 0 : fillOp;
+              // Flat "site-plan" matte: solid fill + poché keyline (a darkened tone
+              // of the same hue), white keyline when selected, dark ink for labels.
+              const flat = !outline && !sketch;
+              const baseColor = colorOf(s);
+              const fillOpEff = outline ? 0 : flat ? (isSel ? 1 : 0.95) : fillOp;
               const swEff = outline ? sw + 1 : sw;
+              const strokeColor = flat ? (isSel ? '#ffffff' : darkHex(baseColor, 0.4)) : baseColor;
+              const inkColor = flat ? darkHex(baseColor, 0.62) : undefined;
               const shapeFilter = sketch ? 'url(#sketchy)' : undefined;
               return (
                 <g
@@ -2217,7 +2548,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                   </title>
                   {pinned &&
                     (poly ? (
-                      <rect x={pb.minX - 5} y={pb.minY - 5} width={pb.maxX - pb.minX + 10} height={pb.maxY - pb.minY + 10} rx="3" className="pin-ring" />
+                      <path d={polyRingPath(poly, 6)} className="pin-ring" />
                     ) : box ? (
                       <rect x={-side / 2 - 5} y={-side / 2 - 5} width={side + 10} height={side + 10} rx="3" className="pin-ring" />
                     ) : (
@@ -2225,23 +2556,24 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                     ))}
                   {inMulti &&
                     (poly ? (
-                      <rect x={pb.minX - 7} y={pb.minY - 7} width={pb.maxX - pb.minX + 14} height={pb.maxY - pb.minY + 14} rx="4" className="multi-ring" />
+                      <path d={polyRingPath(poly, 9)} className="multi-ring" />
                     ) : box ? (
                       <rect x={-side / 2 - 7} y={-side / 2 - 7} width={side + 14} height={side + 14} rx="4" className="multi-ring" />
                     ) : (
                       <circle r={r + 7} className="multi-ring" />
                     ))}
                   {poly ? (
-                    <path className={`poly-shape ${editing ? 'editing' : ''}`} d={polygonPath(poly)} fill={colorOf(s)} fillOpacity={fillOpEff} stroke={colorOf(s)} strokeWidth={swEff} strokeLinejoin="round" filter={shapeFilter} />
+                    <path className={`poly-shape ${editing ? 'editing' : ''}`} d={polygonPath(poly)} fill={baseColor} fillOpacity={fillOpEff} stroke={strokeColor} strokeWidth={swEff} strokeLinejoin="round" filter={shapeFilter} />
                   ) : box ? (
-                    <rect x={-side / 2} y={-side / 2} width={side} height={side} rx={Math.min(4, side / 8)} fill={colorOf(s)} fillOpacity={fillOpEff} stroke={colorOf(s)} strokeWidth={swEff} filter={shapeFilter} />
+                    <rect x={-side / 2} y={-side / 2} width={side} height={side} rx={flat ? 0 : Math.min(4, side / 8)} fill={baseColor} fillOpacity={fillOpEff} stroke={strokeColor} strokeWidth={swEff} filter={shapeFilter} />
                   ) : (
-                    <circle r={r} fill={colorOf(s)} fillOpacity={fillOpEff} stroke={colorOf(s)} strokeWidth={swEff} filter={shapeFilter} />
+                    <circle r={r} fill={baseColor} fillOpacity={fillOpEff} stroke={strokeColor} strokeWidth={swEff} filter={shapeFilter} />
                   )}
                   <BubbleLabel
                     label={`${s.name}${count > 1 ? ` ${i + 1}` : ''}`}
                     r={r}
                     areaStr={fmtArea(ea(s), units)}
+                    ink={inkColor}
                   />
                   {editing && polyHandles && (
                     <g className="poly-edit">
@@ -2321,99 +2653,118 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
 
           <NorthRose deg={project.north_deg || 0} onSet={setNorth} />
 
+          {/* One contextual action bar (bottom-centre): link form, multi form,
+              or single-room form depending on the current selection. */}
           {(() => {
-            const sel = selected != null ? byId.get(selected) : null;
-            const selCount = sel ? Math.max(1, sel.count || 1) : 1;
-            const selInstPinned = sel ? !!instPin(sel, selectedInst) : false;
-            const allPinned = sel ? Array.from({ length: selCount }, (_, i) => i).every((i) => instPin(sel, i)) : false;
-            const selBox = sel ? shapeOf(sel) === 'box' : false;
-            const selPoly = sel ? shapeOf(sel) === 'poly' : false;
-            const editingSel = sel && editShape === sel.id;
-            return (
-              <div className="stage-fabs">
-                <button
-                  className={`fab ${selInstPinned ? 'active' : ''}`}
-                  disabled={!sel}
-                  onClick={() => sel && savePin(sel, selectedInst, !selInstPinned)}
-                  title={sel ? `${selInstPinned ? 'Unpin' : 'Pin'} ${sel.name}${selCount > 1 ? ` ${selectedInst + 1}` : ''} (or press P over a bubble)` : 'Tap a bubble first, then pin it'}
-                >
-                  📌<span className="fab-label">{selInstPinned ? 'Unpin' : 'Pin'}</span>
-                </button>
-                {sel && selCount > 1 && (
-                  <button
-                    className={`fab ${allPinned ? 'active' : ''}`}
-                    onClick={() => savePinAll(sel, !allPinned)}
-                    title={`${allPinned ? 'Unpin' : 'Pin'} all ${selCount} ${sel.name} rooms (Shift+P)`}
-                  >
-                    📌<span className="fab-label">{allPinned ? 'Unpin all' : 'Pin all'}</span>
+            // Link selected → link form.
+            if (selLink) {
+              const a = byId.get(selLink.space_a);
+              const b = byId.get(selLink.space_b);
+              const cur = findPair(selLink.space_a, selLink.space_b)?.strength ?? null;
+              return (
+                <div className="action-bar" onClick={(e) => e.stopPropagation()}>
+                  <span className="action-glyph">
+                    <svg width="15" height="15" viewBox="0 0 24 24" style={{ color: 'var(--accent2)' }}><circle cx="6" cy="17" r="3" fill="currentColor" /><circle cx="18" cy="7" r="3" fill="currentColor" /><line x1="8" y1="15" x2="16" y2="9" stroke="currentColor" strokeWidth="2" /></svg>
+                  </span>
+                  <span className="action-name">{a?.name} — {b?.name}</span>
+                  <span className="seg seg-sm">
+                    <button className={cur === 'desired' ? 'active' : ''} onClick={() => setLinkStrength(selLink.space_a, selLink.space_b, 'desired')}>Desired</button>
+                    <button className={cur === 'required' ? 'active' : ''} onClick={() => setLinkStrength(selLink.space_a, selLink.space_b, 'required')}>Required</button>
+                  </span>
+                  <button className="action-btn danger" onClick={removeSelLink} title="Remove link">Remove</button>
+                </div>
+              );
+            }
+            // Link mode (no link selected) → choose the type new links get.
+            if (tool === 'link') {
+              return (
+                <div className="action-bar" onClick={(e) => e.stopPropagation()}>
+                  <span className="action-glyph">
+                    <svg width="15" height="15" viewBox="0 0 24 24" style={{ color: 'var(--accent2)' }}><circle cx="6" cy="17" r="3" fill="currentColor" /><circle cx="18" cy="7" r="3" fill="currentColor" /><line x1="8" y1="15" x2="16" y2="9" stroke="currentColor" strokeWidth="2" /></svg>
+                  </span>
+                  <span className="action-name">{linkFrom != null ? 'Pick the second room' : 'New link'}</span>
+                  <span className="seg seg-sm">
+                    <button className={linkKind === 'desired' ? 'active' : ''} onClick={() => setLinkKind('desired')}>Desired</button>
+                    <button className={linkKind === 'required' ? 'active' : ''} onClick={() => setLinkKind('required')}>Required</button>
+                  </span>
+                </div>
+              );
+            }
+            // Multiple rooms → batch form.
+            if (multi.size > 1) {
+              return (
+                <div className="action-bar" onClick={(e) => e.stopPropagation()}>
+                  <span className="action-count">{multi.size}</span>
+                  <span className="action-name">rooms selected</span>
+                  <button className="action-btn" onClick={() => multiPin(true)} title="Pin all — P">📌 Pin all</button>
+                  <button className="action-btn" onClick={() => multiShape('box')} title="Box all — B">▢ Box all</button>
+                  <button className="action-btn" onClick={multiCustomShape} title="Freeform shape all — S">✎ Shape all</button>
+                  <input
+                    className="action-cat"
+                    list="diagram-categories"
+                    placeholder="Category…"
+                    value={catDraft}
+                    onChange={(e) => setCatDraft(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') multiSetCategory(catDraft); }}
+                  />
+                  <datalist id="diagram-categories">
+                    {departments.map((d) => <option key={d} value={d} />)}
+                  </datalist>
+                  <button className="action-btn icon danger" onClick={multiDelete} title="Remove all (Del)" aria-label="Remove all">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6h18" /><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6M14 11v6" /></svg>
                   </button>
-                )}
-                <button
-                  className={`fab ${selBox ? 'active' : ''}`}
-                  disabled={!sel}
-                  onClick={() => sel && toggleShape(sel)}
-                  title={sel ? `Switch ${sel.name} to a ${selBox ? 'bubble' : 'box'} (or press B over a bubble)` : 'Tap a bubble first, then change its shape'}
-                >
-                  {selBox ? '○' : '▢'}<span className="fab-label">{selBox ? 'Bubble' : 'Box'}</span>
+                </div>
+              );
+            }
+            // Single room → room form.
+            const sel = selected != null ? byId.get(selected) : null;
+            if (!sel) return null;
+            const selCount = Math.max(1, sel.count || 1);
+            const selInstPinned = !!instPin(sel, selectedInst);
+            const selBox = shapeOf(sel) === 'box';
+            const editingSel = editShape === sel.id;
+            return (
+              <div className="action-bar" onClick={(e) => e.stopPropagation()}>
+                <span className="swatch" style={{ background: colorOf(sel) }} />
+                <span className="action-name">{sel.name}{selCount > 1 ? ` ${selectedInst + 1}` : ''}</span>
+                <span className="action-area mono">{fmtArea(ea(sel), units)}</span>
+                <button className={`action-btn ${selInstPinned ? 'active' : ''}`} onClick={() => savePin(sel, selectedInst, !selInstPinned)} title="Pin — P">📌 {selInstPinned ? 'Unpin' : 'Pin'}</button>
+                <button className={`action-btn ${selBox ? 'active' : ''}`} onClick={() => toggleShape(sel)} title="Box — B">{selBox ? '○ Bubble' : '▢ Box'}</button>
+                <button className={`action-btn ${editingSel ? 'active' : ''}`} onClick={() => editCustomShape(sel)} title="Freeform shape — S">✎ {editingSel ? 'Done' : 'Shape'}</button>
+                <input
+                  className="action-cat"
+                  list="diagram-categories"
+                  placeholder="Category"
+                  defaultValue={sel.department || ''}
+                  key={sel.id + ':' + (sel.department || '')}
+                  onKeyDown={(e) => { if (e.key === 'Enter') { const v = e.target.value.trim(); if (v && v !== sel.department) commitSpace(sel, { department: v }, 'set category'); } }}
+                  title="Reassign category (Enter to apply)"
+                />
+                <datalist id="diagram-categories">
+                  {departments.map((d) => <option key={d} value={d} />)}
+                </datalist>
+                <button className="action-btn icon danger" onClick={() => removeSpace(sel)} title="Remove (Del)" aria-label="Remove">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6h18" /><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6M14 11v6" /></svg>
                 </button>
-                <button
-                  className={`fab ${editingSel ? 'active' : selPoly ? 'on' : ''}`}
-                  disabled={!sel}
-                  onClick={() => sel && editCustomShape(sel)}
-                  title={sel ? (editingSel ? 'Finish editing the custom shape' : `Give ${sel.name} a custom shape and edit its corners (area stays locked to the brief)`) : 'Tap a bubble first, then shape it'}
-                >
-                  ✎<span className="fab-label">{editingSel ? 'Done' : 'Shape'}</span>
-                </button>
-                <div className="fab-hint">{editingSel ? 'drag corners · click + to add · double-click a corner to remove' : sel ? sel.name + (selCount > 1 ? ` ${selectedInst + 1}` : '') : 'tap a bubble'}</div>
               </div>
             );
           })()}
 
-          {multi.size > 0 && (
-            <div className="multi-bar">
-              <span className="multi-count">{multi.size} selected</span>
-              <button className="btn small" onClick={() => multiPin(true)} title="Pin every selected bubble where it sits">📌 Pin</button>
-              <button className="btn small" onClick={() => multiPin(false)} title="Unpin the selected bubbles">Unpin</button>
-              <button className="btn small" onClick={() => multiShape('box')} title="Make the selected spaces boxes">▢ Box</button>
-              <button className="btn small" onClick={() => multiShape('bubble')} title="Make the selected spaces bubbles">○ Bubble</button>
-              <button className="btn small" onClick={multiCustomShape} title="Give the selected spaces a custom polygon shape">✎ Custom</button>
-              <span className="multi-sep" />
-              <input
-                className="multi-cat"
-                list="diagram-categories"
-                placeholder="Category…"
-                value={catDraft}
-                onChange={(e) => setCatDraft(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') multiSetCategory(catDraft); }}
-                title="Assign the selected bubbles to a category (type a new name to create it)"
-              />
-              <datalist id="diagram-categories">
-                {departments.map((d) => (
-                  <option key={d} value={d} />
-                ))}
-              </datalist>
-              <button className="btn small" onClick={() => multiSetCategory(catDraft)} disabled={!catDraft.trim()} title="Set the category of the selected bubbles">
-                Set
-              </button>
-              <span className="multi-sep" />
-              <button className="btn small ghost danger" onClick={multiDelete} title="Delete the selected spaces from the brief">✕ Delete</button>
-              <button className="btn small ghost" onClick={() => setMulti(new Set())} title="Clear the selection (Esc)">Clear</button>
+          {/* Contextual hint — hidden while an action bar is showing. */}
+          {!selLink && multi.size === 0 && selected == null && tool !== 'link' && (
+            <div className="stage-hint">
+              {rotateLayer
+                ? 'Rotating image — drag the canvas to turn it. Toggle Rotate off when done.'
+                : moveLayer
+                ? 'Moving image layer — drag the canvas to reposition it.'
+                : panActive
+                ? 'Pan — drag the canvas. Release Space (or toggle Pan off) to edit.'
+                : tool === 'link'
+                ? (linkFrom != null ? 'Link mode — click a second room to connect them.' : 'Link mode (L) — click two rooms to link · click a link to edit it')
+                : 'Click a room to select · drag to move · Shift-click for several · hold Space to pan · press ? for shortcuts' +
+                  (effScale ? ` · ${scaleLabelFor(effScale)}` : '')}
             </div>
           )}
-
-          <div className="stage-hint">
-            {rotateLayer
-              ? 'Rotating image — drag the canvas to turn it. Toggle Rotate off when done.'
-              : moveLayer
-              ? 'Moving image layer — drag the canvas to reposition it.'
-              : panMode
-              ? 'Pan mode — drag the canvas. Toggle Pan off to edit bubbles.'
-              : multi.size > 0
-              ? `${multi.size} selected — drag any selected bubble to move them together · set category / pin / box above · Esc to clear`
-              : 'Drag to move · hover + P to pin · hover + B for box · click two bubbles to link · drag empty canvas to multi-select' +
-                (effScale ? ` · ${scaleLabelFor(effScale)}` : '') +
-                (hasImage ? '' : ' · add a site image under Layers')}
-          </div>
         </div>
       </div>
 
@@ -2423,7 +2774,10 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
           <div className="rail-resizer" onPointerDown={startRailResize} title="Drag to resize the panel" />
           <section className="rail-section areas">
             <div className="rail-head">
-              <h3>Areas</h3>
+              <div className="sec-head" style={{ margin: 0 }}>
+                <span className="sec-tag">A·01</span>
+                <span className="sec-title">Areas</span>
+              </div>
               {hasBuildings && (
                 <div className="seg small">
                   <button className={`seg-btn ${areaMode === 'category' ? 'active' : ''}`} onClick={() => setAreaMode('category')}>Category</button>
@@ -2475,27 +2829,37 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                     );
                   })}
             </div>
-            <div className="split-foot">
-              <span>Net total</span>
-              <strong>{fmtArea(leaves.reduce((t, s) => t + (s.count || 1) * ea(s), 0), units)}</strong>
+            <div className="rail-medallion">
+              <svg className="medallion-rings" width="120" height="120" viewBox="0 0 120 120" aria-hidden="true">
+                {[16, 30, 44, 58].map((r) => (
+                  <circle key={r} cx="60" cy="60" r={r} fill="none" stroke="var(--contour)" strokeWidth="1" />
+                ))}
+              </svg>
+              <div className="rail-medallion-label mono">Σ Net total</div>
+              <div className="rail-medallion-value">
+                {Math.round(leaves.reduce((t, s) => t + (s.count || 1) * ea(s), 0)).toLocaleString()} <span className="unit">{units === 'ft2' ? 'ft²' : 'm²'}</span>
+              </div>
             </div>
           </section>
 
           <section className="rail-section rel">
             <div className="rail-head">
-              <h3>Relationships</h3>
-              <span className="muted">
-                {selectedSpace ? `${relList.length} · ${selectedSpace.name}` : adjacencies.length}
+              <div className="sec-head" style={{ margin: 0 }}>
+                <span className="sec-tag t-accent2">A·02</span>
+                <span className="sec-title">Adjacency</span>
+              </div>
+              <span className="muted mono" style={{ fontSize: 11 }}>
+                {selectedSpace ? `${relList.length} · ${selectedSpace.name}` : `${reqCount} req · ${desCount} des`}
               </span>
             </div>
             {selectedSpace && (
               <div className="rel-filter">
                 Showing links for <strong>{selectedSpace.name}</strong>
-                <button className="btn small ghost" onClick={() => setSelected(null)}>show all</button>
+                <button className="btn small ghost" onClick={clearPick}>show all</button>
               </div>
             )}
             {relList.length === 0 ? (
-              <div className="empty small">{selectedSpace ? 'No links for this space yet — click another bubble to connect them.' : 'Click two bubbles to link them.'}</div>
+              <div className="empty small">{selectedSpace ? 'No links for this space yet — use the Link tool (L) to connect it.' : 'Use the Link tool (L), then click two rooms to connect them.'}</div>
             ) : (
               <table className="rail-rel">
                 <tbody>
@@ -2505,6 +2869,12 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                     if (!a || !b) return null;
                     return (
                       <tr key={l.id}>
+                        <td className="rel-glyph" style={{ width: 26 }}>
+                          <svg width="22" height="10" viewBox="0 0 22 10" aria-hidden="true">
+                            <line x1="2" y1="5" x2="20" y2="5" stroke="var(--text)" strokeWidth={l.strength === 'required' ? 1.6 : 1.2} strokeDasharray={l.strength === 'required' ? undefined : '1 3'} strokeLinecap="round" />
+                            {l.strength === 'required' && <><circle cx="2" cy="5" r="1.8" fill="var(--text)" /><circle cx="20" cy="5" r="1.8" fill="var(--text)" /></>}
+                          </svg>
+                        </td>
                         <td className="rel-pair">
                           <b>{a.name}</b> ↔ <b>{b.name}</b>
                         </td>

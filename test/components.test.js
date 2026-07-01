@@ -12,6 +12,7 @@ globalThis.React = React;
 import Dashboard from '../src/components/Dashboard.jsx';
 import DriftChart from '../src/components/DriftChart.jsx';
 import ProjectList from '../src/components/ProjectList.jsx';
+import SnapshotsTab from '../src/components/SnapshotsTab.jsx';
 
 // These are prop-driven, side-effect-free render functions, so static SSR
 // markup is enough to assert what the user sees. useEffect (e.g. ProjectList's
@@ -35,45 +36,51 @@ test('Dashboard prompts to define the brief when there are no spaces', () => {
   assert.match(html, /Define the brief first/);
 });
 
-test('Dashboard shows the brief net target and designed net stats', () => {
+test('Dashboard shows the brief net target and designed net KPIs', () => {
   const html = render(Dashboard, { project, spaces, snapshots: [snapB] });
   assert.match(html, /Brief net target/);
-  assert.match(html, /150\s*m²/); // 100 + 50
+  assert.match(html, /150/); // 100 + 50, in the KPI value
   assert.match(html, /Designed net/);
-  assert.match(html, /180\s*m²/); // 130 + 50
+  assert.match(html, /180/); // 130 + 50
 });
 
-test('Dashboard flags variance over tolerance as bad', () => {
-  // 180 vs 150 = +20% > 5% tolerance → the variance stat carries the .bad class.
+test('Dashboard flags variance over tolerance with the bad tone', () => {
+  // 180 vs 150 = +20% > 5% tolerance → variance KPI uses the --bad color.
   const html = render(Dashboard, { project, spaces, snapshots: [snapB] });
-  assert.match(html, /stat bad/);
+  assert.match(html, /var\(--bad\)/);
   assert.match(html, /\+20\.0%/);
 });
 
-test('Dashboard lists spaces outside tolerance with a status badge', () => {
+test('Dashboard lists spaces outside tolerance in the flagged schedule', () => {
   const html = render(Dashboard, { project, spaces, snapshots: [snapB] });
   assert.match(html, /Flagged spaces/);
-  assert.match(html, /badge over/); // Lobby 130 vs 100
+  assert.match(html, /dl-row/); // dotted-leader schedule row
   assert.match(html, /Lobby/);
 });
 
-test('Dashboard renders category and building rollups when buildings exist', () => {
+test('Dashboard renders the by-category rollup', () => {
   const html = render(Dashboard, { project, spaces, snapshots: [snapB] });
   assert.match(html, /By category/);
-  assert.match(html, /By building/);
-  assert.match(html, /Main/); // building name as a rollup key
-});
-
-test('Dashboard shows a milestone comparison once there are two snapshots', () => {
-  const html = render(Dashboard, { project, spaces, snapshots: [snapA, snapB] });
-  assert.match(html, /Milestone comparison/);
-  assert.match(html, /Net change/);
-  assert.match(html, /\+30\s*m²/); // Lobby grew 100 → 130
-});
-
-test('Dashboard omits the comparison with a single snapshot', () => {
-  const html = render(Dashboard, { project, spaces, snapshots: [snapB] });
+  assert.match(html, /Public/); // category as a rollup key
+  // Building rollup and milestone comparison moved off the Dashboard.
+  assert.doesNotMatch(html, /By building/);
   assert.doesNotMatch(html, /Milestone comparison/);
+});
+
+// ---- Milestones (SnapshotsTab) -----------------------------------------
+
+test('Milestones renders a card per recorded snapshot', () => {
+  const html = render(SnapshotsTab, { project, spaces, snapshots: [snapA, snapB], onChanged() {} });
+  assert.match(html, /Recorded milestones/);
+  assert.match(html, /Concept/);
+  assert.match(html, /SD/);
+});
+
+test('Milestones shows a change schedule between the two latest snapshots', () => {
+  const html = render(SnapshotsTab, { project, spaces, snapshots: [snapA, snapB], onChanged() {} });
+  assert.match(html, /Change ·/);
+  assert.match(html, /Net change/);
+  assert.match(html, /Lobby/); // grew 100 → 130
 });
 
 // ---- DriftChart ---------------------------------------------------------

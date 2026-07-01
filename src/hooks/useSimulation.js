@@ -27,7 +27,8 @@ import { W, H } from './useViewport.js';
  * @param {Array}         params.leaves      - Leaf space objects (for sibling springs).
  * @param {Array}         params.adjacencies - Declared adjacency links.
  * @param {Map}           params.byId        - Map<spaceId, space> for adjacency lookup.
- * @param {boolean}       params.simEnabled  - Master on/off switch.
+ * @param {React.MutableRefObject} params.autoRunRef - True while a momentary auto-layout pass is active.
+ * @param {function}      params.setAutoRunning - Clears the button's active state when the pass settles.
  * @param {number|null}   params.effScale    - Metres per diagram unit; affects collision gap.
  * @param {React.MutableRefObject} params.nodesRef   - The node-position map.
  * @param {React.MutableRefObject} params.alphaRef   - Simulation cooling parameter (0..1).
@@ -42,7 +43,8 @@ export function useSimulation({
   leaves,
   adjacencies,
   byId,
-  simEnabled,
+  autoRunRef,
+  setAutoRunning,
   effScale,
   nodesRef,
   alphaRef,
@@ -50,16 +52,30 @@ export function useSimulation({
   radiusOf,
   instPin,
   groupKey,
+  clusterKey,
+  nodeForce = 1,
+  buildingForce = 0.5,
   setTick,
 }) {
-  // Wrap the three render-frequency callbacks in refs so the RAF loop always
-  // reads fresh values without those functions being in the effect dep array.
+  // Wrap the render-frequency callbacks in refs so the RAF loop always reads
+  // fresh values without those functions being in the effect dep array.
   const radiusOfRef = useRef(radiusOf);
   radiusOfRef.current = radiusOf;
   const instPinRef = useRef(instPin);
   instPinRef.current = instPin;
   const groupKeyRef = useRef(groupKey);
   groupKeyRef.current = groupKey;
+  // Spatial clustering key (building) — drives the cohesion/home forces.
+  const clusterKeyRef = useRef(clusterKey || groupKey);
+  clusterKeyRef.current = clusterKey || groupKey;
+  // User-adjustable force strengths.
+  const nodeForceRef = useRef(nodeForce);
+  nodeForceRef.current = nodeForce;
+  const buildingForceRef = useRef(buildingForce);
+  buildingForceRef.current = buildingForce;
+  // Captured "home" centroid per cluster — buildings are gently restored toward
+  // it so they hold their position instead of drifting off-screen.
+  const clusterHomeRef = useRef(new Map());
 
   useEffect(() => {
     let raf;
@@ -93,22 +109,44 @@ export function useSimulation({
         .map((o) => ({ ...o, n: nodes.get(o.key), r: radiusOfRef.current(o.s) }))
         .filter((o) => o.n);
 
-      // 1. Centroid gravity + world gravity
+      // 1. Building forces (weak): keep each cluster cohesive and roughly in its
+      //    original position. Cohesion pulls rooms toward the cluster centroid;
+      //    a home-restoring term translates the whole cluster back toward the
+      //    position it first settled at, so buildings hold still while their
+      //    rooms are free to move. Both scale with the building-force slider.
+      const bf = buildingForceRef.current;
+      const nf = nodeForceRef.current;
       const cents = new Map();
       for (const o of arr) {
-        const c = cents.get(groupKeyRef.current(o.s)) || { x: 0, y: 0, n: 0 };
+        const key = clusterKeyRef.current(o.s);
+        const c = cents.get(key) || { x: 0, y: 0, n: 0 };
         c.x += o.n.x;
         c.y += o.n.y;
         c.n++;
-        cents.set(groupKeyRef.current(o.s), c);
+        cents.set(key, c);
       }
-      for (const o of arr) {
-        if (fixedInst(o)) continue;
-        const c = cents.get(groupKeyRef.current(o.s));
-        o.n.vx += (c.x / c.n - o.n.x) * 0.012 * alpha;
-        o.n.vy += (c.y / c.n - o.n.y) * 0.012 * alpha;
-        o.n.vx += (W / 2 - o.n.x) * 0.006 * alpha;
-        o.n.vy += (H / 2 - o.n.y) * 0.006 * alpha;
+      const homes = clusterHomeRef.current;
+      for (const key of [...homes.keys()]) if (!cents.has(key)) homes.delete(key);
+      for (const [key, c] of cents) {
+        const cx = c.x / c.n;
+        const cy = c.y / c.n;
+        if (!homes.has(key)) homes.set(key, { x: cx, y: cy }); // capture once
+      }
+      if (bf > 0) {
+        for (const o of arr) {
+          if (fixedInst(o)) continue;
+          const key = clusterKeyRef.current(o.s);
+          const c = cents.get(key);
+          const cx = c.x / c.n;
+          const cy = c.y / c.n;
+          const home = homes.get(key);
+          // Cohesion toward the cluster centroid (does not translate the cluster).
+          o.n.vx += (cx - o.n.x) * 0.006 * bf * alpha;
+          o.n.vy += (cy - o.n.y) * 0.006 * bf * alpha;
+          // Home restoring — move the cluster as a whole back toward its origin.
+          o.n.vx += (home.x - cx) * 0.03 * bf * alpha;
+          o.n.vy += (home.y - cy) * 0.03 * bf * alpha;
+        }
       }
 
       // 2. Sibling springs (instances of the same space)
@@ -124,7 +162,7 @@ export function useSimulation({
           const dx = b.x - a.x;
           const dy = b.y - a.y;
           const d = Math.hypot(dx, dy) || 0.01;
-          const f = ((d - rest) / d) * 0.04 * alpha;
+          const f = ((d - rest) / d) * 0.04 * nf * alpha;
           if (!held(`${s.id}:${i}`) && !instPinRef.current(s, i)) ((a.vx += dx * f), (a.vy += dy * f));
           if (!held(`${s.id}:${i + 1}`) && !instPinRef.current(s, i + 1)) ((b.vx -= dx * f), (b.vy -= dy * f));
         }
@@ -137,8 +175,8 @@ export function useSimulation({
         if (!sa || !sb) continue;
         const pair = closestPair(sa, sb);
         if (!pair) continue;
-        const rest = radiusOfRef.current(sa) + radiusOfRef.current(sb) + (l.strength === 'required' ? 14 : 70);
-        const k = l.strength === 'required' ? 0.05 : 0.018;
+        const rest = radiusOfRef.current(sa) + radiusOfRef.current(sb) + (l.strength === 'required' ? 20 : 90);
+        const k = (l.strength === 'required' ? 0.05 : 0.016) * nf;
         const dx = pair.b.x - pair.a.x;
         const dy = pair.b.y - pair.a.y;
         const d = Math.hypot(dx, dy) || 0.01;
@@ -158,7 +196,7 @@ export function useSimulation({
           let dy = b.n.y - a.n.y;
           let d = Math.hypot(dx, dy);
           if (d === 0) ((dx = Math.random() - 0.5), (dy = Math.random() - 0.5), (d = Math.hypot(dx, dy)));
-          const minD = a.r + b.r + (effScale ? 4 : 12);
+          const minD = a.r + b.r + (effScale ? 14 : 20);
           const aF = fixedInst(a);
           const bF = fixedInst(b);
           if (aF && bF) continue;
@@ -166,8 +204,9 @@ export function useSimulation({
             const push = ((minD - d) / d) * 0.45;
             if (!aF) ((a.n.x -= dx * push * (bF ? 2 : 1)), (a.n.y -= dy * push * (bF ? 2 : 1)));
             if (!bF) ((b.n.x += dx * push * (aF ? 2 : 1)), (b.n.y += dy * push * (aF ? 2 : 1)));
-          } else if (d < minD + 60) {
-            const f = (800 * alpha) / (d * d);
+          } else if (d < minD + 110) {
+            // Medium-range charge — spreads rooms within a cluster for breathing room.
+            const f = (1700 * nf * alpha) / (d * d);
             if (!aF) ((a.n.vx -= (dx / d) * f), (a.n.vy -= (dy / d) * f));
             if (!bF) ((b.n.vx += (dx / d) * f), (b.n.vy += (dy / d) * f));
           }
@@ -197,15 +236,23 @@ export function useSimulation({
     };
 
     const step = () => {
-      if (simEnabled && (alphaRef.current > 0.012 || dragRef.current)) {
+      // Momentary auto-layout: simulate only while a pass is active and still
+      // warm. Dragging during a pass keeps reflowing neighbours (held nodes
+      // stay fixed). When it cools below the floor, end the pass and clear the
+      // button's active state.
+      if (autoRunRef.current && (alphaRef.current > 0.012 || dragRef.current)) {
         simulate(Math.max(alphaRef.current, dragRef.current ? 0.3 : 0));
         if (!dragRef.current) alphaRef.current *= 0.99;
         setTick((t) => t + 1);
+        if (alphaRef.current <= 0.012 && !dragRef.current) {
+          autoRunRef.current = false;
+          setAutoRunning(false);
+        }
       }
       raf = requestAnimationFrame(step);
     };
     raf = requestAnimationFrame(step);
     return () => cancelAnimationFrame(raf);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [instances, adjacencies, simEnabled, effScale]);
+  }, [instances, adjacencies, effScale]);
 }
