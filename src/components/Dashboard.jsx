@@ -4,11 +4,11 @@ import {
   spaceStatus,
   rollup as rollupBy,
   leafSpaces,
-  fmtArea,
   fmtPct,
 } from '../compute.js';
 import { categoryColor, statusColor } from '../viz.js';
 import DriftChart from './DriftChart.jsx';
+import { Empty } from './ui.jsx';
 
 const unitSuffix = (units) => (units === 'ft2' ? 'ft²' : 'm²');
 const fmtNum = (v) => (v == null || Number.isNaN(v) ? '—' : Math.round(v).toLocaleString());
@@ -35,7 +35,7 @@ function Kpi({ tag, label, value, unit, foot, tone }) {
 
 export default function Dashboard({ project, spaces, snapshots }) {
   if (spaces.length === 0) {
-    return <div className="empty">Define the brief first — add spaces in the Brief tab.</div>;
+    return <Empty>Define the brief first — add spaces in the Brief tab.</Empty>;
   }
 
   const leaves = leafSpaces(spaces);
@@ -135,7 +135,7 @@ export default function Dashboard({ project, spaces, snapshots }) {
               <span className="sec-meta right mono">{flagged.length} outside ±{Math.round(project.tolerance * 100)}%</span>
             </div>
             {flagged.length === 0 ? (
-              <div className="empty small">Every space is within tolerance.</div>
+              <Empty small>Every space is within tolerance.</Empty>
             ) : (
               flagged.map(({ space, target: t, actual: a, pct, status }) => (
                 <div className="dl-row" key={space.id}>

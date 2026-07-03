@@ -19,7 +19,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/YOUR_USERNAME/brieftrack.git"
+    "url": "https://github.com/timm052/space-planner.git"
   },
   "scripts": {
     "dev": "concurrently -n api,web -c blue,magenta \"npm:dev:api\" \"npm:dev:web\"",
@@ -28,9 +28,13 @@
     "build": "vite build",
     "preview": "vite preview",
     "start": "cross-env NODE_ENV=production node server/index.js",
-    "test": "node --import tsx --test"
+    "test": "node --import tsx --test",
+    "lint": "eslint ."
   },
   "dependencies": {
+    "@fontsource/inter": "^5.2.8",
+    "@fontsource/jetbrains-mono": "^5.2.8",
+    "@fontsource/space-grotesk": "^5.2.10",
     "@react-three/drei": "^9.122.0",
     "@react-three/fiber": "^8.18.0",
     "express": "^4.19.2",
@@ -40,9 +44,14 @@
     "three": "^0.160.1"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.4",
     "@vitejs/plugin-react": "^4.3.1",
     "concurrently": "^9.0.0",
     "cross-env": "^7.0.3",
+    "eslint": "^9.39.4",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.7.0",
     "tsx": "^4.22.4",
     "vite": "^5.4.0"
   }

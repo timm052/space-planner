@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api.js';
 import { fmtArea } from '../compute.js';
+import { Empty } from './ui.jsx';
 
 const STAGES = ['Concept', 'Schematic Design', 'Design Development', 'Construction Documents', 'On Site'];
 
@@ -49,7 +50,7 @@ export default function ProjectList({ projects, onOpen, onChanged }) {
     onChanged();
   }
 
-  if (projects == null) return <div className="empty">Loading projects…</div>;
+  if (projects == null) return <Empty>Loading projects…</Empty>;
 
   return (
     <div className="page">
@@ -108,7 +109,7 @@ export default function ProjectList({ projects, onOpen, onChanged }) {
       )}
 
       {projects.length === 0 ? (
-        <div className="empty">No projects yet — create one to start tracking your brief.</div>
+        <Empty>No projects yet — create one to start tracking your brief.</Empty>
       ) : (
         <div className="project-grid">
           {projects.map((p) => (

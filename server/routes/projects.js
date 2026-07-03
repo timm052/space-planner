@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { oneOf, clampNum } from '../validate.js';
 import { db } from '../db.js';
+import { publicProject, IMAGE_META_COLS } from '../serialize.js';
 
 const router = Router();
 
@@ -55,7 +56,7 @@ router.post('/', (req, res) => {
   const r = db
     .prepare('INSERT INTO projects (name, client, stage, units, grossing_target, tolerance) VALUES (?, ?, ?, ?, ?, ?)')
     .run(name.trim(), client, stage, units, grossing_target, tolerance); // all sanitised above
-  res.status(201).json(getProjectStmt.get(r.lastInsertRowid));
+  res.status(201).json(publicProject(getProjectStmt.get(r.lastInsertRowid)));
 });
 
 // GET /api/projects/:id — full project detail: brief + snapshots + adjacencies + images.
@@ -67,21 +68,30 @@ router.get('/:id', (req, res) => {
     .prepare('SELECT * FROM spaces WHERE project_id = ? ORDER BY sort_order, id')
     .all(project.id);
 
+  // One query for all snapshot areas, grouped client-side of the DB (avoids a
+  // per-snapshot round trip).
+  const areasBySnapshot = new Map();
+  for (const row of db
+    .prepare(
+      `SELECT sa.snapshot_id, sa.space_id, sa.area FROM snapshot_areas sa
+       JOIN snapshots sn ON sn.id = sa.snapshot_id WHERE sn.project_id = ?`
+    )
+    .all(project.id)) {
+    if (!areasBySnapshot.has(row.snapshot_id)) areasBySnapshot.set(row.snapshot_id, {});
+    areasBySnapshot.get(row.snapshot_id)[row.space_id] = row.area;
+  }
   const snapshots = db
     .prepare('SELECT * FROM snapshots WHERE project_id = ? ORDER BY taken_at, id')
     .all(project.id)
-    .map((sn) => {
-      const areas = {};
-      for (const row of db.prepare('SELECT space_id, area FROM snapshot_areas WHERE snapshot_id = ?').all(sn.id)) {
-        areas[row.space_id] = row.area;
-      }
-      return { ...sn, areas };
-    });
+    .map((sn) => ({ ...sn, areas: areasBySnapshot.get(sn.id) || {} }));
 
   const adjacencies = db.prepare('SELECT * FROM adjacencies WHERE project_id = ?').all(project.id);
-  const images = db.prepare('SELECT * FROM images WHERE project_id = ? ORDER BY sort_order, id').all(project.id);
+  // Metadata only — pixels come from GET /api/images/:id/data, cached client-side.
+  const images = db
+    .prepare(`SELECT ${IMAGE_META_COLS} FROM images WHERE project_id = ? ORDER BY sort_order, id`)
+    .all(project.id);
 
-  res.json({ project, spaces, snapshots, adjacencies, images });
+  res.json({ project: publicProject(project), spaces, snapshots, adjacencies, images });
 });
 
 // PUT /api/projects/:id
@@ -97,7 +107,7 @@ router.put('/:id', (req, res) => {
     const setSql = Object.keys(updates).map((f) => `${f} = ?`).join(', ');
     db.prepare(`UPDATE projects SET ${setSql} WHERE id = ?`).run(...Object.values(updates), project.id);
   }
-  res.json(getProjectStmt.get(project.id));
+  res.json(publicProject(getProjectStmt.get(project.id)));
 });
 
 // DELETE /api/projects/:id

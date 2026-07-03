@@ -45,26 +45,54 @@ The whole thing is **single-user and local** by design (see §2).
 
 ```
 server/
-  db.js            Schema, additive migrations (ensureColumn), demo seed
-  index.js         Express app: all REST endpoints + geocode/tile proxies
+  db.js            Schema, additive migrations (ensureColumn), legacy image
+                   migration (migrateImages), demo seed
+  index.js         Express app wiring (routers, error handler, static prod)
+  serialize.js     Response shaping: publicProject(), IMAGE_META_COLS — keeps
+                   base64 payloads out of the per-mutation refetch
+  routes/          One router per resource: projects, spaces, adjacencies,
+                   snapshots, images (incl. GET /images/:id/data), settings,
+                   proxy (geocode + tiles)
 src/
   api.js           Thin fetch wrapper; one method per endpoint
   compute.js       PURE helpers: area math, hierarchy, units, CSV. No React.
-  pdfExport.js     jsPDF scene → scale-accurate PDF (page fit, scale bar, north)
+  adjacency.js     PURE: compliance scoring + closestInstancePair (the ONE
+                   closest-pair implementation — sim, links, PDF, stacked view)
+  geometry.js      PURE: hulls, polygons, image filters, pinsOf
+  pins.js          PURE: pinPatch — the shared pin_json before/after builder
+  prefs.js         localStorage UI preferences (one namespace)
+  scale.js floors.js viz.js theme.jsx   scale math · storeys/cameras · colours · theming
+  pdfExport.js     jsPDF scene → scale-accurate PDF (lazy-loaded)
+  hooks/
+    useViewport.js useImageDims.js useSimulation.js
+    useImageData.js  session cache: image id → data URL (fetched once)
+    useTick.js       tick store + <TickLayer> — animation renders bypass chrome
   App.jsx          App shell: topbar, nav, routes between list/project/settings
   components/
     ProjectList.jsx     Project cards + create form
-    ProjectView.jsx     Full-height project frame: bar + tabs + tab content
-    Dashboard.jsx       Stats, drift chart, department/building rollups
-    BubbleTab.jsx       THE big one (~1000 lines): diagram, sim, layers, PDF
-    BriefTab.jsx        Hierarchical program tree with drag-to-reparent
+    ProjectView.jsx     Full-height project frame: bar + tabs + shared selection
+    Dashboard.jsx       KPI cards, drift chart, rollups
+    BubbleTab.jsx       Diagram orchestrator: state, pointer handlers, canvas
+    BriefTab.jsx        Treemap + hierarchical schedule
     SnapshotsTab.jsx    Milestone recording/editing
     DriftChart.jsx      Hand-rolled SVG line chart
-    HelpPanel.jsx       Modal documenting diagram gestures
+    HelpPanel.jsx       Shortcuts modal
     SettingsPage.jsx    App-wide defaults (units, tolerance, grossing)
-  styles.css       All styling. CSS custom properties in :root for theming.
+    diagram/
+      scenes.js         PURE stacked-axonometric + WebGL scene builders
+      DiagramRail.jsx   A·01 Areas + A·02 Adjacency rail
+      Stacked3D.jsx     WebGL view (lazy-loaded — keeps three.js out of the
+                        main bundle)
+      LayerRow.jsx MatrixPanel.jsx NorthRose.jsx
+  styles.css       Style entry: ordered @imports of styles/ (contiguous slices
+                   of the former monolith — import order IS the cascade)
+  styles/          tokens.css (the design system) · base.css · views.css ·
+                   diagram.css
+  components/ui.jsx           <Banner> / <Empty> — the app's one error/empty markup
+  components/diagram/StagePopover.jsx   unified floating-panel chrome
+                   Fonts are self-hosted via @fontsource imports in main.jsx.
 docs/ARCHITECTURE.md  (this file)
-ROADMAP.md
+docs/refactor-plan.md ROADMAP.md
 ```
 
 **`compute.js` is the place to start** when learning the domain: it is pure,
@@ -125,9 +153,15 @@ Key/value app-wide defaults applied to *new* projects.
 
 REST, JSON, under `/api`. Notable contracts:
 
-- `GET /api/projects/:id` returns `{ project, spaces, snapshots, adjacencies }`
-  — the whole project in one round trip (the client re-fetches this after every
-  mutation; see §6 "optimistic + refetch").
+- `GET /api/projects/:id` returns `{ project, spaces, snapshots, adjacencies,
+  images }` — the whole project in one round trip (the client re-fetches this
+  after every mutation; see §6 "optimistic + refetch"). **Images are metadata
+  only** (no base64), and the project row is stripped of the legacy
+  `bg_image`/`sat_image` blobs (`serialize.js`) — this keeps the per-mutation
+  refetch in the KB range.
+- `GET /api/images/:id/data` → `{ image: dataURL }`. Pixels are immutable
+  after upload, so the client (`useImageData`) fetches each image once per
+  session and caches it at module level (with in-flight promise dedupe).
 - `PUT /api/projects/:id` accepts any subset of `PROJECT_FIELDS`. Fields settable
   to null (e.g. clearing an image) are written when the **key is present**, so
   the client sends explicit nulls.
@@ -261,6 +295,16 @@ yields `{space, depth}` for the Brief tree.
   frame uses a ref (`nodesRef`, `viewRef`, `hoverRef`, `dragRef`).
   **Gotcha:** commit the *ref* value on pointer-up, not the state var — a fast
   release saved a stale `view` before we switched to `viewRef`.
+- **Animation ticks bypass React state.** `setTick` bumps an external store
+  (`useTick.js`); only the `<TickLayer>` wrapping the SVG canvas + 3-D mount
+  re-renders per frame — toolbar/rail/popovers don't. Positional derived values
+  (`makeStackScene`, `make3DScene`, unmet-link sets) are computed *inside* the
+  TickLayer closure so they read fresh node positions; the toolbar's adjacency
+  badge recomputes on a 300 ms throttle (`AdjacencyBadge`). If you add UI that
+  must track node positions live, render it inside the TickLayer (or subscribe
+  to the store) — chrome outside it only updates on real state changes.
+  Corollary: optimistic in-place edits that chrome displays (e.g. layer
+  sliders) must also bump chrome state (`forceChrome`).
 - **Debounced saves** via `debouncers.current[key]` for sliders, view pan,
   north, and area edits.
 - **Double-click is detected manually** where needed — `PointerEvent.detail`

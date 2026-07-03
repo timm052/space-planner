@@ -1,27 +1,39 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, memo, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api.js';
 import { fmtArea, areaToM2, distToMeters, distUnit, leafSpaces, rootContainer } from '../compute.js';
 // pdfExport is lazy-loaded on demand — keeps jsPDF out of the initial bundle.
 import { useHistory } from '../useHistory.js';
 import { darkHex } from '../viz.js';
 import { SCALE_PRESETS, ratioToScale, scaleToRatio, zoomAbout } from '../scale.js';
-import { convexHull, smoothHullPath, pinsOf, filterCss, IMAGE_FILTERS,
+import { convexHull, smoothHullPath, pinsOf, filterCss,
   parsePoly, normalizePolygon, polygonPath, polyBounds, regularPolygon,
   polygonArea, smoothPolygonPoints } from '../geometry.js';
-import { edgeGap, adjacencyScore, scoreBand } from '../adjacency.js';
-import { orderedLevels, levelRankMap, ISO, CAMERAS } from '../floors.js';
+import { edgeGap, adjacencyScore, closestInstancePair } from '../adjacency.js';
+import { pinPatch } from '../pins.js';
+import { prefs } from '../prefs.js';
+import { orderedLevels, levelRankMap, CAMERAS } from '../floors.js';
+import { buildStackScene, build3DScene } from './diagram/scenes.js';
 import { useViewport, W, H } from '../hooks/useViewport.js';
 import { useImageDims } from '../hooks/useImageDims.js';
+import { useImageData, seedImageData } from '../hooks/useImageData.js';
+import { useTickStore, TickLayer } from '../hooks/useTick.js';
 import { useSimulation } from '../hooks/useSimulation.js';
 import { bakeImage } from '../imageUtils.js';
 import HelpPanel from './HelpPanel.jsx';
 import NorthRose from './diagram/NorthRose.jsx';
 import MatrixPanel from './diagram/MatrixPanel.jsx';
 import LayerRow from './diagram/LayerRow.jsx';
-import Stacked3D from './diagram/Stacked3D.jsx';
+import DiagramRail from './diagram/DiagramRail.jsx';
+import StagePopover from './diagram/StagePopover.jsx';
+import { Empty } from './ui.jsx';
+
+// three.js + react-three-fiber are the bulk of the main bundle; the 3-D view
+// is one floor mode, so load it on demand (same pattern as pdfExport).
+const Stacked3D = lazy(() => import('./diagram/Stacked3D.jsx'));
 
 const PALETTE = ['#e8b04b', '#5b9dd9', '#4cc38a', '#c678dd', '#e5707a', '#56b6c2', '#d19a66', '#98c379', '#7aa2f7', '#f7768e'];
 const SAT_CANVAS = 768;
+const EMPTY_SET = new Set();
 
 // BubbleTab unmounts when you leave the Diagram tab, which would otherwise lose
 // every non-pinned bubble's position and let the sim re-scatter them on return.
@@ -40,8 +52,11 @@ const layoutCache = new Map(); // projectId → Map(instanceKey → {x,y})
  * offset so its visual centre lands at y = 0 (the bubble's centre).
  *
  * Tiny bubbles (r ≤ 13) fall back to a single label below the circle.
+ *
+ * Memoized: labels re-render (and re-wrap) only when their own props change,
+ * not on every sim tick.
  */
-function BubbleLabel({ label, r, areaStr, ink }) {
+const BubbleLabel = memo(function BubbleLabel({ label, r, areaStr, ink }) {
   const fontSize = Math.max(9, Math.min(14, r / 3.2));
   const lineH    = fontSize * 1.22;
   const charW    = fontSize * 0.55;
@@ -88,12 +103,53 @@ function BubbleLabel({ label, r, areaStr, ink }) {
       )}
     </text>
   );
+});
+
+/**
+ * The toolbar's adjacency-compliance badge. The score depends on live node
+ * positions, so instead of computing it on every chrome render (or worse,
+ * every sim frame), it subscribes to the tick store and recomputes at most
+ * every 300 ms — plus immediately when the underlying data changes.
+ */
+function AdjacencyBadge({ store, compute, dataKey, active, onToggle }) {
+  const computeRef = useRef(compute);
+  computeRef.current = compute;
+  const [result, setResult] = useState(() => compute());
+  const lastRef = useRef(0);
+  useEffect(() => {
+    setResult(computeRef.current());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dataKey]);
+  useEffect(
+    () =>
+      store.subscribe(() => {
+        const now = performance.now();
+        if (now - lastRef.current < 300) return;
+        lastRef.current = now;
+        setResult(computeRef.current());
+      }),
+    [store]
+  );
+  return (
+    <button
+      className={`adj-badge ${active ? 'active' : ''}`}
+      onClick={onToggle}
+      title={`${result.met}/${result.total} relationships satisfied — click to highlight the ${result.unmet.length} unmet`}
+    >
+      <span className="adj-dot" /> {result.score == null ? '—' : `${Math.round(result.score * 100)}%`} adjacency
+    </button>
+  );
 }
 
 export default function BubbleTab({ project, spaces, adjacencies, images = [], onChanged, selectedSpaceId = null, onSelectSpace }) {
   const [selected, setSelected] = useState(null);
   const [selectedInst, setSelectedInst] = useState(0); // which instance of the selected space
-  const [, setTick] = useState(0);
+  // Animation ticks bypass React state: the sim/drags mutate nodesRef then
+  // bump this store, re-rendering ONLY the <TickLayer> canvas below — not the
+  // toolbar/rail/popover chrome. Same call signature as the old setTick.
+  const tickStore = useTickStore();
+  const setTick = tickStore.bump;
+  const [, forceChrome] = useState(0); // re-render chrome for optimistic in-place edits (layer sliders)
   const [error, setError] = useState(null);
   const [scalePoints, setScalePoints] = useState(null);
   const [scaleDistance, setScaleDistance] = useState('');
@@ -105,24 +161,23 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const [satZoom, setSatZoom] = useState(18);
   const [satBusy, setSatBusy] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
-  const [split, setSplit] = useState(() => localStorage.getItem('brieftrack.split') !== '0');
+  const [split, setSplit] = useState(() => prefs.getBool('split', true));
   const [colorBy, setColorBy] = useState('department');
   const [drafts, setDrafts] = useState({});
-  const [panMode, setPanMode] = useState(false);
   const [multi, setMulti] = useState(() => new Set()); // selected instance keys for batch ops
   const [catDraft, setCatDraft] = useState(''); // batch category/department assignment input
   const [localColors, setLocalColors] = useState({}); // optimistic category colour overrides
   const [marquee, setMarquee] = useState(null); // { x0,y0,x1,y1 } in svg coords while selecting
-  const [hulls, setHulls] = useState(() => localStorage.getItem('brieftrack.hulls') === '1');
-  const [hullPad, setHullPad] = useState(() => Number(localStorage.getItem('brieftrack.hullpad')) || 26);
+  const [hulls, setHulls] = useState(() => prefs.getBool('hulls', false));
+  const [hullPad, setHullPad] = useState(() => prefs.getNum('hullpad', 0) || 26);
   const [showMatrix, setShowMatrix] = useState(false);
   const [highlightGaps, setHighlightGaps] = useState(false); // flag unmet adjacencies on the diagram
   const [floorView, setFloorView] = useState('all'); // 'all' | <level label> | 'offset' | 'overlaid'
   const [floorGap, setFloorGap] = useState(0.6); // floor spacing as a fraction of plate height
-  const [camKey, setCamKey] = useState('iso'); // 3-D camera preset
+  const [stackCam, setStackCam] = useState('iso'); // stacked-SVG view camera preset (CAMERAS in floors.js)
   const [stackImages, setStackImages] = useState(true); // show warped site images in the stacked view
-  const [cam3d, setCam3d] = useState('persp'); // 3-D camera preset
-  const [railW, setRailW] = useState(() => Number(localStorage.getItem('brieftrack.railw')) || 340);
+  const [cam3d, setCam3d] = useState('persp'); // WebGL 3-D view camera preset (Stacked3D)
+  const [railW, setRailW] = useState(() => prefs.getNum('railw', 0) || 340);
   const [areaMode, setAreaMode] = useState('category'); // Areas panel grouping
   const [collapsed, setCollapsed] = useState(() => new Set()); // collapsed Areas groups
   const [editShape, setEditShape] = useState(null); // space id whose polygon is being edited
@@ -131,14 +186,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const [spaceHeld, setSpaceHeld] = useState(false); // transient pan while Space is held
   // Auto-layout force strengths (user-adjustable). Buildings barely move by
   // default so clusters hold their position; rooms move more freely.
-  const [nodeForce, setNodeForce] = useState(() => {
-    const v = localStorage.getItem('brieftrack.nodeforce');
-    return v == null ? 1 : Number(v);
-  });
-  const [buildingForce, setBuildingForce] = useState(() => {
-    const v = localStorage.getItem('brieftrack.buildingforce');
-    return v == null ? 0.5 : Number(v);
-  });
+  const [nodeForce, setNodeForce] = useState(() => prefs.getNum('nodeforce', 1));
+  const [buildingForce, setBuildingForce] = useState(() => prefs.getNum('buildingforce', 0.5));
   const [selLink, setSelLink] = useState(null); // { space_a, space_b } of the selected link
   const [linkFrom, setLinkFrom] = useState(null); // first room picked in Link mode
 
@@ -152,11 +201,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const panRef = useRef(null);
   const layerMoveRef = useRef(null);
   const rotateRef = useRef(null); // { id, startAngle, startRot } while rotating an image by mouse
-  const lastClickRef = useRef({ key: null, t: 0 });
   const pinOverride = useRef(new Map());
   const fileRef = useRef(null);
   const debouncers = useRef({});
-  const migratedRef = useRef(false);
   const hoverRef = useRef(null); // { space, idx } currently under the cursor
   const marqueeRef = useRef(null); // { sx, sy, additive } while drag-selecting
   const adjRef = useRef(adjacencies); // latest adjacencies, for history closures
@@ -171,9 +218,16 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
 
   // Image natural dimensions — measured lazily as images load.
   // ---------- image layers (multiple, ordered bottom→top) ----------
-  // Copy so optimistic move/rotate/opacity edits can mutate in place between
-  // refetches (the `images` prop is stable until onChanged re-fetches).
-  const imgLayers = useMemo(() => (images || []).map((im) => ({ ...im })), [images]);
+  // The `images` prop is metadata only; pixels resolve through the session
+  // cache (fetched once per image). Copy so optimistic move/rotate/opacity
+  // edits can mutate in place between refetches (the prop is stable until
+  // onChanged re-fetches).
+  const { data: imageData, version: imageDataVersion } = useImageData(images);
+  const imgLayers = useMemo(
+    () => (images || []).map((im) => ({ ...im, image: imageData.get(im.id) ?? null })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [images, imageDataVersion]
+  );
   const imgById = useMemo(() => new Map(imgLayers.map((im) => [im.id, im])), [imgLayers]);
 
   const dims = useImageDims(imgLayers);
@@ -402,8 +456,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [multi]);
 
-  // Effective pan state: explicit Pan toggle OR a held Space key.
-  const panActive = panMode || spaceHeld;
+  // Effective pan state: panning while the Space key is held.
+  const panActive = spaceHeld;
 
   // Shared selection sync (Diagram ↔ Brief). Inbound only: an external
   // selection (e.g. a Brief tile) drives the canvas selection. This effect
@@ -413,7 +467,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   useEffect(() => {
     setSelected(selectedSpaceId);
     setSelectedInst(0);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [selectedSpaceId]);
   // Select a space and notify the shared state (no-ops to onSelectSpace are cheap).
   const pickSpace = (id, inst = 0) => {
@@ -671,8 +725,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   // run auto-layout on tab open. The live pass is triggered from the slider
   // onChange (a real user action) via nudgeLayout() instead.
   useEffect(() => {
-    localStorage.setItem('brieftrack.nodeforce', String(nodeForce));
-    localStorage.setItem('brieftrack.buildingforce', String(buildingForce));
+    prefs.set('nodeforce', nodeForce);
+    prefs.set('buildingforce', buildingForce);
   }, [nodeForce, buildingForce]);
   // Re-energise the sim for a brief settling pass (used when a force slider moves).
   const nudgeLayout = () => {
@@ -688,21 +742,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
 
   // Closest instance pair between two spaces — used by PDF export, adjacency
   // rendering, and the scale bar. Reads nodesRef so it is always current.
-  function closestPair(sa, sb) {
-    const nodes = nodesRef.current;
-    let best = null;
-    for (let i = 0; i < Math.max(1, sa.count || 1); i++) {
-      const a = nodes.get(`${sa.id}:${i}`);
-      if (!a) continue;
-      for (let j = 0; j < Math.max(1, sb.count || 1); j++) {
-        const b = nodes.get(`${sb.id}:${j}`);
-        if (!b) continue;
-        const d = Math.hypot(b.x - a.x, b.y - a.y);
-        if (!best || d < best.d) best = { a, b, d, ai: i, bi: j };
-      }
-    }
-    return best;
-  }
+  const closestPair = (sa, sb) => closestInstancePair(nodesRef.current, sa, sb);
 
   // ---------- viewBox geometry ----------
   // Visible viewBox is sized to the container; its origin keeps the logical
@@ -916,80 +956,53 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     debouncers.current.view = setTimeout(() => saveProject({ view_x: v.x, view_y: v.y }, { silent: true }), 500);
   }
 
+  // Fresh position from the sim node, falling back to the previous pin.
+  const nodePos = (space, i, prev) => {
+    const n = nodesRef.current.get(`${space.id}:${i}`);
+    return n ? { x: n.x, y: n.y } : prev ? { x: prev.x, y: prev.y } : null;
+  };
+  // Apply a pinPatch: optimistic overrides + undoable persist.
+  async function commitPinPatch(space, patch, label) {
+    for (const [i, p] of Object.entries(patch.touched)) pinOverride.current.set(`${space.id}:${i}`, p);
+    history.record({ label, undo: () => applySpace(space.id, patch.before), redo: () => applySpace(space.id, patch.after) });
+    setError(null);
+    try {
+      await applySpace(space.id, patch.after);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   // Persist a room's position after a drag WITHOUT changing its locked state
   // (a locked room dragged stays locked at its new spot; an unlocked one stays
   // unlocked). This is what makes drags survive a reload without pinning.
   async function saveDragPos(space, idx) {
-    const key = `${space.id}:${idx}`;
-    const node = nodesRef.current.get(key);
-    if (!node) return;
-    const pins = { ...pinsOf(space) };
-    const pos = { x: node.x, y: node.y };
-    pins[idx] = instLocked(space, idx) ? { ...pos, locked: true } : pos;
-    pinOverride.current.set(key, pins[idx]);
-    const before = { pin_json: space.pin_json ?? null, pin_x: space.pin_x ?? null, pin_y: space.pin_y ?? null };
-    const after = { pin_json: JSON.stringify(pins), pin_x: null, pin_y: null };
-    history.record({ label: 'move', undo: () => applySpace(space.id, before), redo: () => applySpace(space.id, after) });
-    setError(null);
-    try {
-      await applySpace(space.id, after);
-    } catch (err) {
-      setError(err.message);
-    }
+    if (!nodesRef.current.get(`${space.id}:${idx}`)) return;
+    const patch = pinPatch(space, [idx], (i, prev) => {
+      const pos = nodePos(space, i, prev);
+      return instLocked(space, i) ? { ...pos, locked: true } : pos;
+    });
+    await commitPinPatch(space, patch, 'move');
   }
 
   // Lock/unlock a single instance (Pin button / P). Locking captures the current
   // position; unlocking keeps the position but frees it for auto-layout.
   async function savePin(space, idx, locked) {
-    const key = `${space.id}:${idx}`;
-    const node = nodesRef.current.get(key);
-    const pins = { ...pinsOf(space) };
-    const prev = pins[idx];
-    const pos = node ? { x: node.x, y: node.y } : prev ? { x: prev.x, y: prev.y } : null;
-    if (pos) {
-      pins[idx] = locked ? { ...pos, locked: true } : pos;
-      pinOverride.current.set(key, pins[idx]);
-    } else {
-      delete pins[idx];
-      pinOverride.current.set(key, null);
-    }
-    const before = { pin_json: space.pin_json ?? null, pin_x: space.pin_x ?? null, pin_y: space.pin_y ?? null };
-    const after = { pin_json: JSON.stringify(pins), pin_x: null, pin_y: null };
-    history.record({ label: locked ? 'pin' : 'unpin', undo: () => applySpace(space.id, before), redo: () => applySpace(space.id, after) });
-    setError(null);
-    try {
-      await applySpace(space.id, after);
-    } catch (err) {
-      setError(err.message);
-    }
+    const patch = pinPatch(space, [idx], (i, prev) => {
+      const pos = nodePos(space, i, prev);
+      return pos ? (locked ? { ...pos, locked: true } : pos) : null;
+    });
+    await commitPinPatch(space, patch, locked ? 'pin' : 'unpin');
   }
 
   // Pin/unpin every instance of a space at once (so a multiplied space stays put).
   async function savePinAll(space, locked) {
-    const count = Math.max(1, space.count || 1);
-    const pins = { ...pinsOf(space) };
-    for (let i = 0; i < count; i++) {
-      const key = `${space.id}:${i}`;
-      const n = nodesRef.current.get(key);
-      const prev = pins[i];
-      const pos = n ? { x: n.x, y: n.y } : prev ? { x: prev.x, y: prev.y } : null;
-      if (pos) {
-        pins[i] = locked ? { ...pos, locked: true } : pos;
-        pinOverride.current.set(key, pins[i]);
-      } else {
-        delete pins[i];
-        pinOverride.current.set(key, null);
-      }
-    }
-    const before = { pin_json: space.pin_json ?? null, pin_x: space.pin_x ?? null, pin_y: space.pin_y ?? null };
-    const after = { pin_json: JSON.stringify(pins), pin_x: null, pin_y: null };
-    history.record({ label: locked ? 'pin all' : 'unpin all', undo: () => applySpace(space.id, before), redo: () => applySpace(space.id, after) });
-    setError(null);
-    try {
-      await applySpace(space.id, after);
-    } catch (err) {
-      setError(err.message);
-    }
+    const idxs = Array.from({ length: Math.max(1, space.count || 1) }, (_, i) => i);
+    const patch = pinPatch(space, idxs, (i, prev) => {
+      const pos = nodePos(space, i, prev);
+      return pos ? (locked ? { ...pos, locked: true } : pos) : null;
+    });
+    await commitPinPatch(space, patch, locked ? 'pin all' : 'unpin all');
   }
 
   // ---------- multi-select (marquee + shift-click) ----------
@@ -1031,26 +1044,28 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     setMulti(hit);
   }
 
-  async function multiPin(locked) {
+  // Group instance keys by space → { space, idxs } (for batch pin edits).
+  function groupKeysBySpace(keys) {
     const bySpace = new Map();
-    for (const { id, i, space } of multiList()) {
-      if (!bySpace.has(id)) bySpace.set(id, { space, idxs: [] });
-      bySpace.get(id).idxs.push(i);
+    for (const k of keys) {
+      const [id, i] = String(k).split(':');
+      const space = byId.get(Number(id));
+      if (!space) continue;
+      if (!bySpace.has(space.id)) bySpace.set(space.id, { space, idxs: [] });
+      bySpace.get(space.id).idxs.push(Number(i));
     }
-    const changes = [];
-    for (const { space, idxs } of bySpace.values()) {
-      const before = { pin_json: space.pin_json ?? null, pin_x: space.pin_x ?? null, pin_y: space.pin_y ?? null };
-      const pins = { ...pinsOf(space) };
-      for (const i of idxs) {
-        const n = nodesRef.current.get(`${space.id}:${i}`);
-        const prev = pins[i];
-        const pos = n ? { x: n.x, y: n.y } : prev ? { x: prev.x, y: prev.y } : null;
-        if (pos) pins[i] = locked ? { ...pos, locked: true } : pos;
-        else delete pins[i];
-      }
-      changes.push({ id: space.id, before, after: { pin_json: JSON.stringify(pins), pin_x: null, pin_y: null } });
-    }
-    await commitMany(changes, pinned ? 'pin selection' : 'unpin selection');
+    return [...bySpace.values()];
+  }
+
+  async function multiPin(locked) {
+    const changes = groupKeysBySpace([...multi]).map(({ space, idxs }) => {
+      const patch = pinPatch(space, idxs, (i, prev) => {
+        const pos = nodePos(space, i, prev);
+        return pos ? (locked ? { ...pos, locked: true } : pos) : null;
+      });
+      return { id: space.id, before: patch.before, after: patch.after };
+    });
+    await commitMany(changes, locked ? 'pin selection' : 'unpin selection');
   }
   // Instance keys for a space and all its (leaf) descendants — used to drag an
   // 'attached' parent together with its children.
@@ -1065,26 +1080,17 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     }
     return instances.filter((o) => ids.has(o.s.id)).map((o) => o.key);
   }
-  // Pin a set of instance keys at their current positions, in one undo step.
+  // Save a set of instance keys at their current positions (group drag),
+  // preserving each pin's locked flag, in one undo step.
   async function pinKeys(keys) {
-    const bySpace = new Map();
-    for (const k of keys) {
-      const [id, i] = k.split(':');
-      const sp = byId.get(Number(id));
-      if (!sp) continue;
-      if (!bySpace.has(sp.id)) bySpace.set(sp.id, { space: sp, idxs: [] });
-      bySpace.get(sp.id).idxs.push(Number(i));
-    }
-    const changes = [];
-    for (const { space, idxs } of bySpace.values()) {
-      const before = { pin_json: space.pin_json ?? null, pin_x: space.pin_x ?? null, pin_y: space.pin_y ?? null };
-      const pins = { ...pinsOf(space) };
-      for (const i of idxs) {
+    const changes = groupKeysBySpace(keys).map(({ space, idxs }) => {
+      const patch = pinPatch(space, idxs, (i, prev) => {
         const n = nodesRef.current.get(`${space.id}:${i}`);
-        if (n) pins[i] = pins[i]?.locked ? { x: n.x, y: n.y, locked: true } : { x: n.x, y: n.y };
-      }
-      changes.push({ id: space.id, before, after: { pin_json: JSON.stringify(pins), pin_x: null, pin_y: null } });
-    }
+        if (!n) return prev; // no node → keep the pin as it was
+        return prev?.locked ? { x: n.x, y: n.y, locked: true } : { x: n.x, y: n.y };
+      });
+      return { id: space.id, before: patch.before, after: patch.after };
+    });
     await commitMany(changes, 'move group');
   }
 
@@ -1149,13 +1155,13 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   }
   function toggleHulls() {
     setHulls((v) => {
-      localStorage.setItem('brieftrack.hulls', v ? '0' : '1');
+      prefs.set('hulls', !v);
       return !v;
     });
   }
   function setHullSize(v) {
     setHullPad(v);
-    localStorage.setItem('brieftrack.hullpad', String(v));
+    prefs.set('hullpad', v);
   }
   function toggleCollapse(key) {
     setCollapsed((prev) => {
@@ -1176,7 +1182,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     const onMove = (ev) => setRailW(clamp(startW + (startX - ev.clientX)));
     const onUp = (ev) => {
       const w = clamp(startW + (startX - ev.clientX));
-      localStorage.setItem('brieftrack.railw', String(w));
+      prefs.set('railw', w);
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
     };
@@ -1283,13 +1289,14 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     reader.onload = async () => {
       setError(null);
       try {
-        await api.createImage(project.id, {
+        const created = await api.createImage(project.id, {
           kind: 'custom',
           name: (file.name || 'Imported image').replace(/\.[^.]+$/, ''),
           image: reader.result,
           opacity: 0.6,
           visible: 1,
         });
+        seedImageData(created.id, reader.result); // avoid re-downloading what we just sent
         setPanel('layers');
         onChanged();
       } catch (err) {
@@ -1300,10 +1307,13 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   }
 
   // Optimistically update an image field, then debounce-save it.
+  // Bumps chrome state too (not just the canvas tick) so the LayerRow slider
+  // in the popover tracks the drag.
   function layerSlider(im, field, v) {
     setError(null);
     im[field] = v;
     setTick((t) => t + 1);
+    forceChrome((n) => n + 1);
     const key = `img${im.id}_${field}`;
     clearTimeout(debouncers.current[key]);
     debouncers.current[key] = setTimeout(
@@ -1395,15 +1405,17 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
         for (let ty = Math.floor(y0 / 256); ty * 256 < y0 + SAT_CANVAS; ty++) jobs.push(loadTile(tx, ty));
       for (const { img, tx, ty } of await Promise.all(jobs)) ctx.drawImage(img, tx * 256 - x0, ty * 256 - y0);
       const metersPerPixel = (156543.03392 * Math.cos(latR)) / 2 ** z;
-      await api.createImage(project.id, {
+      const satUrl = canvas.toDataURL('image/jpeg', 0.85);
+      const created = await api.createImage(project.id, {
         kind: 'satellite',
         name: 'Satellite',
-        image: canvas.toDataURL('image/jpeg', 0.85),
+        image: satUrl,
         mpp: metersPerPixel,
         attribution: `Imagery © Esri World Imagery · ${loc.display}`,
         opacity: 0.55,
         visible: 1,
       });
+      seedImageData(created.id, satUrl); // avoid re-downloading what we just sent
       setPanel('layers');
       onChanged();
     } catch (err) {
@@ -1457,7 +1469,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   function toggleSplit() {
     const next = !split;
     setSplit(next);
-    localStorage.setItem('brieftrack.split', next ? '1' : '0');
+    prefs.set('split', next);
   }
   function onAreaDraft(space, value) {
     setDrafts((d) => ({ ...d, [space.id]: value }));
@@ -1538,7 +1550,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
 
     const sceneLayers = [];
     for (const im of imgLayers) {
-      if (!im.visible) continue;
+      if (!im.visible || !im.image) continue; // pixels may still be loading
       const r = layerRect(im);
       if (!r) continue;
       const fcss = filterCss(im.filter);
@@ -1593,30 +1605,33 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
 
   // ---------- derived render values ----------
   if (spaces.length === 0)
-    return <div className="stage-empty"><div className="empty">Define the brief first — the bubble diagram is drawn from its spaces.</div></div>;
+    return <div className="stage-empty"><Empty>Define the brief first — the bubble diagram is drawn from its spaces.</Empty></div>;
   if (leaves.length === 0)
-    return <div className="stage-empty"><div className="empty">This program only has containers. Add spaces inside them in the Brief tab.</div></div>;
+    return <div className="stage-empty"><Empty>This program only has containers. Add spaces inside them in the Brief tab.</Empty></div>;
 
   const nodes = nodesRef.current;
   const presets = SCALE_PRESETS[units === 'ft2' ? 'ft2' : 'm2'];
 
   // Adjacency compliance — how well the current layout honours the declared
-  // relationships. Needs a real scale (gaps are judged in metres), so it's only
-  // meaningful when effScale is set. Recomputed each render as the sim moves nodes.
-  const adjLinks = effScale
-    ? adjacencies
-        .map((l) => {
-          const sa = byId.get(l.space_a);
-          const sb = byId.get(l.space_b);
-          if (!sa || !sb) return null;
-          const pair = closestPair(sa, sb);
-          if (!pair) return null;
-          return { id: l.id, strength: l.strength, gap: edgeGap(pair.d, radiusOf(sa), radiusOf(sb)) * effScale };
-        })
-        .filter(Boolean)
-    : [];
-  const adjResult = adjacencyScore(adjLinks);
-  const unmetLinkIds = new Set(adjResult.unmet.map((l) => l.id));
+  // relationships. Needs a real scale (gaps are judged in metres). Positional,
+  // so it is NOT computed on the chrome render path: the toolbar badge
+  // recomputes it on throttled sim ticks (AdjacencyBadge) and the SVG derives
+  // unmet links per tick inside the TickLayer, only while highlighting.
+  const computeAdjacency = () =>
+    adjacencyScore(
+      effScale
+        ? adjacencies
+            .map((l) => {
+              const sa = byId.get(l.space_a);
+              const sb = byId.get(l.space_b);
+              if (!sa || !sb) return null;
+              const pair = closestPair(sa, sb);
+              if (!pair) return null;
+              return { id: l.id, strength: l.strength, gap: edgeGap(pair.d, radiusOf(sa), radiusOf(sb)) * effScale };
+            })
+            .filter(Boolean)
+        : []
+    );
   const showScore = effScale && adjacencies.length > 0;
 
   // ---- Floor view: all together / one level / stacked isometric planes ----
@@ -1631,267 +1646,26 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const levelVisible = (s) => !hasLevels || floorMode === 'all' || levelOf(s) === floorMode;
   const rankOf = (s) => levelRank.get(levelOf(s)) ?? 0;
 
-  // Build the isometric stacked scene. The iso projection is expressed as an SVG
-  // matrix so a whole floor (plate, bubbles AND background images) can be tilted
-  // onto the plane in one transform — circles become ellipses, images warp to
-  // match. Floors share a common footprint and are vertically aligned, separated
-  // by a lift large enough to never overlap, with dashed corner guides tying the
-  // stack into one building (see the reference axonometric).
-  /**
-   * Build the 3-D stacked scene using a proper orthographic camera.
-   *
-   * World coordinate system: x/y = plan (same as the simulation), z = height
-   * (z increases upward; z=0 = ground floor).  The camera is parameterised by
-   * azimuth (rotation around world-Z) and elevation (tilt above horizontal).
-   * At elevation=0 we see a pure side elevation; at elevation=90 a plan view.
-   *
-   * Camera centering: the mid-floor anchor (W/2, H/2) always maps to screen
-   * centre (W/2, H/2) regardless of the chosen camera angle.
-   */
-  function stackScene() {
-    const cam = CAMERAS[camKey] ?? CAMERAS.iso;
-    const anchor = { x: W / 2, y: H / 2 };
-
-    // Per-floor content bounding box (raw node coords).
-    const PAD = 48;
-    const fb = new Map();
-    for (const o of instances) {
-      const lv = levelOf(o.s);
-      if (!levels.includes(lv)) continue;
-      const n = nodes.get(o.key);
-      if (!n) continue;
-      const r = radiusOf(o.s);
-      const b = fb.get(lv) || { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
-      b.minX = Math.min(b.minX, n.x - r);  b.maxX = Math.max(b.maxX, n.x + r);
-      b.minY = Math.min(b.minY, n.y - r);  b.maxY = Math.max(b.maxY, n.y + r);
-      fb.set(lv, b);
-    }
-    // Shared footprint centred on the anchor; per-floor offset aligns each
-    // floor's content within it.
-    let maxW = 1, maxH = 1;
-    for (const b of fb.values()) {
-      maxW = Math.max(maxW, b.maxX - b.minX);
-      maxH = Math.max(maxH, b.maxY - b.minY);
-    }
-    maxW += 2 * PAD;  maxH += 2 * PAD;
-    const foot = { x: anchor.x - maxW / 2, y: anchor.y - maxH / 2, w: maxW, h: maxH };
-    const offOf = (lv) => {
-      const b = fb.get(lv);
-      if (!b) return { x: 0, y: 0 };
-      return { x: anchor.x - (b.minX + b.maxX) / 2, y: anchor.y - (b.minY + b.maxY) / 2 };
-    };
-
-    // Projected footprint height in the ISO preset — drives the spacing slider
-    // (we keep it ISO-based so the slider feels the same regardless of camera).
-    const kx = ISO.kx, ky = ISO.ky;
-    const e_iso = anchor.x - kx * anchor.x + kx * anchor.y;
-    const f_iso = anchor.y - ky * anchor.x - ky * anchor.y;
-    const isoXY = (px, py) => ({ x: kx * px - kx * py + e_iso, y: ky * px + ky * py + f_iso });
-    const isoProjH = (() => {
-      const cs = [[foot.x,foot.y],[foot.x+foot.w,foot.y],[foot.x+foot.w,foot.y+foot.h],[foot.x,foot.y+foot.h]]
-        .map(([x,y]) => isoXY(x,y));
-      return Math.max(...cs.map(c=>c.y)) - Math.min(...cs.map(c=>c.y));
-    })();
-    const lift = floorMode === 'offset' ? Math.max(24, isoProjH * floorGap) : 0;
-
-    // World-Z per floor.  Using lift directly as world units keeps scale=1 and
-    // makes the slider feel natural across all camera angles.
-    const FLOOR_Z = lift;
-    const SLAB_Z  = 14;
-    const midZ = ((levels.length - 1) / 2) * FLOOR_Z;
-
-    // Orthographic projection: world (wx,wy,wz) → screen (sx,sy).
-    // Centre is computed so the anchor at mid-floor maps to screen anchor.
-    const az = (cam.azimuth   * Math.PI) / 180;
-    const el = (cam.elevation * Math.PI) / 180;
-    const cosAz = Math.cos(az), sinAz = Math.sin(az);
-    const sinEl = Math.sin(el), cosEl = Math.cos(el);
-    // Raw anchor projection (no offset) at mid-floor:
-    const rx0 = anchor.x * cosAz - anchor.y * sinAz;
-    const ry0 = anchor.x * sinAz + anchor.y * cosAz;
-    const pcx  = anchor.x - rx0;
-    const pcy  = anchor.y + (ry0 * sinEl + midZ * cosEl);
-    const proj = (wx, wy, wz) => {
-      const rx = wx * cosAz - wy * sinAz;
-      const ry = wx * sinAz + wy * cosAz;
-      return { x: pcx + rx, y: pcy - (ry * sinEl + wz * cosEl) };
-    };
-
-    // Screen position of every instance.
-    const screenPos = new Map();
-    for (const o of instances) {
-      const lv = levelOf(o.s);
-      if (!levels.includes(lv)) continue;
-      const n = nodes.get(o.key);
-      if (!n) continue;
-      const off = offOf(lv);
-      const k = levelRank.get(lv) ?? 0;
-      const s = proj(n.x + off.x, n.y + off.y, k * FLOOR_Z);
-      screenPos.set(o.key, { x: s.x, y: s.y, r: radiusOf(o.s), o });
-    }
-
-    const closestPairScreen = (sa, sb) => {
-      let best = null;
-      for (let i = 0; i < Math.max(1, sa.count || 1); i++) {
-        const a = screenPos.get(`${sa.id}:${i}`);
-        if (!a) continue;
-        for (let j = 0; j < Math.max(1, sb.count || 1); j++) {
-          const b = screenPos.get(`${sb.id}:${j}`);
-          if (!b) continue;
-          const d = Math.hypot(b.x - a.x, b.y - a.y);
-          if (!best || d < best.d) best = { a, b, d };
-        }
-      }
-      return best;
-    };
-
-    const ptsStr = (arr) => arr.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
-
-    const floors = levels.map((label) => {
-      const k = levelRank.get(label) ?? 0;
-      const z = k * FLOOR_Z;
-      // Plate corners — shared footprint (no per-floor offset; bubbles offset separately).
-      const TL = proj(foot.x,          foot.y,          z);
-      const TR = proj(foot.x + foot.w, foot.y,          z);
-      const BR = proj(foot.x + foot.w, foot.y + foot.h, z);
-      const BL = proj(foot.x,          foot.y + foot.h, z);
-      // Slab-thickness faces (bottom of each edge, offset by SLAB_Z in world-Z).
-      const BL_b = proj(foot.x,          foot.y + foot.h, z - SLAB_Z);
-      const BR_b = proj(foot.x + foot.w, foot.y + foot.h, z - SLAB_Z);
-      const TR_b = proj(foot.x + foot.w, foot.y,          z - SLAB_Z);
-      const frontY = Math.max(BL.y, BR.y, BL_b.y, BR_b.y);
-      return {
-        k, label,
-        color: PALETTE[k % PALETTE.length],
-        off: offOf(label),
-        bubbles: instances.filter((o) => levelOf(o.s) === label),
-        platePts:  ptsStr([TL, TR, BR, BL]),
-        slabFront: ptsStr([BL, BR, BR_b, BL_b]),
-        slabRight: ptsStr([BR, TR, TR_b, BR_b]),
-        labelPos: { x: (BL.x + BR.x) / 2, y: frontY + 18 },
-      };
-    });
-
-    // Corner guides: true 3-D lines from ground to top at each plan corner.
-    const planCorners = [
-      [foot.x, foot.y], [foot.x + foot.w, foot.y],
-      [foot.x + foot.w, foot.y + foot.h], [foot.x, foot.y + foot.h],
-    ];
-    const guides = lift > 0
-      ? planCorners.map(([px, py]) => {
-          const top = proj(px, py, (levels.length - 1) * FLOOR_Z);
-          const bot = proj(px, py, 0);
-          return { x1: top.x, y1: top.y, x2: bot.x, y2: bot.y };
-        })
-      : [];
-
-    // Ground image transform — only meaningful in ISO mode (affine in 2-D);
-    // returns null for elevation views.
-    const groundOff = offOf(levels[0]);
-    const groundTransform = camKey === 'iso'
-      ? `translate(0 ${((levels.length-1)/2)*lift}) matrix(${kx} ${ky} ${-kx} ${ky} ${e_iso} ${f_iso}) translate(${groundOff.x} ${groundOff.y})`
-      : null;
-
-    const ordered = instances
-      .filter((o) => levels.includes(levelOf(o.s)))
-      .sort((a, b) => (levelRank.get(levelOf(a.s)) ?? 0) - (levelRank.get(levelOf(b.s)) ?? 0));
-
-    return { foot, floors, screenPos, closestPairScreen, guides, groundTransform, ordered };
-  }
-  const stack = stackMode ? stackScene() : null;
+  // Scene builders live in diagram/scenes.js (pure, unit-testable). These
+  // thin wrappers feed them the component's live helpers; they are called
+  // inside the canvas TickLayer so they read fresh node positions each frame.
+  const makeStackScene = () =>
+    buildStackScene({ nodes, instances, levels, levelRank, radiusOf, levelOf, floorMode, floorGap, stackCam, palette: PALETTE });
 
   const is3D = hasLevels && floorMode === '3d';
 
-  // Plain data for the WebGL 3-D view. Each floor's content is re-centred to a
-  // shared footprint so the storeys stack into one aligned building; Stacked3D
-  // maps plan x/y → world X/Z and floor rank → world Y (height).
-  function build3DScene() {
-    const PAD = 36;
-    // Per-floor bounding box + centre (raw node coords).
-    const fb = new Map();
-    for (const o of instances) {
-      const lv = levelOf(o.s);
-      if (!levels.includes(lv)) continue;
-      const n = nodes.get(o.key); if (!n) continue;
-      const r = radiusOf(o.s) + PAD;
-      const b = fb.get(lv) || { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
-      b.minX = Math.min(b.minX, n.x - r); b.maxX = Math.max(b.maxX, n.x + r);
-      b.minY = Math.min(b.minY, n.y - r); b.maxY = Math.max(b.maxY, n.y + r);
-      fb.set(lv, b);
-    }
-    const centreOf = (lv) => {
-      const b = fb.get(lv);
-      return b ? { x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2 } : { x: W / 2, y: H / 2 };
-    };
-    // Shared footprint = the largest floor, centred at the origin.
-    let maxW = 1, maxH = 1;
-    for (const b of fb.values()) { maxW = Math.max(maxW, b.maxX - b.minX); maxH = Math.max(maxH, b.maxY - b.minY); }
-    const foot = { x0: -maxW / 2, y0: -maxH / 2, x1: maxW / 2, y1: maxH / 2, w: maxW, h: maxH };
-    const center = { x: 0, y: 0 };
-
-    const rooms = instances
-      .filter((o) => levels.includes(levelOf(o.s)) && nodes.get(o.key))
-      .map((o) => {
-        const n = nodes.get(o.key);
-        const c = centreOf(levelOf(o.s));
-        const kind = shapeOf(o.s);
-        return {
-          key: o.key,
-          x: n.x - c.x, y: n.y - c.y, // re-centred onto the shared footprint
-          rank: rankOf(o.s),
-          r: radiusOf(o.s),
-          box: kind === 'box',
-          poly: kind === 'poly' ? polyVertsOf(o.s) : null, // scaled verts, centred at origin
-          color: colorOf(o.s),
-          name: `${o.s.name}${Math.max(1, o.s.count || 1) > 1 ? ` ${o.i + 1}` : ''}`,
-        };
-      });
-
-    const links = [];
-    for (const l of adjacencies) {
-      const sa = byId.get(l.space_a), sb = byId.get(l.space_b);
-      if (!sa || !sb || !levels.includes(levelOf(sa)) || !levels.includes(levelOf(sb))) continue;
-      const ca = centreOf(levelOf(sa)), cb = centreOf(levelOf(sb));
-      let best = null;
-      for (let i = 0; i < Math.max(1, sa.count || 1); i++) {
-        const a = nodes.get(`${sa.id}:${i}`); if (!a) continue;
-        for (let j = 0; j < Math.max(1, sb.count || 1); j++) {
-          const b = nodes.get(`${sb.id}:${j}`); if (!b) continue;
-          const d = Math.hypot(b.x - a.x, b.y - a.y);
-          if (!best || d < best.d) best = { a, b, d };
-        }
-      }
-      if (best) {
-        const ra = radiusOf(sa), rb = radiusOf(sb);
-        const boxA = shapeOf(sa) === 'box', boxB = shapeOf(sb) === 'box';
-        links.push({
-          a: [best.a.x - ca.x, best.a.y - ca.y, rankOf(sa), ra, boxA],
-          b: [best.b.x - cb.x, best.b.y - cb.y, rankOf(sb), rb, boxB],
-          strength: l.strength,
-        });
-      }
-    }
-
-    let image = null;
+  const make3DScene = () => {
+    let groundImage = null;
     if (stackImages) {
       const im = imgLayers.find((x) => x.visible && x.image);
       const r = im ? layerRect(im) : null;
-      if (im && r && Number.isFinite(r.w) && Number.isFinite(r.h) && r.w > 0 && r.h > 0) {
-        const c0 = centreOf(levels[0]);
-        image = { href: im.image, cx: r.x + r.w / 2 - c0.x, cy: r.y + r.h / 2 - c0.y, w: r.w, h: r.h };
-      }
+      if (im && r) groundImage = { href: im.image, x: r.x, y: r.y, w: r.w, h: r.h };
     }
-
-    const floors = levels.map((label) => ({
-      label,
-      rank: levelRank.get(label),
-      color: PALETTE[levelRank.get(label) % PALETTE.length],
-      minX: foot.x0, minY: foot.y0, maxX: foot.x1, maxY: foot.y1,
-    }));
-
-    return { center, foot, floors, rooms, links, image, floorCount: levels.length };
-  }
-  const scene3d = is3D ? build3DScene() : null;
+    return build3DScene({
+      nodes, instances, levels, levelRank, radiusOf, levelOf, palette: PALETTE,
+      adjacencies, byId, rankOf, shapeOf, polyVertsOf, colorOf, groundImage,
+    });
+  };
 
   function scaleLabelFor(S) {
     const ratio = scaleToRatio(S);
@@ -1909,8 +1683,6 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   }
 
   const scaleValue = displayScale ? String(scaleToRatio(displayScale)) : 'auto';
-  const viewMoved = Math.abs(view.x) > 0.5 || Math.abs(view.y) > 0.5;
-  const hasImage = imgLayers.length > 0;
   const attributionLayer = imgLayers.find((im) => im.visible && im.attribution);
   const imgTransform = (r) => (r.rot ? `rotate(${r.rot} ${r.cx} ${r.cy})` : undefined);
   const bubbleStyle = project.bubble_style || 'solid';
@@ -1932,19 +1704,6 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     }
     return m;
   })();
-  const areaRow = (s) => (
-    <div key={s.id} className={`split-row ${selected === s.id ? 'selected' : ''}`} onClick={() => (selected === s.id ? clearPick() : pickSpace(s.id))}>
-      <span className="swatch" style={{ background: colorOf(s) }} />
-      <span className="split-name" title={s.name}>
-        {anyPinned(s) && <span className="split-pin">◉</span>}
-        {s.name}
-        {s.count > 1 ? ` ×${s.count}` : ''}
-      </span>
-      <span className="split-lead" />
-      <input type="number" min="0.1" step="any" value={drafts[s.id] ?? s.target_area} onChange={(e) => onAreaDraft(s, e.target.value)} onClick={(e) => e.stopPropagation()} />
-    </div>
-  );
-
   // Adjacency strength tallies for the rail header (e.g. "6 req · 10 des").
   const reqCount = adjacencies.filter((l) => l.strength === 'required').length;
   const desCount = adjacencies.length - reqCount;
@@ -2005,9 +1764,13 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
             <button className="act-btn" onClick={history.undo} disabled={!history.canUndo} title={history.canUndo ? `Undo ${history.undoLabel} (Ctrl+Z)` : 'Nothing to undo'}>↶</button>
             <button className="act-btn" onClick={history.redo} disabled={!history.canRedo} title={history.canRedo ? `Redo ${history.redoLabel} (Ctrl+Shift+Z)` : 'Nothing to redo'}>↷</button>
             {showScore && (
-              <button className={`adj-badge ${highlightGaps ? 'active' : ''}`} onClick={() => setHighlightGaps((v) => !v)} title={`${adjResult.met}/${adjResult.total} relationships satisfied — click to highlight the ${adjResult.unmet.length} unmet`}>
-                <span className="adj-dot" /> {adjResult.score == null ? '—' : `${Math.round(adjResult.score * 100)}%`} adjacency
-              </button>
+              <AdjacencyBadge
+                store={tickStore}
+                compute={computeAdjacency}
+                dataKey={`${adjacencies.length}:${spaces.length}:${effScale ?? 0}`}
+                active={highlightGaps}
+                onToggle={() => setHighlightGaps((v) => !v)}
+              />
             )}
             <button className="act-btn wide" onClick={exportPdf} title="Export a scale-accurate PDF">↓ PDF</button>
             <button className="act-btn" onClick={() => setShowHelp(true)} title="Shortcuts & help (?)">?</button>
@@ -2075,7 +1838,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
               {stackMode && (
                 <div className="more-row">
                   <span className="more-label">Camera</span>
-                  <select className="ctrl-select" value={camKey} onChange={(e) => setCamKey(e.target.value)}>
+                  <select className="ctrl-select" value={stackCam} onChange={(e) => setStackCam(e.target.value)}>
                     {Object.entries(CAMERAS).map(([k, c]) => <option key={k} value={k}>{c.label}</option>)}
                   </select>
                 </div>
@@ -2121,27 +1884,16 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3" /><line x1="12" y1="2" x2="12" y2="6" strokeLinecap="round" /><line x1="12" y1="18" x2="12" y2="22" strokeLinecap="round" /><line x1="2" y1="12" x2="6" y2="12" strokeLinecap="round" /><line x1="18" y1="12" x2="22" y2="12" strokeLinecap="round" /></svg>
             </button>
           </div>
-          {is3D && scene3d && (
-            <div className="stage-3d">
-              <Stacked3D scene={scene3d} gap={floorGap} showImage={stackImages} camMode={cam3d} />
-              <div className="stage-3d-hint">Drag to orbit · scroll to zoom · right-drag to pan</div>
-            </div>
-          )}
           {error && (
-            <div className="stage-popover" style={{ borderColor: 'var(--bad)', color: 'var(--bad)' }}>
+            <StagePopover className="error" onClose={() => setError(null)}>
               {error}
-              <button className="btn small ghost" style={{ float: 'right' }} onClick={() => setError(null)}>✕</button>
-            </div>
+            </StagePopover>
           )}
 
           {panel === 'layers' && (
-            <div className="stage-popover layers-popover">
-              <div className="layers-panel-head">
-                <h3>Image layers</h3>
-                <button className="btn small ghost" onClick={() => setPanel(null)}>✕</button>
-              </div>
+            <StagePopover className="layers-popover" title="Image layers" onClose={() => setPanel(null)}>
               <div className="layers-list">
-                {imgLayers.length === 0 && <div className="empty small">No images yet — add a site plan or satellite below.</div>}
+                {imgLayers.length === 0 && <Empty small>No images yet — add a site plan or satellite below.</Empty>}
                 {imgLayers.map((im) => (
                   <LayerRow
                     key={im.id}
@@ -2168,11 +1920,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                 <button className="btn small" onClick={() => setPanel('sat')}>＋ Add satellite</button>
               </div>
               <input ref={fileRef} type="file" accept="image/*" hidden onChange={onUpload} />
-              <p className="hint" style={{ margin: '6px 2px 0' }}>
+              <p className="hint popover-hint">
                 Add as many images as you like. Calibrate each on its own and they share the diagram scale.
                 Use <strong>Move</strong> and <strong>Rotate</strong> (then drag the canvas) to align a layer.
               </p>
-            </div>
+            </StagePopover>
           )}
 
           {panel === 'sat' && (
@@ -2227,6 +1979,26 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
             ))}
           </div>
 
+          {/* Everything below re-renders on animation ticks (sim frames, drags)
+              without touching the chrome above — see useTick.js. The scenes
+              are rebuilt inside the closure so they read fresh node positions. */}
+          <TickLayer store={tickStore}>
+          {() => {
+          const stack = stackMode ? makeStackScene() : null;
+          const scene3d = is3D ? make3DScene() : null;
+          // Unmet-link highlighting is positional; only pay for it while it's on.
+          const unmetLinkIds = highlightGaps && effScale
+            ? new Set(computeAdjacency().unmet.map((l) => l.id))
+            : EMPTY_SET;
+          return (<>
+          {is3D && scene3d && (
+            <div className="stage-3d">
+              <Suspense fallback={<div className="stage-3d-hint">Loading 3-D view…</div>}>
+                <Stacked3D scene={scene3d} gap={floorGap} showImage={stackImages} camMode={cam3d} />
+              </Suspense>
+              <div className="stage-3d-hint">Drag to orbit · scroll to zoom · right-drag to pan</div>
+            </div>
+          )}
           <svg
             ref={svgRef}
             viewBox={`${originX} ${originY} ${vb.w} ${vb.h}`}
@@ -2264,7 +2036,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
             </defs>
             {(() => {
               const imgs = imgLayers.map((im) => {
-                if (!im.visible) return null;
+                if (!im.visible || !im.image) return null; // pixels may still be loading
                 const r = layerRect(im);
                 if (!r) return null;
                 const active = moveLayer === im.id || rotateLayer === im.id;
@@ -2643,6 +2415,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
               />
             )}
           </svg>
+          </>);
+          }}
+          </TickLayer>
 
           {hasLevels && floorMode !== 'all' && (
             <div className="floor-caption">
@@ -2769,134 +2544,35 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       </div>
 
       {split && (
-        <aside className="diagram-rail">
-          <button className="rail-close" onClick={toggleSplit} title="Close panel">▾ Close panel</button>
-          <div className="rail-resizer" onPointerDown={startRailResize} title="Drag to resize the panel" />
-          <section className="rail-section areas">
-            <div className="rail-head">
-              <div className="sec-head" style={{ margin: 0 }}>
-                <span className="sec-tag">A·01</span>
-                <span className="sec-title">Areas</span>
-              </div>
-              {hasBuildings && (
-                <div className="seg small">
-                  <button className={`seg-btn ${areaMode === 'category' ? 'active' : ''}`} onClick={() => setAreaMode('category')}>Category</button>
-                  <button className={`seg-btn ${areaMode === 'building' ? 'active' : ''}`} onClick={() => setAreaMode('building')}>Building</button>
-                </div>
-              )}
-            </div>
-            <div className="split-rows">
-              {areaMode === 'building' && hasBuildings
-                ? [...areaTree.entries()].map(([b, levels]) => {
-                    const bKey = `b:${b}`;
-                    const open = !collapsed.has(bKey);
-                    const bSpaces = [...levels.values()].flat();
-                    const bTotal = bSpaces.reduce((t, s) => t + (s.count || 1) * ea(s), 0);
-                    const multiLevel = levels.size > 1 || ![...levels.keys()].every((k) => k === '');
-                    return (
-                      <div key={bKey} className="split-group">
-                        <div className="split-dept building" onClick={() => toggleCollapse(bKey)}>
-                          <span className="collapse-caret">{open ? '▾' : '▸'}</span>
-                          <span className="legend-dot" style={{ background: colorForLabel(b) }} />
-                          🏢 {b}
-                          <span className="split-grouptotal">{fmtArea(bTotal, units)}</span>
-                        </div>
-                        {open &&
-                          [...levels.entries()].map(([lvl, list]) => (
-                            <div key={lvl} className="split-level-group">
-                              {multiLevel && <div className="split-level">{lvl || 'Unassigned level'}</div>}
-                              {list.map((s) => areaRow(s))}
-                            </div>
-                          ))}
-                      </div>
-                    );
-                  })
-                : groups.map((g) => {
-                    const gKey = `c:${g}`;
-                    const open = !collapsed.has(gKey);
-                    const list = leaves.filter((s) => groupKey(s) === g);
-                    const gTotal = list.reduce((t, s) => t + (s.count || 1) * ea(s), 0);
-                    return (
-                      <div key={gKey} className="split-group">
-                        <div className="split-dept" onClick={() => toggleCollapse(gKey)}>
-                          <span className="collapse-caret">{open ? '▾' : '▸'}</span>
-                          <span className="legend-dot" style={{ background: colorForLabel(g) }} />
-                          {g}
-                          <span className="split-grouptotal">{fmtArea(gTotal, units)}</span>
-                        </div>
-                        {open && list.map((s) => areaRow(s))}
-                      </div>
-                    );
-                  })}
-            </div>
-            <div className="rail-medallion">
-              <svg className="medallion-rings" width="120" height="120" viewBox="0 0 120 120" aria-hidden="true">
-                {[16, 30, 44, 58].map((r) => (
-                  <circle key={r} cx="60" cy="60" r={r} fill="none" stroke="var(--contour)" strokeWidth="1" />
-                ))}
-              </svg>
-              <div className="rail-medallion-label mono">Σ Net total</div>
-              <div className="rail-medallion-value">
-                {Math.round(leaves.reduce((t, s) => t + (s.count || 1) * ea(s), 0)).toLocaleString()} <span className="unit">{units === 'ft2' ? 'ft²' : 'm²'}</span>
-              </div>
-            </div>
-          </section>
-
-          <section className="rail-section rel">
-            <div className="rail-head">
-              <div className="sec-head" style={{ margin: 0 }}>
-                <span className="sec-tag t-accent2">A·02</span>
-                <span className="sec-title">Adjacency</span>
-              </div>
-              <span className="muted mono" style={{ fontSize: 11 }}>
-                {selectedSpace ? `${relList.length} · ${selectedSpace.name}` : `${reqCount} req · ${desCount} des`}
-              </span>
-            </div>
-            {selectedSpace && (
-              <div className="rel-filter">
-                Showing links for <strong>{selectedSpace.name}</strong>
-                <button className="btn small ghost" onClick={clearPick}>show all</button>
-              </div>
-            )}
-            {relList.length === 0 ? (
-              <div className="empty small">{selectedSpace ? 'No links for this space yet — use the Link tool (L) to connect it.' : 'Use the Link tool (L), then click two rooms to connect them.'}</div>
-            ) : (
-              <table className="rail-rel">
-                <tbody>
-                  {relList.map((l) => {
-                    const a = byId.get(l.space_a);
-                    const b = byId.get(l.space_b);
-                    if (!a || !b) return null;
-                    return (
-                      <tr key={l.id}>
-                        <td className="rel-glyph" style={{ width: 26 }}>
-                          <svg width="22" height="10" viewBox="0 0 22 10" aria-hidden="true">
-                            <line x1="2" y1="5" x2="20" y2="5" stroke="var(--text)" strokeWidth={l.strength === 'required' ? 1.6 : 1.2} strokeDasharray={l.strength === 'required' ? undefined : '1 3'} strokeLinecap="round" />
-                            {l.strength === 'required' && <><circle cx="2" cy="5" r="1.8" fill="var(--text)" /><circle cx="20" cy="5" r="1.8" fill="var(--text)" /></>}
-                          </svg>
-                        </td>
-                        <td className="rel-pair">
-                          <b>{a.name}</b> ↔ <b>{b.name}</b>
-                        </td>
-                        <td style={{ width: 96 }}>
-                          <select value={l.strength} onChange={async (e) => ((await api.updateAdjacency(l.id, { strength: e.target.value })), onChanged())} className="strength-select">
-                            <option value="required">Required</option>
-                            <option value="desired">Desired</option>
-                          </select>
-                        </td>
-                        <td style={{ width: 28 }} className="row-actions">
-                          <button className="btn small ghost danger" onClick={async () => ((await api.deleteAdjacency(l.id)), onChanged())}>
-                            ✕
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            )}
-          </section>
-        </aside>
+        <DiagramRail
+          units={units}
+          leaves={leaves}
+          byId={byId}
+          hasBuildings={hasBuildings}
+          groups={groups}
+          groupKey={groupKey}
+          areaTree={areaTree}
+          areaMode={areaMode}
+          setAreaMode={setAreaMode}
+          collapsed={collapsed}
+          toggleCollapse={toggleCollapse}
+          colorForLabel={colorForLabel}
+          colorOf={colorOf}
+          ea={ea}
+          drafts={drafts}
+          onAreaDraft={onAreaDraft}
+          anyPinned={anyPinned}
+          selected={selected}
+          selectedSpace={selectedSpace}
+          pickSpace={pickSpace}
+          clearPick={clearPick}
+          relList={relList}
+          reqCount={reqCount}
+          desCount={desCount}
+          onChanged={onChanged}
+          toggleSplit={toggleSplit}
+          startRailResize={startRailResize}
+        />
       )}
     </div>
   );

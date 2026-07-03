@@ -11,7 +11,7 @@ export function useImageDims(imgLayers) {
 
   useEffect(() => {
     for (const im of imgLayers) {
-      if (dims[im.id]) continue;
+      if (dims[im.id] || !im.image) continue; // pixels may still be in flight
       const img = new Image();
       img.onload = () =>
         setDims((d) => ({ ...d, [im.id]: { w: img.naturalWidth, h: img.naturalHeight } }));

@@ -95,3 +95,34 @@ test('scoreBand maps score ranges to colour bands', () => {
   assert.strictEqual(scoreBand(0.5), 'bad');  // < 0.7
   assert.strictEqual(scoreBand(null), null);
 });
+
+// ---- closestInstancePair ---------------------------------------------------
+
+import { closestInstancePair } from '../src/adjacency.js';
+
+test('closestInstancePair picks the minimal pair across instances', () => {
+  const positions = new Map([
+    ['1:0', { x: 0, y: 0 }],
+    ['1:1', { x: 100, y: 0 }],
+    ['2:0', { x: 110, y: 0 }],
+    ['2:1', { x: 500, y: 0 }],
+  ]);
+  const pair = closestInstancePair(positions, { id: 1, count: 2 }, { id: 2, count: 2 });
+  assert.equal(pair.d, 10); // 1:1 ↔ 2:0
+  assert.equal(pair.ai, 1);
+  assert.equal(pair.bi, 0);
+});
+
+test('closestInstancePair treats a missing/zero count as one instance', () => {
+  const positions = new Map([
+    ['1:0', { x: 0, y: 0 }],
+    ['2:0', { x: 3, y: 4 }],
+  ]);
+  const pair = closestInstancePair(positions, { id: 1 }, { id: 2 });
+  assert.equal(pair.d, 5);
+});
+
+test('closestInstancePair returns null when either side has no placed instance', () => {
+  const positions = new Map([['1:0', { x: 0, y: 0 }]]);
+  assert.equal(closestInstancePair(positions, { id: 1 }, { id: 9 }), null);
+});

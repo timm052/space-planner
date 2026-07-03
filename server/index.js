@@ -29,7 +29,6 @@ app.use('/api', settingsRouter);
 app.use('/api', proxyRouter);
 
 // Central error handler — catches anything thrown by route handlers.
-// eslint-disable-next-line no-unused-vars
 app.use((err, req, res, _next) => {
   console.error(err);
   res.status(500).json({ error: err.message || 'Internal server error' });

@@ -1,0 +1,73 @@
+/* Design tokens — dark (default) + light themes. The whole design system
+   lives here; components must use these variables, never one-off values. */
+
+/* ----------------------------------------------------------------------------
+   Design tokens — dark (default) + light themes.
+   Toggle via `data-theme="light"` on <html>. Token names match the redesign
+   handoff (`--bg2`, `--panel2/3`, `--accent2`, `--canvas-bg`, `--glass`, …).
+   --------------------------------------------------------------------------- */
+:root,
+:root[data-theme='dark'] {
+  /* Architectural dark theme — deep slate with a drafting-amber accent */
+  --bg: #0b0d12;
+  --bg2: #0f131a;
+  --panel: #161b24;
+  --panel2: #1e242f;
+  --panel3: #262d3a;
+  --border: #2c3340;
+  --border-soft: #222936;
+  --text: #eef1f7;
+  --muted: #8d96a8;
+  --faint: #5b6478;
+  --accent: #f0b53f;
+  --accent-ink: #1a1308;
+  --accent-soft: rgba(240, 181, 63, 0.14);
+  --accent2: #57c7d4;
+  --good: #4cc38a;
+  --bad: #e5675f;
+  --warn: #e8b04b;
+  --shadow: 0 12px 38px rgba(0, 0, 0, 0.42);
+  --canvas-bg: #11151c;
+  --contour: rgba(255, 255, 255, 0.12);
+  --glass: rgba(18, 22, 30, 0.82);
+  --glass-border: rgba(255, 255, 255, 0.09);
+  --grid: rgba(255, 255, 255, 0.035);
+  --footprint: rgba(255, 255, 255, 0.045);
+  --grid-major: rgba(255, 255, 255, 0.075);
+  --ruler-bg: rgba(255, 255, 255, 0.022);
+  --ruler-ink: #6b7486;
+  --focus: rgba(240, 181, 63, 0.55);
+  --rail-w: 340px;
+  font-family: 'Inter', system-ui, sans-serif;
+}
+
+:root[data-theme='light'] {
+  /* Drafting / site-plan light theme — warm paper with ink-amber accent */
+  --bg: #edebe4;
+  --bg2: #f6f5f1;
+  --panel: #ffffff;
+  --panel2: #f3f1ea;
+  --panel3: #e6e3d9;
+  --border: #d8d4c8;
+  --border-soft: #e6e3da;
+  --text: #1b2029;
+  --muted: #5f6878;
+  --faint: #9aa1ad;
+  --accent: #c5841a;
+  --accent-ink: #ffffff;
+  --accent-soft: rgba(197, 132, 26, 0.13);
+  --accent2: #1c8499;
+  --good: #2f9d6b;
+  --bad: #cc4a42;
+  --warn: #b3812a;
+  --shadow: 0 10px 30px rgba(40, 40, 60, 0.14);
+  --canvas-bg: #e7e4dc;
+  --contour: rgba(40, 50, 70, 0.14);
+  --glass: rgba(255, 255, 255, 0.82);
+  --glass-border: rgba(0, 0, 0, 0.08);
+  --grid: rgba(40, 50, 70, 0.055);
+  --footprint: rgba(40, 50, 70, 0.045);
+  --grid-major: rgba(40, 50, 70, 0.1);
+  --ruler-bg: rgba(40, 50, 70, 0.03);
+  --ruler-ink: #8a93a3;
+}

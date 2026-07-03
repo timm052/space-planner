@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { oneOf, clampNum } from '../validate.js';
 import { db } from '../db.js';
 import { requireProject } from './projects.js';
+import { IMAGE_META_COLS } from '../serialize.js';
 
 const router = Router();
 
@@ -24,7 +25,16 @@ router.post('/projects/:id/images', (req, res) => {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(project.id, kind, name, image, mpp, opacity, visible ? 1 : 0, x, y, rot, max + 1, attribution);
-  res.status(201).json(db.prepare('SELECT * FROM images WHERE id = ?').get(r.lastInsertRowid));
+  // Metadata only — the uploader already holds the data URL (it seeds the client cache).
+  res.status(201).json(db.prepare(`SELECT ${IMAGE_META_COLS} FROM images WHERE id = ?`).get(r.lastInsertRowid));
+});
+
+// GET /api/images/:id/data — the pixels. Image content is immutable after
+// upload (only metadata changes), so the client fetches this once per session.
+router.get('/images/:id/data', (req, res) => {
+  const row = db.prepare('SELECT image FROM images WHERE id = ?').get(Number(req.params.id));
+  if (!row) return res.status(404).json({ error: 'Image not found' });
+  res.json({ image: row.image });
 });
 
 // PUT /api/images/:id
@@ -42,7 +52,7 @@ router.put('/images/:id', (req, res) => {
     const setSql = Object.keys(updates).map((f) => `${f} = ?`).join(', ');
     db.prepare(`UPDATE images SET ${setSql} WHERE id = ?`).run(...Object.values(updates), img.id);
   }
-  res.json(db.prepare('SELECT * FROM images WHERE id = ?').get(img.id));
+  res.json(db.prepare(`SELECT ${IMAGE_META_COLS} FROM images WHERE id = ?`).get(img.id));
 });
 
 // DELETE /api/images/:id

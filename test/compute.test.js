@@ -6,7 +6,6 @@ import {
   childIdSet,
   isPureContainer,
   isWithinDescendant,
-  isLeaf,
   leafSpaces,
   childrenOf,
   orderedTree,

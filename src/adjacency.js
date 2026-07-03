@@ -56,3 +56,24 @@ export function scoreBand(score) {
   if (score >= 0.7) return 'warn';
   return 'bad';
 }
+
+// Closest pair of instances between two spaces. `positions` is a Map keyed
+// `"${spaceId}:${instanceIndex}"` → { x, y } (the sim's node map, or any
+// projected copy of it — e.g. the stacked view's screen positions).
+// Returns { a, b, d, ai, bi } or null when either space has no placed instance.
+// Adjacency springs, link rendering, PDF links and the stacked view all share
+// this one implementation.
+export function closestInstancePair(positions, sa, sb) {
+  let best = null;
+  for (let i = 0; i < Math.max(1, sa.count || 1); i++) {
+    const a = positions.get(`${sa.id}:${i}`);
+    if (!a) continue;
+    for (let j = 0; j < Math.max(1, sb.count || 1); j++) {
+      const b = positions.get(`${sb.id}:${j}`);
+      if (!b) continue;
+      const d = Math.hypot(b.x - a.x, b.y - a.y);
+      if (!best || d < best.d) best = { a, b, d, ai: i, bi: j };
+    }
+  }
+  return best;
+}

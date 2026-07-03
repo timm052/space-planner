@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { api } from '../api.js';
 import { briefNet, snapshotNet, leafSpaces, fmtArea, fmtPct } from '../compute.js';
 import { categoryColor, statusColor } from '../viz.js';
+import { Banner, Empty } from './ui.jsx';
 
 const statusOf = (pct, tol) => (pct > tol ? 'over' : pct < -tol ? 'under' : 'on');
 const fmtNum = (v) => (v == null || Number.isNaN(v) ? '—' : Math.round(v).toLocaleString());
@@ -42,7 +43,7 @@ function ChangeSchedule({ project, spaces, snapshots }) {
       </div>
       <div className="flat-card" style={{ padding: '8px 20px' }}>
         {rows.length === 0 ? (
-          <div className="empty small">No measured spaces changed between these milestones.</div>
+          <Empty small>No measured spaces changed between these milestones.</Empty>
         ) : (
           rows.map(({ s, va, vb, delta }) => {
             const grew = delta > 0;
@@ -76,13 +77,13 @@ export default function SnapshotsTab({ project, spaces, snapshots, onChanged }) 
   }
 
   if (spaces.length === 0) {
-    return <div className="empty">Define the brief first — milestones record designed areas against it.</div>;
+    return <Empty>Define the brief first — milestones record designed areas against it.</Empty>;
   }
 
   if (editing != null) {
     return (
       <div className="screen narrow">
-        {error && <div className="banner error">{error}</div>}
+        {error && <Banner>{error}</Banner>}
         <SnapshotEditor
           project={project}
           spaces={spaces}
@@ -103,7 +104,7 @@ export default function SnapshotsTab({ project, spaces, snapshots, onChanged }) 
 
   return (
     <div className="screen narrow">
-      {error && <div className="banner error">{error}</div>}
+      {error && <Banner>{error}</Banner>}
 
       <div className="sec-head">
         <span className="sec-tag">M·01</span>
@@ -114,7 +115,7 @@ export default function SnapshotsTab({ project, spaces, snapshots, onChanged }) 
       </div>
 
       {snapshots.length === 0 ? (
-        <div className="empty">No milestones yet. Record one after each design review or stage issue.</div>
+        <Empty>No milestones yet. Record one after each design review or stage issue.</Empty>
       ) : (
         <div className="ms-grid">
           {snapshots.map((sn, i) => {

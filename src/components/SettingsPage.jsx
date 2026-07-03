@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api.js';
+import { Banner, Empty } from './ui.jsx';
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState(null);
@@ -24,8 +25,8 @@ export default function SettingsPage() {
     }
   }
 
-  if (error && !settings) return <div className="banner error">{error}</div>;
-  if (!settings) return <div className="empty">Loading settings…</div>;
+  if (error && !settings) return <Banner>{error}</Banner>;
+  if (!settings) return <Empty>Loading settings…</Empty>;
 
   const set = (key) => (e) => setSettings({ ...settings, [key]: e.target.value });
 

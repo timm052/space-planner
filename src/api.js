@@ -43,6 +43,7 @@ export const api = {
     request(`/api/projects/${projectId}/images`, { method: 'POST', body: JSON.stringify(data) }),
   updateImage: (id, data) => request(`/api/images/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteImage: (id) => request(`/api/images/${id}`, { method: 'DELETE' }),
+  getImageData: (id) => request(`/api/images/${id}/data`),
 
   createSnapshot: (projectId, data) =>
     request(`/api/projects/${projectId}/snapshots`, { method: 'POST', body: JSON.stringify(data) }),

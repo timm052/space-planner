@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { W, H } from './useViewport.js';
+import { closestInstancePair } from '../adjacency.js';
 
 /**
  * Runs the force-directed bubble simulation in a requestAnimationFrame loop.
@@ -87,21 +87,7 @@ export function useSimulation({
     const fixedInst = (o) => held(o.key) || !!instPinRef.current(o.s, o.i);
 
     // Closest instance pair between two spaces (for adjacency springs).
-    const closestPair = (sa, sb) => {
-      const nodes = nodesRef.current;
-      let best = null;
-      for (let i = 0; i < Math.max(1, sa.count || 1); i++) {
-        const a = nodes.get(`${sa.id}:${i}`);
-        if (!a) continue;
-        for (let j = 0; j < Math.max(1, sb.count || 1); j++) {
-          const b = nodes.get(`${sb.id}:${j}`);
-          if (!b) continue;
-          const d = Math.hypot(b.x - a.x, b.y - a.y);
-          if (!best || d < best.d) best = { a, b, d, ai: i, bi: j };
-        }
-      }
-      return best;
-    };
+    const closestPair = (sa, sb) => closestInstancePair(nodesRef.current, sa, sb);
 
     const simulate = (alpha) => {
       const nodes = nodesRef.current;

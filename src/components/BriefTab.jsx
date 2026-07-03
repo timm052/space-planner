@@ -13,6 +13,7 @@ import {
   fmtArea,
 } from '../compute.js';
 import { squarify, darkHex, categoryColor, BUILDING_COLORS } from '../viz.js';
+import { Banner, Empty } from './ui.jsx';
 
 const BUILDING_FALLBACK = ['#f0b53f', '#57c7d4', '#4cc38a', '#c678dd'];
 
@@ -520,7 +521,7 @@ export default function BriefTab({ project, spaces, onChanged, selectedSpaceId =
 
         {briefView === 'treemap' ? (
           spaces.length === 0 ? (
-            <div className="empty">The brief is empty. Switch to Schedule to add the client's required spaces.</div>
+            <Empty>The brief is empty. Switch to Schedule to add the client&rsquo;s required spaces.</Empty>
           ) : (
             <BriefTreemap
               spaces={spaces}
@@ -566,7 +567,7 @@ export default function BriefTab({ project, spaces, onChanged, selectedSpaceId =
           )}
         </div>
       </form>
-      {error && <div className="banner error">{error}</div>}
+      {error && <Banner>{error}</Banner>}
 
       {spaces.length > 0 && (
         <p className="brief-hint hint">
@@ -576,7 +577,7 @@ export default function BriefTab({ project, spaces, onChanged, selectedSpaceId =
       )}
 
       {spaces.length === 0 ? (
-        <div className="empty">The brief is empty. Add a building or the client's required spaces above.</div>
+        <Empty>The brief is empty. Add a building or the client&rsquo;s required spaces above.</Empty>
       ) : (
         <div className="card">
           <table className="table brief-table">

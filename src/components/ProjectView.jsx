@@ -5,6 +5,7 @@ import Dashboard from './Dashboard.jsx';
 import BubbleTab from './BubbleTab.jsx';
 import BriefTab from './BriefTab.jsx';
 import SnapshotsTab from './SnapshotsTab.jsx';
+import { Banner, Empty } from './ui.jsx';
 
 const TABS = ['Dashboard', 'Bubble Diagram', 'Brief', 'Milestones'];
 
@@ -29,8 +30,8 @@ export default function ProjectView({ projectId, onBack }) {
     refresh();
   }, [refresh]);
 
-  if (error) return <div className="scroll"><div className="page"><div className="banner error">{error}</div></div></div>;
-  if (!data) return <div className="scroll"><div className="page"><div className="empty">Loading project…</div></div></div>;
+  if (error) return <div className="scroll"><div className="page"><Banner>{error}</Banner></div></div>;
+  if (!data) return <div className="scroll"><div className="page"><Empty>Loading project…</Empty></div></div>;
 
   const { project, spaces, snapshots, adjacencies = [], images = [] } = data;
 

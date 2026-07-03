@@ -4,6 +4,7 @@ import { useTheme } from './theme.jsx';
 import ProjectList from './components/ProjectList.jsx';
 import ProjectView from './components/ProjectView.jsx';
 import SettingsPage from './components/SettingsPage.jsx';
+import { Banner } from './components/ui.jsx';
 
 function BrandLogo() {
   // Amber rounded square holding a 4-cell drafting glyph (3 plates + a bubble).
@@ -89,7 +90,7 @@ export default function App() {
         {error && (
           <div className="scroll">
             <div className="page">
-              <div className="banner error">{error}</div>
+              <Banner>{error}</Banner>
             </div>
           </div>
         )}

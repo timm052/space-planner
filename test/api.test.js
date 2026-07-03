@@ -100,11 +100,23 @@ test('PUT /api/projects/:id updates known fields and ignores unknown', async () 
   assert.equal(body.not_a_column, undefined);
 });
 
-test('PUT /api/projects/:id can clear an image to null (key present)', async () => {
+test('PUT /api/projects/:id can clear a nullable field via explicit null (key present)', async () => {
   const id = await newProject();
-  await api('PUT', `/api/projects/${id}`, { bg_image: 'data:image/png;base64,AAAA' });
-  const cleared = await api('PUT', `/api/projects/${id}`, { bg_image: null });
-  assert.equal(cleared.body.bg_image, null);
+  await api('PUT', `/api/projects/${id}`, { display_scale: 0.1323 });
+  const cleared = await api('PUT', `/api/projects/${id}`, { display_scale: null });
+  assert.equal(cleared.body.display_scale, null);
+});
+
+test('project responses never carry the legacy base64 image columns', async () => {
+  const id = await newProject();
+  // Legacy columns stay writable (additive-only rule) but must not travel back.
+  const put = await api('PUT', `/api/projects/${id}`, { bg_image: 'data:image/png;base64,AAAA' });
+  assert.equal(put.status, 200);
+  assert.ok(!('bg_image' in put.body));
+  assert.ok(!('sat_image' in put.body));
+  const { body } = await api('GET', `/api/projects/${id}`);
+  assert.ok(!('bg_image' in body.project));
+  assert.ok(!('sat_image' in body.project));
 });
 
 test('GET /api/projects/:id returns the full bundle; 404 when missing', async () => {
@@ -289,6 +301,25 @@ test('POST image: requires data, coerces visible, supports update/delete', async
   assert.equal(upd.body.opacity, 0.3);
   assert.equal((await api('DELETE', `/api/images/${img.id}`)).status, 204);
   assert.equal((await api('DELETE', `/api/images/${img.id}`)).status, 404);
+});
+
+test('image payloads are metadata-only; pixels come from /data', async () => {
+  const pid = await newProject();
+  const dataUrl = 'data:image/png;base64,BBBB';
+  const img = (await api('POST', `/api/projects/${pid}/images`, { image: dataUrl })).body;
+  // POST / PUT responses and the project bundle omit the data URL…
+  assert.ok(!('image' in img));
+  const upd = await api('PUT', `/api/images/${img.id}`, { opacity: 0.4 });
+  assert.ok(!('image' in upd.body));
+  const bundle = (await api('GET', `/api/projects/${pid}`)).body;
+  assert.equal(bundle.images.length, 1);
+  assert.ok(!('image' in bundle.images[0]));
+  assert.equal(bundle.images[0].id, img.id);
+  // …while GET /api/images/:id/data serves exactly what was uploaded.
+  const data = await api('GET', `/api/images/${img.id}/data`);
+  assert.equal(data.status, 200);
+  assert.equal(data.body.image, dataUrl);
+  assert.equal((await api('GET', '/api/images/99999/data')).status, 404);
 });
 
 // ---- Settings -----------------------------------------------------------

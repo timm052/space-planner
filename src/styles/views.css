@@ -1,0 +1,243 @@
+/* Redesigned data screens: shared drafting vocabulary (sec-heads, plates,
+   KPIs, dotted-leader schedules), Milestones, Brief treemap + summary,
+   snapshots, drift chart. Contiguous slice — see note in base.css. */
+
+/* ============================================================================
+   Redesign — flat "drafting / site-plan" data screens
+   Shared vocabulary used by Dashboard, Milestones and the Brief summary.
+   ========================================================================== */
+.screen { max-width: 1500px; margin: 0 auto; padding: 24px 32px 48px; width: 100%; }
+.screen.narrow { max-width: 1100px; }
+
+.mono { font-family: 'JetBrains Mono', monospace; }
+.swatch { width: 9px; height: 9px; flex: none; display: inline-block; }
+
+/* Section header: mono reference tag + letter-spaced Space Grotesk title. */
+.sec-head { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+.sec-tag {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 1px 5px;
+}
+.sec-tag.t-accent2 { color: var(--accent2); }
+.sec-tag.t-bad { color: var(--bad); }
+.sec-tag.t-faint { color: var(--faint); }
+.sec-title {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 13px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text);
+  font-weight: 600;
+}
+.sec-meta { font-size: 11px; color: var(--muted); }
+.sec-meta.right { margin-left: auto; }
+
+/* Flat surface with an optional 3px status accent bar across the top. */
+.flat-card {
+  position: relative;
+  overflow: hidden;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  padding: 18px 20px;
+}
+.flat-card .accent-bar { position: absolute; top: 0; left: 0; width: 100%; height: 3px; }
+
+/* KPI cards. */
+.kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 18px; }
+.kpi { padding: 17px 18px; }
+.kpi-tagline { display: flex; align-items: center; gap: 7px; margin-bottom: 9px; }
+.kpi-tag {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--faint);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+.kpi-label { font-size: 10.5px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.kpi-value { font-family: 'Space Grotesk', sans-serif; font-size: 32px; font-weight: 700; letter-spacing: -0.02em; line-height: 1; }
+.kpi-value .unit { font-size: 14px; color: var(--faint); font-weight: 500; }
+.kpi-foot { font-size: 11px; color: var(--muted); margin-top: 7px; }
+
+/* Dotted-leader schedule row (flagged spaces, change schedule, brief summary). */
+.dl-row { display: flex; align-items: center; gap: 9px; padding: 8px 0; border-bottom: 1px solid var(--border-soft); }
+.dl-row:last-child { border-bottom: none; }
+.dl-row.clickable { cursor: pointer; }
+.dl-row.clickable:hover { background: var(--panel2); }
+.dl-row.sel { background: var(--panel2); }
+.dl-name { font-size: 12.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dl-dept { font-size: 11px; color: var(--faint); }
+.dl-lead { flex: 1; min-width: 8px; border-bottom: 1px dotted var(--border); transform: translateY(-3px); }
+.dl-val { font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+.dl-val.strong { font-weight: 700; }
+
+/* Rollup grid (Category | Target | Designed | Δ). */
+.rollup-head,
+.rollup-row { display: grid; grid-template-columns: 1fr 76px 76px 64px; align-items: center; }
+.rollup-head {
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--faint);
+  font-weight: 600;
+}
+.rollup-head .r { text-align: right; }
+.rollup-row { padding: 9px 0; border-bottom: 1px solid var(--border-soft); }
+.rollup-row:last-child { border-bottom: none; }
+.rollup-name { display: flex; align-items: center; gap: 9px; min-width: 0; font-size: 12.5px; color: var(--text); }
+.rollup-cell { text-align: right; font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+
+.two-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+
+/* Milestone cards + change schedule. */
+.ms-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 28px; }
+.ms-card { padding: 18px; }
+.ms-card.latest { border-color: var(--accent); }
+.ms-card-top { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.ms-var { font-size: 10px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
+.ms-label { font-family: 'Space Grotesk', sans-serif; font-size: 16px; font-weight: 600; color: var(--text); margin-bottom: 2px; }
+.ms-date { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--muted); margin-bottom: 14px; }
+.ms-net { font-family: 'Space Grotesk', sans-serif; font-size: 30px; font-weight: 700; letter-spacing: -0.02em; line-height: 1; }
+.ms-net .unit { font-size: 13px; color: var(--faint); font-weight: 500; }
+.ms-ministats { display: flex; gap: 16px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border-soft); }
+.ms-ministat-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--faint); }
+.ms-ministat-val { font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--text); margin-top: 2px; }
+
+/* Flat SVG drift chart. */
+.drift-card { margin-bottom: 18px; padding: 18px 20px 8px; }
+.drift-wrap { height: 250px; }
+.drift-wrap svg { display: block; width: 100%; height: 100%; }
+
+@media (max-width: 1100px) {
+  .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+  .two-grid { grid-template-columns: 1fr; }
+  .ms-grid { grid-template-columns: 1fr; }
+}
+
+/* ============================================================================
+   Redesign — Brief tab (treemap / schedule + drafting summary sidebar)
+   ========================================================================== */
+.brief-layout {
+  display: flex;
+  gap: 24px;
+  padding: 24px 32px 44px;
+  max-width: 1500px;
+  margin: 0 auto;
+  align-items: flex-start;
+}
+.brief-main { flex: 1; min-width: 0; }
+.brief-summary { width: 300px; flex: none; display: flex; flex-direction: column; gap: 14px; position: sticky; top: 0; }
+
+.brief-viewbar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+.brief-viewbar-hint { font-size: 11.5px; color: var(--faint); }
+
+/* Segmented toggle (Treemap | Schedule). */
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 9px; overflow: hidden; }
+.seg button {
+  background: var(--panel);
+  border: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 7px 14px;
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s;
+}
+.seg button:hover { color: var(--text); }
+.seg button.active { background: var(--accent); color: var(--accent-ink); }
+
+/* Treemap. */
+.treemap-card { padding: 14px; }
+.treemap-field { position: relative; width: 100%; background: var(--bg2); border-radius: 4px; overflow: hidden; }
+.treemap-tile {
+  position: absolute;
+  box-sizing: border-box;
+  padding: 6px 7px;
+  cursor: pointer;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.16);
+  transition: filter 0.12s;
+}
+.treemap-tile:hover { filter: brightness(1.07); }
+.treemap-tile.sel { box-shadow: inset 0 0 0 2.5px var(--text); }
+.treemap-name {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.treemap-pct { font-family: 'JetBrains Mono', monospace; font-size: 10px; opacity: 0.82; margin-top: 3px; }
+.treemap-area { font-family: 'JetBrains Mono', monospace; font-size: 9.5px; opacity: 0.62; }
+.treemap-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 12px; align-items: center; }
+.treemap-legend-item { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+.treemap-legend-total { margin-left: auto; font-size: 10.5px; color: var(--faint); }
+
+/* Σ medallion with contour rings. */
+.medallion { padding: 20px; }
+.medallion-rings { position: absolute; right: -36px; top: 50%; transform: translateY(-50%); pointer-events: none; }
+.medallion-head { position: relative; display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.medallion-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.medallion-value {
+  position: relative;
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 44px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.02;
+  margin: 2px 0 4px;
+}
+.medallion-value .unit { font-size: 18px; color: var(--muted); font-weight: 500; }
+.medallion-foot { position: relative; font-size: 12px; color: var(--muted); }
+
+/* Flat hairline-divided proportional split bar. */
+.split-bar { display: flex; height: 9px; overflow: hidden; margin-bottom: 16px; border: 1px solid var(--border); }
+.split-bar > span { border-left: 1px solid var(--panel); }
+.split-bar > span:first-child { border-left: none; }
+
+/* Shared-selection highlight on Brief schedule rows. */
+.brief-table tr.sel-row > td { background: var(--panel2); box-shadow: inset 2px 0 0 var(--accent); }
+
+@media (max-width: 1000px) {
+  .brief-layout { flex-direction: column; }
+  .brief-summary { width: 100%; position: static; flex-direction: row; flex-wrap: wrap; }
+  .brief-summary > * { flex: 1 1 240px; }
+}
+
+/* ---------- snapshots ---------- */
+.snapshot-list { display: flex; flex-direction: column; gap: 12px; }
+.snapshot-card { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 0; }
+.snapshot-card h3 { margin: 0; }
+.snapshot-stats { display: flex; gap: 22px; color: var(--muted); font-size: 13px; }
+.snapshot-stats strong { color: var(--text); font-family: 'JetBrains Mono', monospace; }
+.area-input { max-width: 130px; padding: 5px 8px; }
+
+/* ---------- chart ---------- */
+.chart { width: 100%; height: auto; }
+.chart-band { fill: rgba(76, 195, 138, 0.08); }
+.chart-target { stroke: var(--good); stroke-dasharray: 5 4; stroke-width: 1.5; }
+.chart-grid { stroke: var(--border); stroke-width: 0.5; }
+.chart-line { fill: none; stroke: var(--accent); stroke-width: 2.5; }
+.chart-dot { fill: var(--accent); stroke: var(--bg); stroke-width: 2; }
+.chart-label { fill: var(--muted); font-size: 11px; }
+.chart-label.dim { fill: var(--faint); font-size: 10px; }
