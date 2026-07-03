@@ -1506,6 +1506,30 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     debouncers.current.north = setTimeout(() => saveProject({ north_deg: d }, { silent: true }), 250);
   }
 
+  // ---------- PNG ----------
+  // WYSIWYG capture of the current view at 2×. In the 3-D floor mode the
+  // WebGL canvas is grabbed directly; otherwise the SVG is rasterized.
+  async function exportPng() {
+    setError(null);
+    try {
+      // Dynamic import keeps the rasterizer out of the initial bundle.
+      const { exportDiagramPng } = await import('../pngExport.js');
+      const glCanvas =
+        hasLevels && floorMode === '3d' ? stageRef.current?.querySelector('.stage-3d canvas') : null;
+      const background =
+        getComputedStyle(document.documentElement).getPropertyValue('--canvas-bg').trim() || '#11151c';
+      await exportDiagramPng({
+        svgEl: svgRef.current,
+        glCanvas,
+        background,
+        scale: 2,
+        fileName: `${project.name.replace(/[^\w-]+/g, '_')}_diagram.png`,
+      });
+    } catch (err) {
+      setError(`PNG export failed: ${err.message}`);
+    }
+  }
+
   // ---------- PDF ----------
   async function exportPdf() {
     const nodes = nodesRef.current;
@@ -1772,6 +1796,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                 onToggle={() => setHighlightGaps((v) => !v)}
               />
             )}
+            <button className="act-btn wide" onClick={exportPng} title="Export the current view as a PNG image (2×)">↓ PNG</button>
             <button className="act-btn wide" onClick={exportPdf} title="Export a scale-accurate PDF">↓ PDF</button>
             <button className="act-btn" onClick={() => setShowHelp(true)} title="Shortcuts & help (?)">?</button>
           </div>

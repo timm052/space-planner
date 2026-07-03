@@ -40,6 +40,10 @@ The near-term core is now in place:
   floors together, a single floor at a time, or the floor plans as flat isometric
   planes — stacked apart (offset), or overlaid on the same plane to compare
   footprints (pure helpers in `floors.js`, tested).
+- **PNG export** — a ↓ PNG button captures the current diagram view at 2× as a
+  presentation-ready image: the SVG is rasterized with styles inlined and the
+  self-hosted fonts embedded (`pngExport.js`, lazy-loaded); in the 3-D floor
+  mode it grabs the WebGL frame instead.
 
 ## Near term (rounding out the core)
 
