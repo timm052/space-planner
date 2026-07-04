@@ -741,9 +741,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     }
     const node = nodesRef.current.get(drag.key);
     if (!node) return;
-    drag.moved += Math.hypot(x - node.x, y - node.y);
-    node.x = x;
-    node.y = y;
+    const tx = drag.offset ? x + drag.offset.x : x;
+    const ty = drag.offset ? y + drag.offset.y : y;
+    drag.moved += Math.hypot(tx - node.x, ty - node.y);
+    node.x = tx;
+    node.y = ty;
     setTick((t) => t + 1);
   }
 
@@ -823,7 +825,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       const keys = descendantInstanceKeys(o.s.id);
       if (keys.length > 1) groupKeys = keys;
     }
-    let starts = null, anchor = null, groupSet = null;
+    let starts = null, anchor = null, groupSet = null, offset = null;
     if (groupKeys) {
       anchor = toSvgCoords(e);
       groupSet = new Set(groupKeys);
@@ -833,13 +835,44 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
           return n ? { key: k, x: n.x, y: n.y } : null;
         })
         .filter(Boolean);
+    } else {
+      // Keep the grab point under the cursor: without this the bubble's CENTRE
+      // snaps to the cursor on the first move — a visible jump when grabbed
+      // near its edge. (Group drags already move by deltas from `anchor`.)
+      const n = nodesRef.current.get(o.key);
+      const p = toSvgCoords(e);
+      if (n) offset = { x: n.x - p.x, y: n.y - p.y };
     }
-    dragRef.current = { key: o.key, spaceId: o.s.id, idx: o.i, moved: 0, starts, anchor, groupSet };
+    dragRef.current = { key: o.key, spaceId: o.s.id, idx: o.i, moved: 0, starts, anchor, groupSet, offset };
   }
 
   function commitView(v) {
     clearTimeout(debouncers.current.view);
     debouncers.current.view = setTimeout(() => saveProject({ view_x: v.x, view_y: v.y }, { silent: true }), 500);
+  }
+
+  // Glide the view to a target pan (Recentre) instead of jumping. Honours
+  // prefers-reduced-motion by snapping straight to the target.
+  const viewTweenRef = useRef(null);
+  useEffect(() => () => cancelAnimationFrame(viewTweenRef.current), []);
+  function animateViewTo(target) {
+    cancelAnimationFrame(viewTweenRef.current);
+    if (typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      setView(target);
+      commitView(target);
+      return;
+    }
+    const from = { ...viewRef.current };
+    const dur = 260;
+    const t0 = performance.now();
+    const stepTween = (now) => {
+      const p = Math.min(1, (now - t0) / dur);
+      const e = 1 - (1 - p) ** 3; // ease-out cubic
+      setView({ x: from.x + (target.x - from.x) * e, y: from.y + (target.y - from.y) * e });
+      if (p < 1) viewTweenRef.current = requestAnimationFrame(stepTween);
+      else commitView(target);
+    };
+    viewTweenRef.current = requestAnimationFrame(stepTween);
   }
 
   // Fresh position from the sim node, falling back to the previous pin.
@@ -1634,7 +1667,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
             onTool={(t) => applySel((s) => linking.setTool(s, t))}
             autoRunning={autoRunning}
             onAutoLayout={runAutoLayout}
-            onRecentre={() => { setView({ x: 0, y: 0 }); commitView({ x: 0, y: 0 }); }}
+            onRecentre={() => animateViewTo({ x: 0, y: 0 })}
           />
           {error && (
             <StagePopover className="error" onClose={() => setError(null)}>

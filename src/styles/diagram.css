@@ -841,6 +841,30 @@ kbd {
 }
 ::-webkit-scrollbar-thumb:hover { background: var(--border); background-clip: padding-box; }
 
+/* ---------- motion & affordance polish ---------- */
+/* Bubbles hint at interactivity under the cursor; selection emphasis eases in
+   rather than snapping. (Brightness sits on the GROUP so it never overrides a
+   shape's own SVG filter attribute, e.g. the sketch style.) */
+.bubble:not(.stacked):hover { filter: brightness(1.06); }
+.bubble > circle, .bubble > rect { transition: stroke-width 0.12s ease, fill-opacity 0.15s ease, stroke 0.15s ease; }
+
+/* Links thicken under the cursor so "click a link to edit it" is discoverable. */
+.link { transition: stroke-width 0.1s ease, stroke 0.15s ease; }
+.link-hit:hover .link { stroke-width: 3; }
+
+/* Pin / multi-selection rings pop in instead of appearing. */
+.pin-ring, .multi-ring { transform-box: fill-box; transform-origin: center; animation: ring-pop 0.16s ease-out; }
+@keyframes ring-pop { from { opacity: 0; transform: scale(0.85); } }
+
+/* The bottom-centre HUD (action bar / hint) rises in. Keyframes repeat the
+   base translateX(-50%) so the centring survives the animation. */
+.action-bar, .stage-hint { animation: hud-in 0.18s cubic-bezier(0.2, 0.9, 0.3, 1); }
+@keyframes hud-in { from { opacity: 0; transform: translateX(-50%) translateY(8px); } }
+
+/* Stage popovers (layers / more / satellite / calibration / error) drop in. */
+.stage-popover { animation: popover-in 0.15s ease-out; }
+@keyframes popover-in { from { opacity: 0; transform: translateY(-6px); } }
+
 /* Respect users who ask for less motion. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
