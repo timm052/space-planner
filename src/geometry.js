@@ -138,6 +138,40 @@ export function smoothPolygonPoints(pts, seg = 12) {
   return out;
 }
 
+/**
+ * Move one vertex of an area-locked polygon so it renders exactly at `target`
+ * (diagram units relative to the shape's node), while the area lock rescales
+ * the outline to keep the RENDERED (smoothed) area equal to `lockedArea`.
+ *
+ * The vertex position and the lock's scale factor depend on each other:
+ * verts[vi] = target / f and f = √(lockedArea / area(smooth(verts))). The old
+ * drag code ran ONE iteration of that fixed point per pointer frame, feeding
+ * each frame's scale into the next frame's mapping — the outline visibly
+ * juddered and snapped back and forth. This solves the fixed point to
+ * convergence in one call (damped iteration), so the result is a smooth,
+ * deterministic function of the cursor with no cross-frame feedback.
+ *
+ * Returns { verts, f }: the new vertex array (input is not mutated) and the
+ * converged scale factor (√(lockedArea / smoothedArea), i.e. what polyScaleOf
+ * recomputes from these verts).
+ */
+export function solveAreaLockedVertex(verts, vi, target, lockedArea, seg = 12) {
+  const out = verts.map((p) => ({ ...p }));
+  const areaOf = (v) => polygonArea(smoothPolygonPoints(v, seg)) || polygonArea(v) || 1;
+  let f = Math.sqrt(lockedArea / areaOf(out));
+  for (let i = 0; i < 20; i++) {
+    out[vi] = { x: target.x / f, y: target.y / f };
+    const nf = Math.sqrt(lockedArea / areaOf(out));
+    if (Math.abs(nf - f) <= f * 1e-4) {
+      f = nf;
+      break;
+    }
+    f = (f + nf) / 2; // damped — the plain iteration can overshoot on big moves
+  }
+  out[vi] = { x: target.x / f, y: target.y / f };
+  return { verts: out, f };
+}
+
 // Axis-aligned bounding box of a point set.
 export function polyBounds(pts) {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;

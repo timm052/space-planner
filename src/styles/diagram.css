@@ -516,13 +516,19 @@
   border-radius: 999px; padding: 6px 14px;
 }
 .r3f-floor-label {
-  font-size: 12px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
-  color: var(--muted); white-space: nowrap; pointer-events: none; user-select: none;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
+  font-family: 'Space Grotesk', 'Inter', sans-serif;
+  font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--text); white-space: nowrap; pointer-events: none; user-select: none;
+  background: var(--glass); border: 1px solid var(--glass-border); border-radius: 999px;
+  padding: 3px 10px; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  box-shadow: var(--shadow);
 }
 .r3f-room-label {
-  font-size: 11px; font-weight: 600; color: #fff; white-space: nowrap;
-  pointer-events: none; user-select: none; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+  font-family: 'Inter', sans-serif;
+  font-size: 11px; font-weight: 600; color: var(--text); white-space: nowrap;
+  pointer-events: none; user-select: none;
+  background: var(--glass); border: 1px solid var(--glass-border); border-radius: 999px;
+  padding: 2px 8px; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
 }
 /* Slab edge faces — give each floor plate a concrete-slab thickness in offset mode. */
 .slab-face { pointer-events: none; }
@@ -632,7 +638,9 @@ kbd {
 
 /* Freeform polygon shapes — smooth, bubble-like, animated while dragging */
 .poly-shape { transition: d 0.09s ease-out; animation: poly-pop 0.28s cubic-bezier(0.34, 1.56, 0.64, 1); }
-.poly-shape.editing { transition: d 0.07s ease-out; }
+/* While editing, the outline is solved per pointer frame (already smooth) —
+   a transition here just makes the shape lag and rubber-band under the handle. */
+.poly-shape.editing { transition: none; }
 @keyframes poly-pop { from { opacity: 0.2; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .poly-shape { transition: none; animation: none; } }
 
@@ -840,6 +848,30 @@ kbd {
   background-clip: padding-box;
 }
 ::-webkit-scrollbar-thumb:hover { background: var(--border); background-clip: padding-box; }
+
+/* ---------- motion & affordance polish ---------- */
+/* Bubbles hint at interactivity under the cursor; selection emphasis eases in
+   rather than snapping. (Brightness sits on the GROUP so it never overrides a
+   shape's own SVG filter attribute, e.g. the sketch style.) */
+.bubble:not(.stacked):hover { filter: brightness(1.06); }
+.bubble > circle, .bubble > rect { transition: stroke-width 0.12s ease, fill-opacity 0.15s ease, stroke 0.15s ease; }
+
+/* Links thicken under the cursor so "click a link to edit it" is discoverable. */
+.link { transition: stroke-width 0.1s ease, stroke 0.15s ease; }
+.link-hit:hover .link { stroke-width: 3; }
+
+/* Pin / multi-selection rings pop in instead of appearing. */
+.pin-ring, .multi-ring { transform-box: fill-box; transform-origin: center; animation: ring-pop 0.16s ease-out; }
+@keyframes ring-pop { from { opacity: 0; transform: scale(0.85); } }
+
+/* The bottom-centre HUD (action bar / hint) rises in. Keyframes repeat the
+   base translateX(-50%) so the centring survives the animation. */
+.action-bar, .stage-hint { animation: hud-in 0.18s cubic-bezier(0.2, 0.9, 0.3, 1); }
+@keyframes hud-in { from { opacity: 0; transform: translateX(-50%) translateY(8px); } }
+
+/* Stage popovers (layers / more / satellite / calibration / error) drop in. */
+.stage-popover { animation: popover-in 0.15s ease-out; }
+@keyframes popover-in { from { opacity: 0; transform: translateY(-6px); } }
 
 /* Respect users who ask for less motion. */
 @media (prefers-reduced-motion: reduce) {

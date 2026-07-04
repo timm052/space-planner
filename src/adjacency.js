@@ -24,10 +24,30 @@ export function linkSatisfied(strength, gap, thresholds = DEFAULT_THRESHOLDS_M) 
   return gap <= t;
 }
 
+// A link's credit falls from 1 to 0 between its threshold and FALLOFF× it.
+export const CREDIT_FALLOFF = 3;
+
+// Graded credit for a single link, 0..1. Full credit within the threshold,
+// then a smoothstep falloff to zero at CREDIT_FALLOFF × threshold. This makes
+// the score respond to progress: nudging a badly-placed pair closer raises the
+// score before the pair is fully satisfied, instead of the old all-or-nothing
+// step at the threshold.
+export function linkCredit(strength, gap, thresholds = DEFAULT_THRESHOLDS_M) {
+  const t = thresholds[strength] ?? thresholds.desired;
+  if (gap <= t) return 1;
+  const limit = t * CREDIT_FALLOFF;
+  if (gap >= limit) return 0;
+  const x = (gap - t) / (limit - t); // 0 at the threshold → 1 at the limit
+  return 1 - x * x * (3 - 2 * x); // 1 − smoothstep(x)
+}
+
 // Score a set of links. Each link is `{ strength, gap, ...anything }`; the extra
 // fields (e.g. an id) are preserved on the returned `unmet` entries so callers
 // can highlight them. Returns:
 //   { score: 0..1 | null, met, total, metWeight, totalWeight, unmet: [links] }
+// `score` is the weighted mean CREDIT (graded, see linkCredit); `met`/`unmet`
+// stay strictly threshold-based so counts and highlighting are unambiguous.
+// `metWeight` is the weighted credit sum (fractional when links are partial).
 // `score` is null when there are no links to grade.
 export function adjacencyScore(links, { thresholds = DEFAULT_THRESHOLDS_M, weight = LINK_WEIGHT } = {}) {
   let totalWeight = 0;
@@ -36,8 +56,8 @@ export function adjacencyScore(links, { thresholds = DEFAULT_THRESHOLDS_M, weigh
   for (const l of links) {
     const w = weight[l.strength] ?? 1;
     totalWeight += w;
-    if (linkSatisfied(l.strength, l.gap, thresholds)) metWeight += w;
-    else unmet.push(l);
+    metWeight += w * linkCredit(l.strength, l.gap, thresholds);
+    if (!linkSatisfied(l.strength, l.gap, thresholds)) unmet.push(l);
   }
   return {
     score: totalWeight > 0 ? metWeight / totalWeight : null,

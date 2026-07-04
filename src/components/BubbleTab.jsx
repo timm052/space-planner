@@ -1,149 +1,54 @@
-import { lazy, memo, Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api.js';
 import { fmtArea, areaToM2, distToMeters, distUnit, leafSpaces, rootContainer } from '../compute.js';
 // pdfExport is lazy-loaded on demand — keeps jsPDF out of the initial bundle.
 import { useHistory } from '../useHistory.js';
-import { darkHex } from '../viz.js';
 import { SCALE_PRESETS, ratioToScale, scaleToRatio, zoomAbout } from '../scale.js';
-import { convexHull, smoothHullPath, pinsOf, filterCss,
-  parsePoly, normalizePolygon, polygonPath, polyBounds, regularPolygon,
-  polygonArea, smoothPolygonPoints } from '../geometry.js';
+import { pinsOf, filterCss,
+  parsePoly, normalizePolygon, polygonCentroid, polygonPath, regularPolygon,
+  polygonArea, smoothPolygonPoints, solveAreaLockedVertex } from '../geometry.js';
 import { edgeGap, adjacencyScore, closestInstancePair } from '../adjacency.js';
 import { pinPatch } from '../pins.js';
-import { prefs } from '../prefs.js';
-import { orderedLevels, levelRankMap, CAMERAS } from '../floors.js';
+import { orderedLevels, levelRankMap } from '../floors.js';
 import { buildStackScene, build3DScene } from './diagram/scenes.js';
+import * as selection from './diagram/selection.js';
+import * as linking from './diagram/linking.js';
+import * as layerTools from './diagram/layerTools.js';
+import { useDiagramPrefs } from '../hooks/useDiagramPrefs.js';
 import { useViewport, W, H } from '../hooks/useViewport.js';
 import { useImageDims } from '../hooks/useImageDims.js';
 import { useImageData, seedImageData } from '../hooks/useImageData.js';
-import { useTickStore, TickLayer } from '../hooks/useTick.js';
+import { useTickStore } from '../hooks/useTick.js';
 import { useSimulation } from '../hooks/useSimulation.js';
 import { bakeImage } from '../imageUtils.js';
 import HelpPanel from './HelpPanel.jsx';
 import NorthRose from './diagram/NorthRose.jsx';
 import MatrixPanel from './diagram/MatrixPanel.jsx';
-import LayerRow from './diagram/LayerRow.jsx';
 import DiagramRail from './diagram/DiagramRail.jsx';
+import DiagramCanvas from './diagram/DiagramCanvas.jsx';
+import SelectionHud from './diagram/SelectionHud.jsx';
+import { StageTopbar, MorePopover, ToolDock } from './diagram/DiagramToolbar.jsx';
+import { LayersPopover, SatellitePanel, ScalePanel } from './diagram/LayersPanel.jsx';
 import StagePopover from './diagram/StagePopover.jsx';
 import { Empty } from './ui.jsx';
 
-// three.js + react-three-fiber are the bulk of the main bundle; the 3-D view
-// is one floor mode, so load it on demand (same pattern as pdfExport).
-const Stacked3D = lazy(() => import('./diagram/Stacked3D.jsx'));
-
 const PALETTE = ['#e8b04b', '#5b9dd9', '#4cc38a', '#c678dd', '#e5707a', '#56b6c2', '#d19a66', '#98c379', '#7aa2f7', '#f7768e'];
 const SAT_CANVAS = 768;
-const EMPTY_SET = new Set();
 
 // BubbleTab unmounts when you leave the Diagram tab, which would otherwise lose
 // every non-pinned bubble's position and let the sim re-scatter them on return.
 // This module-level cache keeps the last layout per project for the session.
 const layoutCache = new Map(); // projectId → Map(instanceKey → {x,y})
 
-// Bake rotation (clockwise deg) and/or a CSS filter into a data URL on a canvas
-// sized to the rotated bounding box — keeps the PDF export scale-accurate.
-
-/**
- * Renders a bubble's name (and optional area) as word-wrapped SVG text,
- * vertically centred inside a circle of radius `r`.
- *
- * Strategy: character-count greedy wrap using an average char-width heuristic
- * (fontSize × 0.55). Lines are stacked with <tspan dy> and the whole block is
- * offset so its visual centre lands at y = 0 (the bubble's centre).
- *
- * Tiny bubbles (r ≤ 13) fall back to a single label below the circle.
- *
- * Memoized: labels re-render (and re-wrap) only when their own props change,
- * not on every sim tick.
- */
-const BubbleLabel = memo(function BubbleLabel({ label, r, areaStr, ink }) {
-  const fontSize = Math.max(9, Math.min(14, r / 3.2));
-  const lineH    = fontSize * 1.22;
-  const charW    = fontSize * 0.55;
-  const maxW     = Math.max(r * 1.65, 28);
-  const cpl      = Math.max(4, Math.floor(maxW / charW)); // chars per line
-
-  // Tiny bubble: single line sitting below the circle
-  if (r <= 13) {
-    return (
-      <text textAnchor="middle" dy={r + 11} className="bubble-name" style={{ fontSize, fill: ink }}>
-        {label}
-      </text>
-    );
-  }
-
-  // Greedy word-wrap, capped at 3 lines
-  const words = label.split(/\s+/);
-  const lines = [];
-  let cur = '';
-  for (const w of words) {
-    if (!cur) { cur = w; continue; }
-    if ((cur + ' ' + w).length <= cpl) { cur += ' ' + w; }
-    else { lines.push(cur); cur = w; }
-  }
-  if (cur) lines.push(cur);
-  if (lines.length > 3) {
-    lines[2] = lines.slice(2).join(' ');
-    if (lines[2].length > cpl) lines[2] = lines[2].slice(0, cpl - 1) + '…';
-    lines.length = 3;
-  }
-
-  const showArea   = !!areaStr && r > 26;
-  const totalLines = lines.length + (showArea ? 1 : 0);
-  // First tspan dy: raise so the whole block is vertically centred at y=0.
-  const startDy    = -((totalLines - 1) * lineH) / 2 + fontSize * 0.35;
-
-  return (
-    <text textAnchor="middle" className="bubble-name" style={{ fontSize, fill: ink }}>
-      {lines.map((ln, i) => (
-        <tspan key={i} x="0" dy={i === 0 ? startDy : lineH}>{ln}</tspan>
-      ))}
-      {showArea && (
-        <tspan x="0" dy={lineH} className="bubble-area" style={ink ? { fill: ink, fillOpacity: 0.72 } : undefined}>{areaStr}</tspan>
-      )}
-    </text>
-  );
-});
-
-/**
- * The toolbar's adjacency-compliance badge. The score depends on live node
- * positions, so instead of computing it on every chrome render (or worse,
- * every sim frame), it subscribes to the tick store and recomputes at most
- * every 300 ms — plus immediately when the underlying data changes.
- */
-function AdjacencyBadge({ store, compute, dataKey, active, onToggle }) {
-  const computeRef = useRef(compute);
-  computeRef.current = compute;
-  const [result, setResult] = useState(() => compute());
-  const lastRef = useRef(0);
-  useEffect(() => {
-    setResult(computeRef.current());
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dataKey]);
-  useEffect(
-    () =>
-      store.subscribe(() => {
-        const now = performance.now();
-        if (now - lastRef.current < 300) return;
-        lastRef.current = now;
-        setResult(computeRef.current());
-      }),
-    [store]
-  );
-  return (
-    <button
-      className={`adj-badge ${active ? 'active' : ''}`}
-      onClick={onToggle}
-      title={`${result.met}/${result.total} relationships satisfied — click to highlight the ${result.unmet.length} unmet`}
-    >
-      <span className="adj-dot" /> {result.score == null ? '—' : `${Math.round(result.score * 100)}%`} adjacency
-    </button>
-  );
-}
-
 export default function BubbleTab({ project, spaces, adjacencies, images = [], onChanged, selectedSpaceId = null, onSelectSpace }) {
-  const [selected, setSelected] = useState(null);
-  const [selectedInst, setSelectedInst] = useState(0); // which instance of the selected space
+  // Selection + link-tool state lives in one pure state machine (see
+  // diagram/selection.js and diagram/linking.js). Transitions are applied via
+  // applySel() below; the destructure keeps every read site unchanged.
+  const [sel, setSel] = useState(selection.initialSelection);
+  const { tool, selected, selectedInst, multi, selLink, linkFrom, linkKind } = sel;
+  // Image-layer tool modes (calibrate / move / rotate) — same pattern.
+  const [lt, setLt] = useState(layerTools.initialLayerTools);
+  const { calibrateLayer, moveLayer, rotateLayer, scalePoints, scaleDistance } = lt;
   // Animation ticks bypass React state: the sim/drags mutate nodesRef then
   // bump this store, re-rendering ONLY the <TickLayer> canvas below — not the
   // toolbar/rail/popover chrome. Same call signature as the old setTick.
@@ -151,53 +56,63 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const setTick = tickStore.bump;
   const [, forceChrome] = useState(0); // re-render chrome for optimistic in-place edits (layer sliders)
   const [error, setError] = useState(null);
-  const [scalePoints, setScalePoints] = useState(null);
-  const [scaleDistance, setScaleDistance] = useState('');
-  const [calibrateLayer, setCalibrateLayer] = useState(null); // image id being calibrated
-  const [moveLayer, setMoveLayer] = useState(null); // image id being moved
-  const [rotateLayer, setRotateLayer] = useState(null); // image id being rotated by mouse
   const [panel, setPanel] = useState(null); // 'layers' | 'sat' | null
   const [satQuery, setSatQuery] = useState('');
   const [satZoom, setSatZoom] = useState(18);
   const [satBusy, setSatBusy] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
-  const [split, setSplit] = useState(() => prefs.getBool('split', true));
-  const [colorBy, setColorBy] = useState('department');
   const [drafts, setDrafts] = useState({});
-  const [multi, setMulti] = useState(() => new Set()); // selected instance keys for batch ops
   const [catDraft, setCatDraft] = useState(''); // batch category/department assignment input
   const [localColors, setLocalColors] = useState({}); // optimistic category colour overrides
   const [marquee, setMarquee] = useState(null); // { x0,y0,x1,y1 } in svg coords while selecting
-  const [hulls, setHulls] = useState(() => prefs.getBool('hulls', false));
-  const [hullPad, setHullPad] = useState(() => prefs.getNum('hullpad', 0) || 26);
   const [showMatrix, setShowMatrix] = useState(false);
   const [highlightGaps, setHighlightGaps] = useState(false); // flag unmet adjacencies on the diagram
-  const [floorView, setFloorView] = useState('all'); // 'all' | <level label> | 'offset' | 'overlaid'
-  const [floorGap, setFloorGap] = useState(0.6); // floor spacing as a fraction of plate height
-  const [stackCam, setStackCam] = useState('iso'); // stacked-SVG view camera preset (CAMERAS in floors.js)
-  const [stackImages, setStackImages] = useState(true); // show warped site images in the stacked view
-  const [cam3d, setCam3d] = useState('persp'); // WebGL 3-D view camera preset (Stacked3D)
-  const [railW, setRailW] = useState(() => prefs.getNum('railw', 0) || 340);
-  const [areaMode, setAreaMode] = useState('category'); // Areas panel grouping
-  const [collapsed, setCollapsed] = useState(() => new Set()); // collapsed Areas groups
   const [editShape, setEditShape] = useState(null); // space id whose polygon is being edited
-  const [tool, setTool] = useState('select'); // 'select' | 'link' — canvas mode
-  const [linkKind, setLinkKind] = useState('desired'); // relationship type new links get in Link mode
   const [spaceHeld, setSpaceHeld] = useState(false); // transient pan while Space is held
-  // Auto-layout force strengths (user-adjustable). Buildings barely move by
-  // default so clusters hold their position; rooms move more freely.
-  const [nodeForce, setNodeForce] = useState(() => prefs.getNum('nodeforce', 1));
-  const [buildingForce, setBuildingForce] = useState(() => prefs.getNum('buildingforce', 0.5));
-  const [selLink, setSelLink] = useState(null); // { space_a, space_b } of the selected link
-  const [linkFrom, setLinkFrom] = useState(null); // first room picked in Link mode
+  // View preferences (split rail, colour mode, hulls, floor view, cameras,
+  // auto-layout forces, …) live in one hook; persisted keys round-trip
+  // through prefs.js. The destructure keeps every read site unchanged.
+  const { view: viewPrefs, setPref } = useDiagramPrefs();
+  const { split, colorBy, hulls, hullPad, railW, areaMode, collapsed,
+    floorView, floorGap, stackCam, stackImages, cam3d, nodeForce, buildingForce } = viewPrefs;
+
+  // Apply a selection transition: set the next state and run its declared
+  // effects. The refs let event handlers (some registered with narrow effect
+  // deps) always read the LATEST state, and chained transitions within one
+  // event see each other's result before React re-renders. fx runs outside
+  // any setState updater so StrictMode's double-invoke can't repeat it.
+  const selRef = useRef(sel);
+  selRef.current = sel;
+  function applySel(transition) {
+    const { sel: next, fx } = transition(selRef.current);
+    selRef.current = next;
+    setSel(next);
+    for (const f of fx) {
+      if (f.type === 'notify') onSelectSpace?.(f.id);
+      else if (f.type === 'maybeCreateLink' && !findPair(f.a, f.b)) createLink(f.a, f.b, f.kind);
+    }
+  }
+  const ltRef = useRef(lt);
+  ltRef.current = lt;
+  function applyLt(transition) {
+    const next = transition(ltRef.current);
+    ltRef.current = next;
+    setLt(next);
+  }
 
   const draftTimers = useRef(new Map());
   const nodesRef = useRef(new Map());
+  // Post-drop relaxation owed to the sim (see useSimulation): primed by onUp
+  // when a dragged bubble lands so neighbours are pushed aside only once the
+  // bubble is PLACED — never while it is carried. `hold` keeps the dropped
+  // instances exactly where the user put them while neighbours yield.
+  const relaxRef = useRef(null); // { frames, hold: Set<instanceKey> }
   // Start idle if we have a cached layout to restore (avoids a re-scatter on
   // tab return); otherwise energise so the first layout settles.
   const alphaRef = useRef(layoutCache.has(project.id) ? 0 : 1);
   const dragRef = useRef(null);
   const polyDragRef = useRef(null); // { space, vi } while dragging a polygon vertex handle
+  const polyOverride = useRef(new Map()); // space.id → { json, verts } saved outline awaiting refetch
   const panRef = useRef(null);
   const layerMoveRef = useRef(null);
   const rotateRef = useRef(null); // { id, startAngle, startRot } while rotating an image by mouse
@@ -237,6 +152,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   useEffect(() => {
     history.clear();
     setLocalColors({});
+    polyOverride.current.clear();
   }, [project.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const units = project.units;
@@ -350,7 +266,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     floorView === 'offset' || floorView === 'overlaid' || floorView === '3d' || floorView === 'all' || levels.includes(floorView)
       ? floorView
       : 'all';
-  useEffect(() => setFloorView('all'), [project.id]);
+  useEffect(() => setPref('floorView', 'all'), [project.id]); // eslint-disable-line react-hooks/exhaustive-deps
   // Leave shape-edit mode when the selection moves to another space.
   useEffect(() => {
     if (editShape != null && editShape !== selected) setEditShape(null);
@@ -425,20 +341,13 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
         e.preventDefault();
         history.redo();
       } else if (e.key.toLowerCase() === 'v' && !mod) {
-        setTool('select');
-        setLinkFrom(null);
+        applySel((s) => linking.setTool(s, 'select'));
       } else if (e.key.toLowerCase() === 'l' && !mod) {
-        setTool('link');
-        setSelected(null);
-        setSelLink(null);
+        applySel((s) => linking.setTool(s, 'link'));
       } else if (e.key.toLowerCase() === 'a' && !mod) {
         runAutoLayout();
       } else if (e.key === 'Escape') {
-        if (multi.size) setMulti(new Set());
-        setSelected(null);
-        onSelectSpace?.(null);
-        setSelLink(null);
-        setLinkFrom(null);
+        applySel(selection.escape);
       } else if ((e.key === 'Delete' || e.key === 'Backspace') && multi.size) {
         e.preventDefault();
         multiDelete();
@@ -465,20 +374,12 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   // propagation is event-driven via pickSpace()/clearPick() at the actual
   // selection points, which avoids an effect feedback cycle.
   useEffect(() => {
-    setSelected(selectedSpaceId);
-    setSelectedInst(0);
-     
-  }, [selectedSpaceId]);
+    applySel((s) => selection.applyExternal(s, selectedSpaceId));
+
+  }, [selectedSpaceId]); // eslint-disable-line react-hooks/exhaustive-deps
   // Select a space and notify the shared state (no-ops to onSelectSpace are cheap).
-  const pickSpace = (id, inst = 0) => {
-    setSelected(id);
-    setSelectedInst(inst);
-    onSelectSpace?.(id);
-  };
-  const clearPick = () => {
-    setSelected(null);
-    onSelectSpace?.(null);
-  };
+  const pickSpace = (id, inst = 0) => applySel((s) => selection.pick(s, id, inst));
+  const clearPick = () => applySel(selection.clearPick);
 
   const shapeOf = (s) => {
     if (s.shape === 'poly' && parsePoly(s)) return 'poly';
@@ -488,11 +389,19 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   // On-screen area of any shape, in diagram-units². All shapes share this so a
   // bubble, box and polygon for the same space cover the same footprint area.
   const areaUnits = (s) => Math.PI * radiusOf(s) ** 2;
-  // Normalized verts for a space, preferring the live drag override (so a vertex
-  // being dragged updates the outline before it's committed).
+  // Normalized verts for a space, preferring (1) the live drag verts, then
+  // (2) the just-saved outline until the refetch delivers it — releasing a
+  // vertex used to flash the PRE-edit shape for the refetch round-trip, a
+  // visible snap back and forth. The override drops itself once the space's
+  // shape_json catches up.
   const liveNormOf = (s) => {
     const d = polyDragRef.current;
     if (d && d.space.id === s.id) return d.verts;
+    const ov = polyOverride.current.get(s.id);
+    if (ov) {
+      if (s.shape_json === ov.json) polyOverride.current.delete(s.id); // refetch caught up
+      else return ov.verts;
+    }
     return parsePoly(s);
   };
   // Polygons render as smooth, bubble-like blobs (a dense sampled curve through
@@ -593,9 +502,38 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     setEditShape(space.id);
   }
   // Persist a new normalized outline for a space (undoable).
-  function savePoly(space, normVerts, label = 'shape') {
+  //
+  // normalizePolygon re-centres the verts about their centroid, which used to
+  // visually SNAP the drawn shape back onto the node after editing (and leave
+  // the name label off the shape's middle). Compensate by moving the anchor
+  // instance's node to the outline's centroid — the geometry on screen stays
+  // exactly where the user left it and the label glides to its centre. The
+  // position rides in the same undo entry as the shape.
+  function savePoly(space, verts, label = 'shape') {
+    const norm = normalizePolygon(verts);
     const before = { shape: space.shape, shape_json: space.shape_json ?? null };
-    const after = { shape: 'poly', shape_json: JSON.stringify(normalizePolygon(normVerts)) };
+    const after = { shape: 'poly', shape_json: JSON.stringify(norm) };
+    // Render the saved outline immediately (liveNormOf) so releasing the
+    // handle doesn't flash the pre-edit shape while the refetch is in flight.
+    polyOverride.current.set(space.id, { json: after.shape_json, verts: norm });
+    const idx = editAnchorInst(space);
+    const node = nodesRef.current.get(`${space.id}:${idx}`);
+    const c = polygonCentroid(verts);
+    if (node && Math.hypot(c.x, c.y) > 1e-6) {
+      // Screen shift removed by normalization = centroid × the render scale the
+      // outline had during the edit (smoothing is affine, so this is exact).
+      const k = polygonArea(smoothPolygonPoints(verts, SMOOTH_SEG)) || polygonArea(verts) || 1;
+      const f = Math.sqrt(areaUnits(space) / k);
+      node.x += c.x * f;
+      node.y += c.y * f;
+      const patch = pinPatch(space, [idx], (i, prev) => {
+        const pos = { x: node.x, y: node.y };
+        return prev?.locked ? { ...pos, locked: true } : pos;
+      });
+      Object.assign(before, patch.before);
+      Object.assign(after, patch.after);
+      for (const [i, p] of Object.entries(patch.touched)) pinOverride.current.set(`${space.id}:${i}`, p);
+    }
     history.record({ label, undo: () => applySpace(space.id, before), redo: () => applySpace(space.id, after) });
     setError(null);
     applySpace(space.id, after).catch((e) => setError(e.message));
@@ -720,14 +658,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   useEffect(() => {
     alphaRef.current = Math.max(alphaRef.current, 0.35);
   }, [drafts]);
-  // Persist force strengths whenever they change. NOTE: this effect must never
-  // start an auto pass — under StrictMode it double-invokes on mount, which would
-  // run auto-layout on tab open. The live pass is triggered from the slider
-  // onChange (a real user action) via nudgeLayout() instead.
-  useEffect(() => {
-    prefs.set('nodeforce', nodeForce);
-    prefs.set('buildingforce', buildingForce);
-  }, [nodeForce, buildingForce]);
+  // Force strengths persist via setPref. NOTE: persisting must never start an
+  // auto pass — the live pass is triggered from the slider onChange (a real
+  // user action) via nudgeLayout() instead.
   // Re-energise the sim for a brief settling pass (used when a force slider moves).
   const nudgeLayout = () => {
     alphaRef.current = Math.max(alphaRef.current, 0.5);
@@ -738,7 +671,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   // Force simulation — delegated to the hook. radiusOf/groupKey/instPin are
   // ref-wrapped inside useSimulation so they are always fresh without needing
   // to be listed in the effect deps.
-  useSimulation({ instances, leaves, adjacencies, byId, autoRunRef, setAutoRunning, effScale, nodesRef, alphaRef, dragRef, radiusOf, instPin, groupKey, clusterKey, nodeForce, buildingForce, setTick });
+  useSimulation({ instances, leaves, adjacencies, byId, autoRunRef, setAutoRunning, effScale, nodesRef, alphaRef, dragRef, relaxRef, radiusOf, instPin, groupKey, clusterKey, nodeForce, buildingForce, setTick });
 
   // Closest instance pair between two spaces — used by PDF export, adjacency
   // rendering, and the scale bar. Reads nodesRef so it is always current.
@@ -795,8 +728,16 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       const node = nodesRef.current.get(`${d.space.id}:${editAnchorInst(d.space)}`);
       if (node) {
         const { x, y } = toSvgCoords(e);
-        const f = polyScaleOf(d.space) || 1;
-        d.verts[d.vi] = { x: (x - node.x) / f, y: (y - node.y) / f };
+        // Solve the vertex + area-lock scale together (see geometry.js): the
+        // dragged handle lands exactly under the cursor, the outline is a
+        // smooth deterministic function of it — no cross-frame feedback.
+        d.verts = solveAreaLockedVertex(
+          d.verts,
+          d.vi,
+          { x: x - node.x, y: y - node.y },
+          areaUnits(d.space),
+          SMOOTH_SEG
+        ).verts;
         d.moved += 1;
         setTick((t) => t + 1);
       }
@@ -852,9 +793,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     }
     const node = nodesRef.current.get(drag.key);
     if (!node) return;
-    drag.moved += Math.hypot(x - node.x, y - node.y);
-    node.x = x;
-    node.y = y;
+    const tx = drag.offset ? x + drag.offset.x : x;
+    const ty = drag.offset ? y + drag.offset.y : y;
+    drag.moved += Math.hypot(tx - node.x, ty - node.y);
+    node.x = tx;
+    node.y = ty;
     setTick((t) => t + 1);
   }
 
@@ -899,7 +842,10 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     if (!drag) return;
     if (drag.starts) {
       // Group drag: pin every moved bubble where it was dropped (one undo step).
-      if (drag.moved >= 6) await pinKeys(drag.starts.map((s) => s.key));
+      if (drag.moved >= 6) {
+        relaxRef.current = { frames: 40, hold: drag.groupSet }; // neighbours yield at the drop
+        await pinKeys(drag.starts.map((s) => s.key));
+      }
       return;
     }
     const space = byId.get(drag.spaceId);
@@ -907,6 +853,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     if (drag.moved >= 6) {
       // Dragging SAVES the room's position (so it stays where you drop it and
       // reloads there) but does NOT lock it — locking is deliberate (Pin / P).
+      relaxRef.current = { frames: 40, hold: new Set([drag.key]) }; // neighbours yield at the drop
       await saveDragPos(space, drag.idx);
       return;
     }
@@ -918,10 +865,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     if (e.shiftKey) {
       // Shift-click toggles a bubble in the multi-selection (no drag, no marquee).
       e.stopPropagation();
-      setSelLink(null);
-      setSelected(null);
-      onSelectSpace?.(null);
-      toggleMulti(o.key);
+      applySel((s) => selection.shiftToggle(s, o.key));
       return;
     }
     try {
@@ -937,7 +881,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       const keys = descendantInstanceKeys(o.s.id);
       if (keys.length > 1) groupKeys = keys;
     }
-    let starts = null, anchor = null, groupSet = null;
+    let starts = null, anchor = null, groupSet = null, offset = null;
     if (groupKeys) {
       anchor = toSvgCoords(e);
       groupSet = new Set(groupKeys);
@@ -947,13 +891,44 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
           return n ? { key: k, x: n.x, y: n.y } : null;
         })
         .filter(Boolean);
+    } else {
+      // Keep the grab point under the cursor: without this the bubble's CENTRE
+      // snaps to the cursor on the first move — a visible jump when grabbed
+      // near its edge. (Group drags already move by deltas from `anchor`.)
+      const n = nodesRef.current.get(o.key);
+      const p = toSvgCoords(e);
+      if (n) offset = { x: n.x - p.x, y: n.y - p.y };
     }
-    dragRef.current = { key: o.key, spaceId: o.s.id, idx: o.i, moved: 0, starts, anchor, groupSet };
+    dragRef.current = { key: o.key, spaceId: o.s.id, idx: o.i, moved: 0, starts, anchor, groupSet, offset };
   }
 
   function commitView(v) {
     clearTimeout(debouncers.current.view);
     debouncers.current.view = setTimeout(() => saveProject({ view_x: v.x, view_y: v.y }, { silent: true }), 500);
+  }
+
+  // Glide the view to a target pan (Recentre) instead of jumping. Honours
+  // prefers-reduced-motion by snapping straight to the target.
+  const viewTweenRef = useRef(null);
+  useEffect(() => () => cancelAnimationFrame(viewTweenRef.current), []);
+  function animateViewTo(target) {
+    cancelAnimationFrame(viewTweenRef.current);
+    if (typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      setView(target);
+      commitView(target);
+      return;
+    }
+    const from = { ...viewRef.current };
+    const dur = 260;
+    const t0 = performance.now();
+    const stepTween = (now) => {
+      const p = Math.min(1, (now - t0) / dur);
+      const e = 1 - (1 - p) ** 3; // ease-out cubic
+      setView({ x: from.x + (target.x - from.x) * e, y: from.y + (target.y - from.y) * e });
+      if (p < 1) viewTweenRef.current = requestAnimationFrame(stepTween);
+      else commitView(target);
+    };
+    viewTweenRef.current = requestAnimationFrame(stepTween);
   }
 
   // Fresh position from the sim node, falling back to the previous pin.
@@ -1006,14 +981,6 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   }
 
   // ---------- multi-select (marquee + shift-click) ----------
-  function toggleMulti(key) {
-    setMulti((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  }
   const multiList = () =>
     [...multi]
       .map((k) => {
@@ -1028,20 +995,13 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     marqueeRef.current = null;
     setMarquee(null);
     if (!box || !m) return;
-    const minX = Math.min(box.x0, box.x1), maxX = Math.max(box.x0, box.x1);
-    const minY = Math.min(box.y0, box.y1), maxY = Math.max(box.y0, box.y1);
     // A near-zero drag is a click on empty canvas → clear selection.
-    if (maxX - minX < 4 && maxY - minY < 4) {
-      if (!m.additive) (setMulti(new Set()), setSelected(null), onSelectSpace?.(null), setSelLink(null), setLinkFrom(null));
+    if (selection.isClickBox(box)) {
+      applySel((s) => selection.emptyCanvasClick(s, m.additive));
       return;
     }
-    const hit = new Set(m.additive ? multi : []);
-    for (const o of instances) {
-      const n = nodesRef.current.get(o.key);
-      if (n && n.x >= minX && n.x <= maxX && n.y >= minY && n.y <= maxY) hit.add(o.key);
-    }
-    if (hit.size) { setSelLink(null); setSelected(null); onSelectSpace?.(null); }
-    setMulti(hit);
+    const hits = selection.hitsInBox(instances, (k) => nodesRef.current.get(k), box);
+    applySel((s) => selection.marqueeEnd(s, hits, m.additive));
   }
 
   // Group instance keys by space → { space, idxs } (for batch pin edits).
@@ -1132,7 +1092,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     setError(null);
     try {
       for (const id of ids) await api.deleteSpace(id);
-      setMulti(new Set());
+      applySel(selection.afterMultiDelete);
       history.clear(); // deletions invalidate recorded closures referencing these spaces
       onChanged();
     } catch (e) {
@@ -1146,29 +1106,19 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     setError(null);
     try {
       await api.deleteSpace(space.id);
-      setSelected(null);
+      applySel(selection.afterRemoveSelected);
       history.clear();
       onChanged();
     } catch (e) {
       setError(e.message);
     }
   }
-  function toggleHulls() {
-    setHulls((v) => {
-      prefs.set('hulls', !v);
-      return !v;
-    });
-  }
-  function setHullSize(v) {
-    setHullPad(v);
-    prefs.set('hullpad', v);
-  }
+  const toggleHulls = () => setPref('hulls', !hulls);
+  const setHullSize = (v) => setPref('hullPad', v);
   function toggleCollapse(key) {
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      next.has(key) ? next.delete(key) : next.add(key);
-      return next;
-    });
+    const next = new Set(collapsed);
+    next.has(key) ? next.delete(key) : next.add(key);
+    setPref('collapsed', next);
   }
   function setBubbleStyle(v) {
     saveProject({ bubble_style: v });
@@ -1179,10 +1129,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     const startX = e.clientX;
     const startW = railW;
     const clamp = (w) => Math.max(260, Math.min(680, w));
-    const onMove = (ev) => setRailW(clamp(startW + (startX - ev.clientX)));
+    const onMove = (ev) => setPref('railW', clamp(startW + (startX - ev.clientX)), { persist: false });
     const onUp = (ev) => {
-      const w = clamp(startW + (startX - ev.clientX));
-      prefs.set('railw', w);
+      setPref('railW', clamp(startW + (startX - ev.clientX)));
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
     };
@@ -1192,23 +1141,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
 
   async function handleBubbleClick(spaceId, idx = 0) {
     setError(null);
-    setSelLink(null);
-    // Link mode: pick a first room, then a second to connect them (default desired).
-    if (tool === 'link') {
-      if (linkFrom == null) return setLinkFrom(spaceId);
-      if (linkFrom === spaceId) return setLinkFrom(null);
-      const a = linkFrom;
-      setLinkFrom(null);
-      if (!findPair(a, spaceId)) await createLink(a, spaceId, linkKind);
-      return;
-    }
-    // Select mode: select the room; click again to deselect; re-target an instance.
-    if (selected == null) return pickSpace(spaceId, idx);
-    if (selected === spaceId) {
-      if (selectedInst !== idx) return setSelectedInst(idx);
-      return clearPick();
-    }
-    pickSpace(spaceId, idx);
+    // Link mode: pick a first room, then a second to connect them (the
+    // maybeCreateLink fx creates the adjacency unless the pair exists).
+    // Select mode: select / retarget instance / deselect.
+    if (selRef.current.tool === 'link') applySel((s) => linking.linkClick(s, spaceId));
+    else applySel((s) => selection.selectClick(s, spaceId, idx));
   }
 
   // findPair reads the latest adjacencies via a ref so history closures stay
@@ -1257,17 +1194,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   async function removeSelLink() {
     if (!selLink) return;
     await setLinkStrength(selLink.space_a, selLink.space_b, null);
-    setSelLink(null);
+    applySel(linking.clearSelLink);
   }
 
   // Clicking a link selects it (Select mode) → shows the link action bar.
-  function onLinkClick(l) {
-    setSelected(null);
-    onSelectSpace?.(null);
-    setMulti(new Set());
-    setLinkFrom(null);
-    setSelLink({ space_a: l.space_a, space_b: l.space_b });
-  }
+  const onLinkClick = (l) => applySel((s) => linking.selectLink(s, l));
 
   async function saveProject(fields, { silent } = {}) {
     if (!silent) setError(null);
@@ -1330,9 +1261,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     setError(null);
     try {
       await api.deleteImage(id);
-      if (moveLayer === id) setMoveLayer(null);
-      if (rotateLayer === id) setRotateLayer(null);
-      if (calibrateLayer === id) (setCalibrateLayer(null), setScalePoints(null));
+      applyLt((l) => layerTools.layerDeleted(l, id));
       onChanged();
     } catch (e) {
       setError(e.message);
@@ -1341,31 +1270,25 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
 
   function startCalibrate(id) {
     setPanel(null);
-    setMoveLayer(null);
-    setRotateLayer(null);
-    setCalibrateLayer(id);
-    setScalePoints([]);
-    setScaleDistance('');
+    applyLt((l) => layerTools.startCalibrate(l, id));
   }
 
   function onSvgScaleClick(e) {
-    if (!scalePoints || scalePoints.length >= 2) return;
-    setScalePoints([...scalePoints, toSvgCoords(e)]);
+    applyLt((l) => layerTools.addScalePoint(l, toSvgCoords(e)));
   }
 
   async function applyScale() {
-    const [a, b] = scalePoints;
-    const dUnits = Math.hypot(b.x - a.x, b.y - a.y);
-    const meters = distToMeters(Number(scaleDistance), units);
     const im = imgById.get(calibrateLayer);
     const rect = layerRect(im);
     const nd = im && dims[im.id];
-    if (!(meters > 0) || dUnits < 2 || !rect || !nd) return setError('Pick two points and enter a positive distance.');
-    const naturalPx = (dUnits / rect.w) * nd.w;
-    const mpp = meters / naturalPx;
-    setScalePoints(null);
-    setScaleDistance('');
-    setCalibrateLayer(null);
+    const mpp = layerTools.computeMpp({
+      points: scalePoints,
+      meters: distToMeters(Number(scaleDistance), units),
+      rectW: rect?.w,
+      naturalW: nd?.w,
+    });
+    if (mpp == null) return setError('Pick two points and enter a positive distance.');
+    applyLt(layerTools.endCalibrate);
     try {
       await api.updateImage(im.id, { mpp });
       onChanged();
@@ -1466,11 +1389,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     }
     await saveProject(fields);
   }
-  function toggleSplit() {
-    const next = !split;
-    setSplit(next);
-    prefs.set('split', next);
-  }
+  const toggleSplit = () => setPref('split', !split);
   function onAreaDraft(space, value) {
     setDrafts((d) => ({ ...d, [space.id]: value }));
     clearTimeout(draftTimers.current.get(space.id));
@@ -1504,6 +1423,30 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     const d = ((deg % 360) + 360) % 360;
     clearTimeout(debouncers.current.north);
     debouncers.current.north = setTimeout(() => saveProject({ north_deg: d }, { silent: true }), 250);
+  }
+
+  // ---------- PNG ----------
+  // WYSIWYG capture of the current view at 2×. In the 3-D floor mode the
+  // WebGL canvas is grabbed directly; otherwise the SVG is rasterized.
+  async function exportPng() {
+    setError(null);
+    try {
+      // Dynamic import keeps the rasterizer out of the initial bundle.
+      const { exportDiagramPng } = await import('../pngExport.js');
+      const glCanvas =
+        hasLevels && floorMode === '3d' ? stageRef.current?.querySelector('.stage-3d canvas') : null;
+      const background =
+        getComputedStyle(document.documentElement).getPropertyValue('--canvas-bg').trim() || '#11151c';
+      await exportDiagramPng({
+        svgEl: svgRef.current,
+        glCanvas,
+        background,
+        scale: 2,
+        fileName: `${project.name.replace(/[^\w-]+/g, '_')}_diagram.png`,
+      });
+    } catch (err) {
+      setError(`PNG export failed: ${err.message}`);
+    }
   }
 
   // ---------- PDF ----------
@@ -1720,170 +1663,68 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
 
       <div className="diagram-main">
         <div className="bubble-stage" ref={stageRef}>
-          {/* One responsive top bar: controls on the left, actions on the
-              right. Wrapping inside a single flex row prevents the two glass
-              clusters from overlapping when the stage is narrow. */}
-          <div className="stage-topbar">
-          {/* Top-left control cluster (glass). */}
-          <div className="stage-controls">
-            {hasBuildings && (
-              <div className="ctrl-field">
-                <span className="ctrl-label">Colour</span>
-                <div className="seg seg-sm">
-                  <button className={colorBy === 'department' ? 'active' : ''} onClick={() => setColorBy('department')}>Category</button>
-                  <button className={colorBy === 'building' ? 'active' : ''} onClick={() => setColorBy('building')}>Building</button>
-                </div>
-              </div>
-            )}
-            {hasLevels && (
-              <label className="ctrl-field">
-                <span className="ctrl-label">Floors</span>
-                <select className="ctrl-select" value={floorMode} onChange={(e) => setFloorView(e.target.value)}>
-                  <option value="all">All floors</option>
-                  {levels.map((l) => <option key={l} value={l}>{l}</option>)}
-                  <option value="offset">Stacked · offset</option>
-                  <option value="overlaid">Stacked · overlaid</option>
-                  <option value="3d">Stacked · 3D</option>
-                </select>
-              </label>
-            )}
-            <label className="ctrl-field">
-              <span className="ctrl-label">Scale</span>
-              <select className="ctrl-select" value={scaleValue} onChange={(e) => onScaleSelect(e.target.value)}>
-                <option value="auto">{fitScale ? 'Auto' : 'Relative'}</option>
-                {presets.map(([r, label]) => <option key={r} value={r}>{label}</option>)}
-                {scaleValue !== 'auto' && !presets.some(([r]) => String(r) === scaleValue) && <option value={scaleValue}>≈ 1:{scaleValue}</option>}
-              </select>
-            </label>
-            <button className={`ctrl-btn ${panel === 'layers' ? 'active' : ''}`} onClick={() => setPanel(panel === 'layers' ? null : 'layers')} title="Image & satellite layers">⧉ Layers</button>
-            <button className={`ctrl-btn ${panel === 'more' ? 'active' : ''}`} onClick={() => setPanel(panel === 'more' ? null : 'more')} title="More options">⋯</button>
-          </div>
+          <StageTopbar
+            hasBuildings={hasBuildings}
+            colorBy={colorBy}
+            setPref={setPref}
+            hasLevels={hasLevels}
+            floorMode={floorMode}
+            levels={levels}
+            scaleValue={scaleValue}
+            presets={presets}
+            fitScale={fitScale}
+            onScaleSelect={onScaleSelect}
+            panel={panel}
+            setPanel={setPanel}
+            history={history}
+            showScore={showScore}
+            tickStore={tickStore}
+            computeAdjacency={computeAdjacency}
+            adjDataKey={`${adjacencies.length}:${spaces.length}:${effScale ?? 0}`}
+            highlightGaps={highlightGaps}
+            onToggleGaps={() => setHighlightGaps((v) => !v)}
+            onExportPng={exportPng}
+            onExportPdf={exportPdf}
+            onHelp={() => setShowHelp(true)}
+          />
 
-          {/* Top-right actions cluster (glass). */}
-          <div className="stage-actions">
-            <button className="act-btn" onClick={history.undo} disabled={!history.canUndo} title={history.canUndo ? `Undo ${history.undoLabel} (Ctrl+Z)` : 'Nothing to undo'}>↶</button>
-            <button className="act-btn" onClick={history.redo} disabled={!history.canRedo} title={history.canRedo ? `Redo ${history.redoLabel} (Ctrl+Shift+Z)` : 'Nothing to redo'}>↷</button>
-            {showScore && (
-              <AdjacencyBadge
-                store={tickStore}
-                compute={computeAdjacency}
-                dataKey={`${adjacencies.length}:${spaces.length}:${effScale ?? 0}`}
-                active={highlightGaps}
-                onToggle={() => setHighlightGaps((v) => !v)}
-              />
-            )}
-            <button className="act-btn wide" onClick={exportPdf} title="Export a scale-accurate PDF">↓ PDF</button>
-            <button className="act-btn" onClick={() => setShowHelp(true)} title="Shortcuts & help (?)">?</button>
-          </div>
-          </div>
-
-          {/* More options popover — the diagram extras. */}
           {panel === 'more' && (
-            <div className="stage-popover more-popover">
-              <div className="more-section">Auto-layout forces</div>
-              <div className="more-row">
-                <span className="more-label">Rooms</span>
-                <input type="range" min="0" max="1.5" step="0.05" value={nodeForce} onChange={(e) => { setNodeForce(Number(e.target.value)); nudgeLayout(); }} title="How strongly rooms push apart and pull toward their links" />
-                <span className="more-val mono">{Math.round(nodeForce * 100)}%</span>
-              </div>
-              <div className="more-row">
-                <span className="more-label">Buildings</span>
-                <input type="range" min="0" max="1.5" step="0.05" value={buildingForce} onChange={(e) => { setBuildingForce(Number(e.target.value)); nudgeLayout(); }} title="How strongly each building holds its shape and original position (0 = free to drift)" />
-                <span className="more-val mono">{Math.round(buildingForce * 100)}%</span>
-              </div>
-              <div className="more-divider" />
-              <div className="more-row">
-                <span className="more-label">Style</span>
-                <select className="ctrl-select" value={bubbleStyle} onChange={(e) => setBubbleStyle(e.target.value)}>
-                  <option value="solid">Solid (flat)</option>
-                  <option value="outline">Outline</option>
-                  <option value="sketch">Sketch</option>
-                </select>
-              </div>
-              <div className="more-row">
-                <button className="btn small" onClick={() => convertAll(leaves.every((s) => shapeOf(s) === 'box') ? 'bubble' : 'box')}>
-                  {leaves.every((s) => shapeOf(s) === 'box') ? '○ All bubbles' : '▢ All boxes'}
-                </button>
-                <button className={`btn small ${hulls ? 'on' : ''}`} onClick={toggleHulls}>⬡ Category hulls</button>
-              </div>
-              {(hulls || hasBuildings) && (
-                <div className="more-row">
-                  <span className="more-label">Hull pad</span>
-                  <input type="range" min="6" max="80" step="2" value={hullPad} onChange={(e) => setHullSize(Number(e.target.value))} />
-                </div>
-              )}
-              <div className="more-row">
-                <button className={`btn small ${showMatrix ? 'on' : ''}`} onClick={() => setShowMatrix(true)}>▦ Adjacency matrix</button>
-                <button className={`btn small ${split ? 'on' : ''}`} onClick={toggleSplit}>◫ Side panel</button>
-              </div>
-              {hasLevels && (floorMode === 'offset' || floorMode === '3d') && (
-                <div className="more-row">
-                  <span className="more-label">Floor gap</span>
-                  <input type="range" min="0.2" max="1.3" step="0.05" value={floorGap} onChange={(e) => setFloorGap(Number(e.target.value))} />
-                </div>
-              )}
-              {is3D && (
-                <div className="more-row">
-                  <span className="more-label">3D camera</span>
-                  <select className="ctrl-select" value={cam3d} onChange={(e) => setCam3d(e.target.value)}>
-                    <option value="persp">Perspective</option>
-                    <option value="iso">Isometric</option>
-                    <option value="ortho">Orthographic</option>
-                    <option value="top">Top / plan</option>
-                    <option value="front">Front</option>
-                    <option value="side">Side</option>
-                  </select>
-                </div>
-              )}
-              {stackMode && (
-                <div className="more-row">
-                  <span className="more-label">Camera</span>
-                  <select className="ctrl-select" value={stackCam} onChange={(e) => setStackCam(e.target.value)}>
-                    {Object.entries(CAMERAS).map(([k, c]) => <option key={k} value={k}>{c.label}</option>)}
-                  </select>
-                </div>
-              )}
-              {(stackMode || is3D) && imgLayers.length > 0 && (
-                <div className="more-row">
-                  <button className={`btn small ${stackImages ? 'on' : ''}`} onClick={() => setStackImages((v) => !v)}>⊞ Site image on floors</button>
-                </div>
-              )}
-            </div>
+            <MorePopover
+              nodeForce={nodeForce}
+              buildingForce={buildingForce}
+              setPref={setPref}
+              nudgeLayout={nudgeLayout}
+              bubbleStyle={bubbleStyle}
+              setBubbleStyle={setBubbleStyle}
+              allBoxes={leaves.every((s) => shapeOf(s) === 'box')}
+              convertAll={convertAll}
+              hulls={hulls}
+              toggleHulls={toggleHulls}
+              hasBuildings={hasBuildings}
+              hullPad={hullPad}
+              setHullSize={setHullSize}
+              showMatrix={showMatrix}
+              onShowMatrix={() => setShowMatrix(true)}
+              split={split}
+              toggleSplit={toggleSplit}
+              hasLevels={hasLevels}
+              floorMode={floorMode}
+              floorGap={floorGap}
+              is3D={is3D}
+              cam3d={cam3d}
+              stackMode={stackMode}
+              stackCam={stackCam}
+              stackImages={stackImages}
+              hasImages={imgLayers.length > 0}
+            />
           )}
-          <div className="tool-dock">
-            <button
-              className={`tool-btn ${tool === 'select' ? 'active' : ''}`}
-              onClick={() => { setTool('select'); setLinkFrom(null); }}
-              title="Select & move — V"
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 3l7 17 2.5-7L20 11z" /></svg>
-              <span className="tool-key">V</span>
-            </button>
-            <button
-              className={`tool-btn ${tool === 'link' ? 'active' : ''}`}
-              onClick={() => { setTool('link'); setSelected(null); setSelLink(null); }}
-              title="Link adjacency — L"
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="6" cy="17" r="3" /><circle cx="18" cy="7" r="3" /><line x1="8" y1="15" x2="16" y2="9" strokeLinecap="round" /></svg>
-              <span className="tool-key">L</span>
-            </button>
-            <div className="tool-dock-sep" />
-            <button
-              className={`tool-btn ${autoRunning ? 'active' : ''}`}
-              onClick={runAutoLayout}
-              title="Auto-layout — run a force pass (A)"
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="6" cy="6" r="2.5" /><circle cx="18" cy="6" r="2.5" /><circle cx="12" cy="17" r="2.5" /><line x1="7.5" y1="7.8" x2="10.5" y2="15" /><line x1="16.5" y1="7.8" x2="13.5" y2="15" /></svg>
-              <span className="tool-key">A</span>
-            </button>
-            <button
-              className="tool-btn"
-              onClick={() => { setView({ x: 0, y: 0 }); commitView({ x: 0, y: 0 }); }}
-              title="Recentre view"
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3" /><line x1="12" y1="2" x2="12" y2="6" strokeLinecap="round" /><line x1="12" y1="18" x2="12" y2="22" strokeLinecap="round" /><line x1="2" y1="12" x2="6" y2="12" strokeLinecap="round" /><line x1="18" y1="12" x2="22" y2="12" strokeLinecap="round" /></svg>
-            </button>
-          </div>
+          <ToolDock
+            tool={tool}
+            onTool={(t) => applySel((s) => linking.setTool(s, t))}
+            autoRunning={autoRunning}
+            onAutoLayout={runAutoLayout}
+            onRecentre={() => animateViewTo({ x: 0, y: 0 })}
+          />
           {error && (
             <StagePopover className="error" onClose={() => setError(null)}>
               {error}
@@ -1891,81 +1732,49 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
           )}
 
           {panel === 'layers' && (
-            <StagePopover className="layers-popover" title="Image layers" onClose={() => setPanel(null)}>
-              <div className="layers-list">
-                {imgLayers.length === 0 && <Empty small>No images yet — add a site plan or satellite below.</Empty>}
-                {imgLayers.map((im) => (
-                  <LayerRow
-                    key={im.id}
-                    title={`${im.kind === 'satellite' ? '🛰' : '🖼'} ${im.name || (im.kind === 'satellite' ? 'Satellite' : 'Image')}`}
-                    layer={im}
-                    dims={dims[im.id]}
-                    units={units}
-                    calibrated={im.mpp > 0}
-                    onToggleVisible={(v) => toggleLayerVisible(im, v)}
-                    onOpacity={(v) => layerSlider(im, 'opacity', v)}
-                    onRotate={(v) => layerSlider(im, 'rot', v)}
-                    onCalibrate={() => startCalibrate(im.id)}
-                    onMove={() => ((setRotateLayer(null)), setMoveLayer(moveLayer === im.id ? null : im.id))}
-                    moving={moveLayer === im.id}
-                    onRotateMode={() => ((setMoveLayer(null)), setRotateLayer(rotateLayer === im.id ? null : im.id))}
-                    rotating={rotateLayer === im.id}
-                    onFilter={(v) => layerSlider(im, 'filter', v)}
-                    onDelete={() => deleteImageLayer(im.id)}
-                  />
-                ))}
-              </div>
-              <div className="layers-add">
-                <button className="btn small" onClick={() => fileRef.current?.click()}>＋ Add image</button>
-                <button className="btn small" onClick={() => setPanel('sat')}>＋ Add satellite</button>
-              </div>
-              <input ref={fileRef} type="file" accept="image/*" hidden onChange={onUpload} />
-              <p className="hint popover-hint">
-                Add as many images as you like. Calibrate each on its own and they share the diagram scale.
-                Use <strong>Move</strong> and <strong>Rotate</strong> (then drag the canvas) to align a layer.
-              </p>
-            </StagePopover>
+            <LayersPopover
+              imgLayers={imgLayers}
+              dims={dims}
+              units={units}
+              moveLayer={moveLayer}
+              rotateLayer={rotateLayer}
+              onToggleVisible={toggleLayerVisible}
+              onOpacity={(im, v) => layerSlider(im, 'opacity', v)}
+              onRotate={(im, v) => layerSlider(im, 'rot', v)}
+              onFilter={(im, v) => layerSlider(im, 'filter', v)}
+              onCalibrate={startCalibrate}
+              onToggleMove={(id) => applyLt((l) => layerTools.toggleMove(l, id))}
+              onToggleRotate={(id) => applyLt((l) => layerTools.toggleRotate(l, id))}
+              onDelete={deleteImageLayer}
+              fileRef={fileRef}
+              onUpload={onUpload}
+              onAddSatellite={() => setPanel('sat')}
+              onClose={() => setPanel(null)}
+            />
           )}
 
           {panel === 'sat' && (
-            <form className="stage-popover sat-panel" onSubmit={fetchSatellite}>
-              <input placeholder="Site address or place (e.g. 1 Macquarie St, Sydney)" value={satQuery} onChange={(e) => setSatQuery(e.target.value)} required />
-              <select value={satZoom} onChange={(e) => setSatZoom(e.target.value)}>
-                <option value="16">Wide (~1.5 km)</option>
-                <option value="17">Area (~750 m)</option>
-                <option value="18">Site (~380 m)</option>
-                <option value="19">Close (~190 m)</option>
-              </select>
-              <button className="btn primary small" disabled={satBusy}>
-                {satBusy ? 'Fetching…' : 'Fetch imagery'}
-              </button>
-              <button type="button" className="btn small ghost" onClick={() => setPanel('layers')}>
-                Cancel
-              </button>
-            </form>
+            <SatellitePanel
+              satQuery={satQuery}
+              setSatQuery={setSatQuery}
+              satZoom={satZoom}
+              setSatZoom={setSatZoom}
+              satBusy={satBusy}
+              onFetch={fetchSatellite}
+              onCancel={() => setPanel('layers')}
+            />
           )}
 
           {scalePoints && (
-            <div className="stage-popover scale-panel">
-              {scalePoints.length < 2 ? (
-                <span>
-                  Calibrating <strong>{imgById.get(calibrateLayer)?.name || 'image'}</strong> — click{' '}
-                  {scalePoints.length === 0 ? 'the first' : 'the second'} point of a known distance on it.
-                </span>
-              ) : (
-                <>
-                  <span>Distance between the points:</span>
-                  <input type="number" min="0.1" step="any" autoFocus value={scaleDistance} onChange={(e) => setScaleDistance(e.target.value)} placeholder={distUnit(units)} />
-                  <span>{distUnit(units)}</span>
-                  <button className="btn primary small" onClick={applyScale}>
-                    Apply
-                  </button>
-                </>
-              )}
-              <button className="btn small ghost" onClick={() => ((setScalePoints(null), setCalibrateLayer(null)))}>
-                Cancel
-              </button>
-            </div>
+            <ScalePanel
+              scalePoints={scalePoints}
+              layerName={imgById.get(calibrateLayer)?.name}
+              scaleDistance={scaleDistance}
+              units={units}
+              onDistance={(v) => applyLt((l) => layerTools.setScaleDistance(l, v))}
+              onApply={applyScale}
+              onCancel={() => applyLt(layerTools.endCalibrate)}
+            />
           )}
 
           <div className="stage-legend">
@@ -1979,445 +1788,77 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
             ))}
           </div>
 
-          {/* Everything below re-renders on animation ticks (sim frames, drags)
-              without touching the chrome above — see useTick.js. The scenes
-              are rebuilt inside the closure so they read fresh node positions. */}
-          <TickLayer store={tickStore}>
-          {() => {
-          const stack = stackMode ? makeStackScene() : null;
-          const scene3d = is3D ? make3DScene() : null;
-          // Unmet-link highlighting is positional; only pay for it while it's on.
-          const unmetLinkIds = highlightGaps && effScale
-            ? new Set(computeAdjacency().unmet.map((l) => l.id))
-            : EMPTY_SET;
-          return (<>
-          {is3D && scene3d && (
-            <div className="stage-3d">
-              <Suspense fallback={<div className="stage-3d-hint">Loading 3-D view…</div>}>
-                <Stacked3D scene={scene3d} gap={floorGap} showImage={stackImages} camMode={cam3d} />
-              </Suspense>
-              <div className="stage-3d-hint">Drag to orbit · scroll to zoom · right-drag to pan</div>
-            </div>
-          )}
-          <svg
-            ref={svgRef}
-            viewBox={`${originX} ${originY} ${vb.w} ${vb.h}`}
-            className={`bubble-svg ${scalePoints ? 'scaling' : ''} ${panActive || moveLayer || rotateLayer ? 'panning' : ''} ${tool === 'link' ? 'linking' : ''}`}
-            onPointerDown={onSvgPointerDown}
-            onPointerMove={onMove}
-            onPointerUp={onUp}
-            onPointerLeave={onUp}
-          >
-            <defs>
-              <filter id="sketchy" x="-20%" y="-20%" width="140%" height="140%">
-                <feTurbulence type="fractalNoise" baseFrequency="0.018" numOctaves="2" seed="7" result="n" />
-                <feDisplacementMap in="SourceGraphic" in2="n" scale="5" xChannelSelector="R" yChannelSelector="G" />
-              </filter>
-              {/* Colour-independent shading overlaid on a coloured circle to make
-                  it read as a lit 3D sphere (highlight top-left, shaded rim). */}
-              {/* Diffuse shading + rim shadow — colour-independent, layered over fill */}
-              <radialGradient id="sphere3d" cx="36%" cy="30%" r="72%">
-                <stop offset="0%" stopColor="rgba(255,255,255,0.52)" />
-                <stop offset="35%" stopColor="rgba(255,255,255,0.10)" />
-                <stop offset="65%" stopColor="rgba(0,0,0,0.02)" />
-                <stop offset="100%" stopColor="rgba(0,0,0,0.52)" />
-              </radialGradient>
-              {/* Tight specular hot-spot */}
-              <radialGradient id="sphere-spec" cx="32%" cy="26%" r="38%">
-                <stop offset="0%" stopColor="rgba(255,255,255,0.82)" />
-                <stop offset="100%" stopColor="rgba(255,255,255,0)" />
-              </radialGradient>
-              {/* Contact shadow — dark centre fading to transparent */}
-              <radialGradient id="sphere-shadow-grad">
-                <stop offset="0%" stopColor="rgba(0,0,0,0.38)" />
-                <stop offset="65%" stopColor="rgba(0,0,0,0.14)" />
-                <stop offset="100%" stopColor="rgba(0,0,0,0)" />
-              </radialGradient>
-            </defs>
-            {(() => {
-              const imgs = imgLayers.map((im) => {
-                if (!im.visible || !im.image) return null; // pixels may still be loading
-                const r = layerRect(im);
-                if (!r) return null;
-                const active = moveLayer === im.id || rotateLayer === im.id;
-                return (
-                  <image
-                    key={im.id}
-                    href={im.image}
-                    x={r.x}
-                    y={r.y}
-                    width={r.w}
-                    height={r.h}
-                    opacity={im.opacity}
-                    preserveAspectRatio="none"
-                    transform={imgTransform(r)}
-                    style={im.filter ? { filter: filterCss(im.filter) } : undefined}
-                    className={active ? 'layer-active' : ''}
-                  />
-                );
-              });
-              // In the stacked view, warp the images onto the ground-floor plane
-              // (not clipped — the full site image shows through). The ⊞ Images
-              // toggle can hide them.
-              if (!stack || !stack.groundTransform) return imgs;
-              if (!stackImages) return null;
-              return <g transform={stack.groundTransform}>{imgs}</g>;
-            })()}
-
-            {/* Topographic site contours — concentric rings that echo each
-                building's convex-hull SHAPE (not a generic ellipse), replacing
-                the grid (flat site-plan field). Grouped by clusterKey (building),
-                so each building gets ONE field that matches its hull, independent
-                of the bubble colour mode. */}
-            {!stackMode && (() => {
-              // Padded sample points per building (same construction the hulls use),
-              // so the contour outline matches the building hull exactly.
-              const byG = new Map();
-              for (const o of instances) {
-                if (!levelVisible(o.s)) continue;
-                const n = nodes.get(o.key);
-                if (!n) continue;
-                const g = clusterKey(o.s);
-                if (!byG.has(g)) byG.set(g, []);
-                const r = radiusOf(o.s) + hullPad;
-                for (let a = 0; a < Math.PI * 2; a += Math.PI / 4)
-                  byG.get(g).push({ x: n.x + Math.cos(a) * r, y: n.y + Math.sin(a) * r });
-              }
-              const rings = [];
-              for (const [g, pts] of byG) {
-                const hull = convexHull(pts);
-                if (hull.length < 3) continue;
-                const cx = hull.reduce((s, p) => s + p.x, 0) / hull.length;
-                const cy = hull.reduce((s, p) => s + p.y, 0) / hull.length;
-                // Concentric contours = the hull outline scaled about its centroid,
-                // from just inside the hull outward into the surrounding "terrain".
-                for (let k = 1; k <= 6; k++) {
-                  const f = k / 6;
-                  const scale = 0.4 + f * 1.2; // 0.6 (inner) … 1.6 (outer)
-                  const scaled = hull.map((p) => ({ x: cx + (p.x - cx) * scale, y: cy + (p.y - cy) * scale }));
-                  const d = smoothHullPath(scaled);
-                  if (!d) continue;
-                  rings.push(
-                    <path
-                      key={`contour:${g}:${k}`}
-                      d={d}
-                      className="site-contour"
-                      style={{ opacity: 0.9 - f * 0.6 }}
-                    />
-                  );
-                }
-              }
-              return rings;
-            })()}
-
-            {(() => {
-              // Building hulls always show (when buildings exist); category hulls
-              // are optional via the ⬡ Categories toggle.
-              const out = [];
-              const addHulls = (keyFn, cls, withLabel) => {
-                const byG = new Map();
-                for (const o of instances) {
-                  if (!levelVisible(o.s)) continue;
-                  const n = nodes.get(o.key);
-                  if (!n) continue;
-                  const g = keyFn(o.s);
-                  if (g == null) continue;
-                  if (!byG.has(g)) byG.set(g, []);
-                  const r = radiusOf(o.s) + hullPad;
-                  for (let a = 0; a < Math.PI * 2; a += Math.PI / 4)
-                    byG.get(g).push({ x: n.x + Math.cos(a) * r, y: n.y + Math.sin(a) * r });
-                }
-                for (const [g, pts] of byG) {
-                  const hull = convexHull(pts);
-                  const d = smoothHullPath(hull);
-                  if (!d) continue;
-                  const color = colorForLabel(g);
-                  out.push(<path key={`${cls}:${g}`} d={d} className={`group-hull ${cls}`} fill={color} stroke={color} />);
-                  if (withLabel) {
-                    const top = hull.reduce((m, p) => (p.y < m.y ? p : m), hull[0]);
-                    out.push(
-                      <text key={`lbl:${g}`} x={top.x} y={top.y - 4} textAnchor="middle" className="hull-label" fill={color}>
-                        {g}
-                      </text>
-                    );
-                  }
-                }
-              };
-              if (!stackMode && hasBuildings) addHulls((s) => { const root = rootContainer(s, byId); return root ? root.name : null; }, 'building-hull', true);
-              if (!stackMode && hulls) addHulls((s) => s.department || 'General', 'cat-hull', false);
-              return out;
-            })()}
-
-            {/* Stacked axonometric view. Dashed corner guides tie the floors into
-                one building; each floor is an iso-tilted group so its plate,
-                bubbles and the warped images foreshorten onto the plane. */}
-            {stack &&
-              stack.guides.map((g, i) => (
-                <line key={`guide:${i}`} x1={g.x1} y1={g.y1} x2={g.x2} y2={g.y2} className="floor-guide" />
-              ))}
-            {/* Floor plates: projected polygon (screen-space) + slab edge faces.
-                The polygon is computed from the 3-D footprint corners so the
-                shape is correct for every camera angle. */}
-            {stack &&
-              stack.floors.map((f) => (
-                <g key={`floor:${f.label}`}>
-                  <polygon points={f.platePts} className={`floor-plate floor-plane ${floorMode}`}
-                    stroke={f.color} fill={`${f.color}${floorMode === 'overlaid' ? '0c' : '1a'}`} />
-                  {floorMode === 'offset' && (
-                    <>
-                      <polygon points={f.slabFront} fill={f.color} className="slab-face slab-front" />
-                      <polygon points={f.slabRight} fill={f.color} className="slab-face slab-right" />
-                    </>
-                  )}
-                  <text x={f.labelPos.x} y={f.labelPos.y} className="floor-plate-label"
-                    fill={f.color} textAnchor="middle">{f.label}</text>
-                </g>
-              ))}
-            {/* Links drawn in screen space so cross-floor connectors read clearly. */}
-            {stack &&
-              adjacencies.map((l) => {
-                const sa = byId.get(l.space_a), sb = byId.get(l.space_b);
-                if (!sa || !sb) return null;
-                const inter = rankOf(sa) !== rankOf(sb);
-                if (inter && floorMode !== 'offset') return null;
-                const pair = stack.closestPairScreen(sa, sb);
-                if (!pair) return null;
-                return <line key={`sl:${l.id}`} x1={pair.a.x} y1={pair.a.y} x2={pair.b.x} y2={pair.b.y} className={`link ${l.strength}${inter ? ' interfloor' : ''}`} />;
-              })}
-            {/* Rooms as lit 3D spheres sitting on their floor plane. */}
-            {stack &&
-              stack.ordered.map((o) => {
-                const p = stack.screenPos.get(o.key);
-                if (!p) return null;
-                const r = p.r;
-                const kind = shapeOf(o.s);
-                const box = kind === 'box';
-                const poly = kind === 'poly' ? polyVertsOf(o.s) : null;
-                const pbS = poly ? polyBounds(poly) : null;
-                const side = r * Math.sqrt(Math.PI);
-                const polyD = poly ? polygonPath(poly) : null;
-                const extrude = r * 0.5; // screen-space "thickness" for the raised blob
-                // Contact shadow: under the sphere bottom, or under the extruded blob's base.
-                const shadow = poly
-                  ? { cy: extrude + pbS.maxY * 0.95, rx: (pbS.maxX - pbS.minX) / 2 * 0.92, ry: (pbS.maxX - pbS.minX) / 2 * 0.22 }
-                  : { cy: r * 0.65, rx: r * 0.9, ry: r * 0.24 };
-                const label = `${o.s.name}${Math.max(1, o.s.count || 1) > 1 ? ` ${o.i + 1}` : ''}`;
-                return (
-                  <g key={`sph:${o.key}`} transform={`translate(${p.x}, ${p.y})`} className="bubble stacked sphere">
-                    <title>{label} — {fmtArea(ea(o.s), units)}</title>
-                    <ellipse cx="0" cy={shadow.cy} rx={shadow.rx} ry={shadow.ry} fill="url(#sphere-shadow-grad)" />
-                    {poly ? (
-                      <>
-                        {/* Extruded body: a darkened copy dropped below the top face
-                            so the freeform shape reads as a raised 3-D blob. */}
-                        <path d={polyD} transform={`translate(0, ${extrude})`} fill={colorOf(o.s)} />
-                        <path d={polyD} transform={`translate(0, ${extrude})`} fill="rgba(0,0,0,0.32)" />
-                        <path d={polyD} fill={colorOf(o.s)} />
-                        <path d={polyD} fill="url(#sphere3d)" />
-                        <path d={polyD} fill="url(#sphere-spec)" />
-                      </>
-                    ) : box ? (
-                      <>
-                        <rect x={-side / 2} y={-side / 2} width={side} height={side} rx={Math.min(5, side / 8)} fill={colorOf(o.s)} />
-                        <rect x={-side / 2} y={-side / 2} width={side} height={side} rx={Math.min(5, side / 8)} fill="url(#sphere3d)" />
-                        <rect x={-side / 2} y={-side / 2} width={side} height={side} rx={Math.min(5, side / 8)} fill="url(#sphere-spec)" />
-                      </>
-                    ) : (
-                      <>
-                        <circle r={r} fill={colorOf(o.s)} />
-                        <circle r={r} fill="url(#sphere3d)" />
-                        <circle r={r} fill="url(#sphere-spec)" />
-                      </>
-                    )}
-                    <BubbleLabel label={label} r={r} areaStr={fmtArea(ea(o.s), units)} />
-                  </g>
-                );
-              })}
-
-            {scalePoints &&
-              scalePoints.map((p, i) => (
-                <g key={i} className="scale-point">
-                  <circle cx={p.x} cy={p.y} r="6" />
-                  <circle cx={p.x} cy={p.y} r="2" />
-                </g>
-              ))}
-            {scalePoints?.length === 2 && (
-              <line x1={scalePoints[0].x} y1={scalePoints[0].y} x2={scalePoints[1].x} y2={scalePoints[1].y} className="scale-line" />
-            )}
-
-            {!stackMode &&
-              adjacencies.map((l) => {
-                const sa = byId.get(l.space_a);
-                const sb = byId.get(l.space_b);
-                if (!sa || !sb) return null;
-                if (!levelVisible(sa) || !levelVisible(sb)) return null;
-                const pair = closestPair(sa, sb);
-                if (!pair) return null;
-                const isSelLink = selLink && ((selLink.space_a === l.space_a && selLink.space_b === l.space_b) || (selLink.space_a === l.space_b && selLink.space_b === l.space_a));
-                const connected = selected != null && (l.space_a === selected || l.space_b === selected);
-                return (
-                  <g key={l.id} className="link-hit" onClick={() => onLinkClick(l)}>
-                    <line x1={pair.a.x} y1={pair.a.y} x2={pair.b.x} y2={pair.b.y} className="link-hitarea" />
-                    <line
-                      x1={pair.a.x}
-                      y1={pair.a.y}
-                      x2={pair.b.x}
-                      y2={pair.b.y}
-                      className={`link ${l.strength}${isSelLink || connected ? ' selected' : ''}${highlightGaps && unmetLinkIds.has(l.id) ? ' unmet' : ''}`}
-                    />
-                  </g>
-                );
-              })}
-
-            {!stackMode &&
-              instances.map((o) => {
-              const n = nodes.get(o.key);
-              if (!n) return null;
-              const { s, i } = o;
-              if (!levelVisible(s)) return null;
-              const r = radiusOf(s);
-              const isSel = selected === s.id && (Math.max(1, s.count || 1) === 1 || selectedInst === i);
-              const pinned = !!instPin(s, i);
-              const inMulti = multi.has(o.key);
-              const count = Math.max(1, s.count || 1);
-              const kind = shapeOf(s);
-              const box = kind === 'box';
-              const poly = kind === 'poly' ? polyVertsOf(s) : null;
-              const polyHandles = kind === 'poly' ? polyHandlesOf(s) : null;
-              const pb = poly ? polyBounds(poly) : null;
-              const side = r * Math.sqrt(Math.PI); // square of equal area
-              const editing = editShape === s.id && i === editAnchorInst(s);
-              // Live area of the rendered outline, recomputed each frame (the area
-              // lock keeps it ≈ the brief target — shown so the size reads "live").
-              const polyAreaStr = poly ? fmtArea(ea(s) * (polygonArea(poly) / (areaUnits(s) || 1)), units) : null;
-              const fillOp = isSel ? Math.min((project.bubble_opacity ?? 0.32) + 0.25, 1) : pinned ? Math.min((project.bubble_opacity ?? 0.32) + 0.1, 1) : project.bubble_opacity ?? 0.32;
-              const sw = isSel ? 3 : pinned ? 2.5 : 1.5;
-              const outline = bubbleStyle === 'outline';
-              const sketch = bubbleStyle === 'sketch';
-              // Flat "site-plan" matte: solid fill + poché keyline (a darkened tone
-              // of the same hue), white keyline when selected, dark ink for labels.
-              const flat = !outline && !sketch;
-              const baseColor = colorOf(s);
-              const fillOpEff = outline ? 0 : flat ? (isSel ? 1 : 0.95) : fillOp;
-              const swEff = outline ? sw + 1 : sw;
-              const strokeColor = flat ? (isSel ? '#ffffff' : darkHex(baseColor, 0.4)) : baseColor;
-              const inkColor = flat ? darkHex(baseColor, 0.62) : undefined;
-              const shapeFilter = sketch ? 'url(#sketchy)' : undefined;
-              return (
-                <g
-                  key={o.key}
-                  data-space-id={s.id}
-                  data-instance={i}
-                  className={`bubble ${isSel ? 'selected' : ''} ${inMulti ? 'multi' : ''}`}
-                  transform={`translate(${n.x}, ${n.y})`}
-                  onPointerDown={(e) => onBubbleDown(e, o)}
-                  onPointerEnter={() => (hoverRef.current = { space: s, idx: i })}
-                  onPointerLeave={() => (hoverRef.current?.space.id === s.id && hoverRef.current?.idx === i ? (hoverRef.current = null) : null)}
-                >
-                  <title>
-                    {s.name}
-                    {count > 1 ? ` ${i + 1} of ${count}` : ''} — {fmtArea(ea(s), units)} · P pin · B box
-                  </title>
-                  {pinned &&
-                    (poly ? (
-                      <path d={polyRingPath(poly, 6)} className="pin-ring" />
-                    ) : box ? (
-                      <rect x={-side / 2 - 5} y={-side / 2 - 5} width={side + 10} height={side + 10} rx="3" className="pin-ring" />
-                    ) : (
-                      <circle r={r + 5} className="pin-ring" />
-                    ))}
-                  {inMulti &&
-                    (poly ? (
-                      <path d={polyRingPath(poly, 9)} className="multi-ring" />
-                    ) : box ? (
-                      <rect x={-side / 2 - 7} y={-side / 2 - 7} width={side + 14} height={side + 14} rx="4" className="multi-ring" />
-                    ) : (
-                      <circle r={r + 7} className="multi-ring" />
-                    ))}
-                  {poly ? (
-                    <path className={`poly-shape ${editing ? 'editing' : ''}`} d={polygonPath(poly)} fill={baseColor} fillOpacity={fillOpEff} stroke={strokeColor} strokeWidth={swEff} strokeLinejoin="round" filter={shapeFilter} />
-                  ) : box ? (
-                    <rect x={-side / 2} y={-side / 2} width={side} height={side} rx={flat ? 0 : Math.min(4, side / 8)} fill={baseColor} fillOpacity={fillOpEff} stroke={strokeColor} strokeWidth={swEff} filter={shapeFilter} />
-                  ) : (
-                    <circle r={r} fill={baseColor} fillOpacity={fillOpEff} stroke={strokeColor} strokeWidth={swEff} filter={shapeFilter} />
-                  )}
-                  <BubbleLabel
-                    label={`${s.name}${count > 1 ? ` ${i + 1}` : ''}`}
-                    r={r}
-                    areaStr={fmtArea(ea(s), units)}
-                    ink={inkColor}
-                  />
-                  {editing && polyHandles && (
-                    <g className="poly-edit">
-                      {polyHandles.map((p, vi) => {
-                        const a = polyHandles[vi];
-                        const b = polyHandles[(vi + 1) % polyHandles.length];
-                        const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-                        return (
-                          <circle
-                            key={`add:${vi}`}
-                            cx={mid.x}
-                            cy={mid.y}
-                            r="4"
-                            className="poly-add"
-                            onPointerDown={(e) => e.stopPropagation()}
-                            onClick={(e) => (e.stopPropagation(), addPolyVertex(s, vi))}
-                          />
-                        );
-                      })}
-                      {polyHandles.map((p, vi) => (
-                        <circle
-                          key={`v:${vi}`}
-                          cx={p.x}
-                          cy={p.y}
-                          r="6"
-                          className="poly-handle"
-                          onPointerDown={(e) => onPolyVertexDown(e, s, vi)}
-                          onDoubleClick={(e) => (e.stopPropagation(), removePolyVertex(s, vi))}
-                        />
-                      ))}
-                      {pb && (
-                        <text className="poly-area-badge" x="0" y={pb.minY - 12} textAnchor="middle">
-                          {polyAreaStr}
-                        </text>
-                      )}
-                    </g>
-                  )}
-                </g>
-              );
-            })}
-
-            {scaleBar && (
-              <g className="scale-bar" transform={`translate(${originX + 20}, ${originY + vb.h - 24})`}>
-                <rect x="-8" y="-16" width={scaleBar.len + 150} height="30" rx="4" className="scale-bar-bg" />
-                <line x1="0" y1="0" x2={scaleBar.len} y2="0" />
-                <line x1="0" y1="-5" x2="0" y2="5" />
-                <line x1={scaleBar.len} y1="-5" x2={scaleBar.len} y2="5" />
-                <text x={scaleBar.len + 8} y="4">
-                  {scaleBar.label} · {scaleLabelFor(effScale)}
-                </text>
-              </g>
-            )}
-
-            {attributionLayer && (
-              <text x={originX + vb.w - 8} y={originY + vb.h - 8} textAnchor="end" className="attribution">
-                {attributionLayer.attribution}
-              </text>
-            )}
-
-            {marquee && (
-              <rect
-                className="marquee"
-                x={Math.min(marquee.x0, marquee.x1)}
-                y={Math.min(marquee.y0, marquee.y1)}
-                width={Math.abs(marquee.x1 - marquee.x0)}
-                height={Math.abs(marquee.y1 - marquee.y0)}
-              />
-            )}
-          </svg>
-          </>);
-          }}
-          </TickLayer>
+          {/* Everything inside DiagramCanvas re-renders on animation ticks (sim
+              frames, drags) without touching the chrome above — see useTick.js. */}
+          <DiagramCanvas
+            tickStore={tickStore}
+            stackMode={stackMode}
+            is3D={is3D}
+            floorMode={floorMode}
+            hulls={hulls}
+            hullPad={hullPad}
+            hasBuildings={hasBuildings}
+            highlightGaps={highlightGaps}
+            effScale={effScale}
+            floorGap={floorGap}
+            stackImages={stackImages}
+            cam3d={cam3d}
+            bubbleStyle={bubbleStyle}
+            bubbleOpacity={project.bubble_opacity}
+            panActive={panActive}
+            tool={tool}
+            svgRef={svgRef}
+            originX={originX}
+            originY={originY}
+            vb={vb}
+            units={units}
+            nodes={nodes}
+            instances={instances}
+            adjacencies={adjacencies}
+            byId={byId}
+            imgLayers={imgLayers}
+            selected={selected}
+            selectedInst={selectedInst}
+            multi={multi}
+            selLink={selLink}
+            editShape={editShape}
+            marquee={marquee}
+            scalePoints={scalePoints}
+            moveLayer={moveLayer}
+            rotateLayer={rotateLayer}
+            scaleBar={scaleBar}
+            attributionLayer={attributionLayer}
+            makeStackScene={makeStackScene}
+            make3DScene={make3DScene}
+            computeAdjacency={computeAdjacency}
+            layerRect={layerRect}
+            imgTransform={imgTransform}
+            levelVisible={levelVisible}
+            clusterKey={clusterKey}
+            radiusOf={radiusOf}
+            colorForLabel={colorForLabel}
+            colorOf={colorOf}
+            rankOf={rankOf}
+            closestPair={closestPair}
+            shapeOf={shapeOf}
+            polyVertsOf={polyVertsOf}
+            polyHandlesOf={polyHandlesOf}
+            polyRingPath={polyRingPath}
+            areaUnits={areaUnits}
+            editAnchorInst={editAnchorInst}
+            instPin={instPin}
+            ea={ea}
+            scaleLabelFor={scaleLabelFor}
+            onSvgPointerDown={onSvgPointerDown}
+            onMove={onMove}
+            onUp={onUp}
+            onBubbleDown={onBubbleDown}
+            onLinkClick={onLinkClick}
+            onPolyVertexDown={onPolyVertexDown}
+            addPolyVertex={addPolyVertex}
+            removePolyVertex={removePolyVertex}
+            hoverRef={hoverRef}
+          />
 
           {hasLevels && floorMode !== 'all' && (
             <div className="floor-caption">
@@ -2428,118 +1869,46 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
 
           <NorthRose deg={project.north_deg || 0} onSet={setNorth} />
 
-          {/* One contextual action bar (bottom-centre): link form, multi form,
-              or single-room form depending on the current selection. */}
-          {(() => {
-            // Link selected → link form.
-            if (selLink) {
-              const a = byId.get(selLink.space_a);
-              const b = byId.get(selLink.space_b);
-              const cur = findPair(selLink.space_a, selLink.space_b)?.strength ?? null;
-              return (
-                <div className="action-bar" onClick={(e) => e.stopPropagation()}>
-                  <span className="action-glyph">
-                    <svg width="15" height="15" viewBox="0 0 24 24" style={{ color: 'var(--accent2)' }}><circle cx="6" cy="17" r="3" fill="currentColor" /><circle cx="18" cy="7" r="3" fill="currentColor" /><line x1="8" y1="15" x2="16" y2="9" stroke="currentColor" strokeWidth="2" /></svg>
-                  </span>
-                  <span className="action-name">{a?.name} — {b?.name}</span>
-                  <span className="seg seg-sm">
-                    <button className={cur === 'desired' ? 'active' : ''} onClick={() => setLinkStrength(selLink.space_a, selLink.space_b, 'desired')}>Desired</button>
-                    <button className={cur === 'required' ? 'active' : ''} onClick={() => setLinkStrength(selLink.space_a, selLink.space_b, 'required')}>Required</button>
-                  </span>
-                  <button className="action-btn danger" onClick={removeSelLink} title="Remove link">Remove</button>
-                </div>
-              );
-            }
-            // Link mode (no link selected) → choose the type new links get.
-            if (tool === 'link') {
-              return (
-                <div className="action-bar" onClick={(e) => e.stopPropagation()}>
-                  <span className="action-glyph">
-                    <svg width="15" height="15" viewBox="0 0 24 24" style={{ color: 'var(--accent2)' }}><circle cx="6" cy="17" r="3" fill="currentColor" /><circle cx="18" cy="7" r="3" fill="currentColor" /><line x1="8" y1="15" x2="16" y2="9" stroke="currentColor" strokeWidth="2" /></svg>
-                  </span>
-                  <span className="action-name">{linkFrom != null ? 'Pick the second room' : 'New link'}</span>
-                  <span className="seg seg-sm">
-                    <button className={linkKind === 'desired' ? 'active' : ''} onClick={() => setLinkKind('desired')}>Desired</button>
-                    <button className={linkKind === 'required' ? 'active' : ''} onClick={() => setLinkKind('required')}>Required</button>
-                  </span>
-                </div>
-              );
-            }
-            // Multiple rooms → batch form.
-            if (multi.size > 1) {
-              return (
-                <div className="action-bar" onClick={(e) => e.stopPropagation()}>
-                  <span className="action-count">{multi.size}</span>
-                  <span className="action-name">rooms selected</span>
-                  <button className="action-btn" onClick={() => multiPin(true)} title="Pin all — P">📌 Pin all</button>
-                  <button className="action-btn" onClick={() => multiShape('box')} title="Box all — B">▢ Box all</button>
-                  <button className="action-btn" onClick={multiCustomShape} title="Freeform shape all — S">✎ Shape all</button>
-                  <input
-                    className="action-cat"
-                    list="diagram-categories"
-                    placeholder="Category…"
-                    value={catDraft}
-                    onChange={(e) => setCatDraft(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter') multiSetCategory(catDraft); }}
-                  />
-                  <datalist id="diagram-categories">
-                    {departments.map((d) => <option key={d} value={d} />)}
-                  </datalist>
-                  <button className="action-btn icon danger" onClick={multiDelete} title="Remove all (Del)" aria-label="Remove all">
-                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6h18" /><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6M14 11v6" /></svg>
-                  </button>
-                </div>
-              );
-            }
-            // Single room → room form.
-            const sel = selected != null ? byId.get(selected) : null;
-            if (!sel) return null;
-            const selCount = Math.max(1, sel.count || 1);
-            const selInstPinned = !!instPin(sel, selectedInst);
-            const selBox = shapeOf(sel) === 'box';
-            const editingSel = editShape === sel.id;
-            return (
-              <div className="action-bar" onClick={(e) => e.stopPropagation()}>
-                <span className="swatch" style={{ background: colorOf(sel) }} />
-                <span className="action-name">{sel.name}{selCount > 1 ? ` ${selectedInst + 1}` : ''}</span>
-                <span className="action-area mono">{fmtArea(ea(sel), units)}</span>
-                <button className={`action-btn ${selInstPinned ? 'active' : ''}`} onClick={() => savePin(sel, selectedInst, !selInstPinned)} title="Pin — P">📌 {selInstPinned ? 'Unpin' : 'Pin'}</button>
-                <button className={`action-btn ${selBox ? 'active' : ''}`} onClick={() => toggleShape(sel)} title="Box — B">{selBox ? '○ Bubble' : '▢ Box'}</button>
-                <button className={`action-btn ${editingSel ? 'active' : ''}`} onClick={() => editCustomShape(sel)} title="Freeform shape — S">✎ {editingSel ? 'Done' : 'Shape'}</button>
-                <input
-                  className="action-cat"
-                  list="diagram-categories"
-                  placeholder="Category"
-                  defaultValue={sel.department || ''}
-                  key={sel.id + ':' + (sel.department || '')}
-                  onKeyDown={(e) => { if (e.key === 'Enter') { const v = e.target.value.trim(); if (v && v !== sel.department) commitSpace(sel, { department: v }, 'set category'); } }}
-                  title="Reassign category (Enter to apply)"
-                />
-                <datalist id="diagram-categories">
-                  {departments.map((d) => <option key={d} value={d} />)}
-                </datalist>
-                <button className="action-btn icon danger" onClick={() => removeSpace(sel)} title="Remove (Del)" aria-label="Remove">
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6h18" /><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6M14 11v6" /></svg>
-                </button>
-              </div>
-            );
-          })()}
-
-          {/* Contextual hint — hidden while an action bar is showing. */}
-          {!selLink && multi.size === 0 && selected == null && tool !== 'link' && (
-            <div className="stage-hint">
-              {rotateLayer
-                ? 'Rotating image — drag the canvas to turn it. Toggle Rotate off when done.'
-                : moveLayer
-                ? 'Moving image layer — drag the canvas to reposition it.'
-                : panActive
-                ? 'Pan — drag the canvas. Release Space (or toggle Pan off) to edit.'
-                : tool === 'link'
-                ? (linkFrom != null ? 'Link mode — click a second room to connect them.' : 'Link mode (L) — click two rooms to link · click a link to edit it')
-                : 'Click a room to select · drag to move · Shift-click for several · hold Space to pan · press ? for shortcuts' +
-                  (effScale ? ` · ${scaleLabelFor(effScale)}` : '')}
-            </div>
-          )}
+          {/* One contextual action bar (bottom-centre) — or the hint when
+              nothing is selected. */}
+          <SelectionHud
+            selLink={selLink}
+            byId={byId}
+            findPair={findPair}
+            onSetLinkStrength={setLinkStrength}
+            onRemoveLink={removeSelLink}
+            tool={tool}
+            linkFrom={linkFrom}
+            linkKind={linkKind}
+            onLinkKind={(k) => applySel((s) => linking.setLinkKind(s, k))}
+            multi={multi}
+            onMultiPin={multiPin}
+            onMultiShape={multiShape}
+            onMultiCustomShape={multiCustomShape}
+            catDraft={catDraft}
+            setCatDraft={setCatDraft}
+            onMultiSetCategory={multiSetCategory}
+            onMultiDelete={multiDelete}
+            departments={departments}
+            selectedSpace={selectedSpace}
+            selectedInst={selectedInst}
+            instPin={instPin}
+            shapeOf={shapeOf}
+            editShape={editShape}
+            colorOf={colorOf}
+            ea={ea}
+            units={units}
+            onPin={savePin}
+            onToggleShape={toggleShape}
+            onEditShape={editCustomShape}
+            onSetCategory={(space, v) => commitSpace(space, { department: v }, 'set category')}
+            onRemoveSpace={removeSpace}
+            rotateLayer={rotateLayer}
+            moveLayer={moveLayer}
+            panActive={panActive}
+            effScale={effScale}
+            scaleLabelFor={scaleLabelFor}
+          />
         </div>
       </div>
 
@@ -2553,7 +1922,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
           groupKey={groupKey}
           areaTree={areaTree}
           areaMode={areaMode}
-          setAreaMode={setAreaMode}
+          setAreaMode={(m) => setPref('areaMode', m)}
           collapsed={collapsed}
           toggleCollapse={toggleCollapse}
           colorForLabel={colorForLabel}

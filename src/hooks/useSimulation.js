@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { closestInstancePair } from '../adjacency.js';
+import { closestInstancePair, DEFAULT_THRESHOLDS_M } from '../adjacency.js';
 
 /**
  * Runs the force-directed bubble simulation in a requestAnimationFrame loop.
@@ -49,6 +49,7 @@ export function useSimulation({
   nodesRef,
   alphaRef,
   dragRef,
+  relaxRef, // { frames, hold: Set<instanceKey> } post-drop relaxation (set by onUp)
   radiusOf,
   instPin,
   groupKey,
@@ -89,7 +90,25 @@ export function useSimulation({
     // Closest instance pair between two spaces (for adjacency springs).
     const closestPair = (sa, sb) => closestInstancePair(nodesRef.current, sa, sb);
 
-    const simulate = (alpha) => {
+    // Adjacency spring rest GAP (edge to edge, diagram units). With a real
+    // scale the springs aim at the same metre thresholds the compliance score
+    // grades against (see adjacency.js), so auto-layout optimises exactly what
+    // the badge measures; without a scale, fall back to the classic px gaps.
+    const restGapUnits = (strength) => {
+      if (effScale) {
+        const t = DEFAULT_THRESHOLDS_M[strength] ?? DEFAULT_THRESHOLDS_M.desired;
+        return Math.min(240, t / effScale);
+      }
+      return strength === 'required' ? 20 : 90;
+    };
+
+    // One physics pass. `collideOnly` skips every layout force and resolves
+    // hard overlaps only — used briefly after a drop so neighbours step aside
+    // for the placed bubble without the layout drifting; `holdKeys` (the
+    // just-dropped instances) stay exactly where the user put them.
+    // Returns the largest single-node movement, so callers can detect settling.
+    const simulate = (alpha, collideOnly = false, holdKeys = null) => {
+      let maxMove = 0;
       const nodes = nodesRef.current;
       const arr = instances
         .map((o) => ({ ...o, n: nodes.get(o.key), r: radiusOfRef.current(o.s) }))
@@ -102,6 +121,31 @@ export function useSimulation({
       //    rooms are free to move. Both scale with the building-force slider.
       const bf = buildingForceRef.current;
       const nf = nodeForceRef.current;
+      if (collideOnly) {
+        // Hard-overlap separation only (no springs, gravity or charge — those
+        // would drift the layout). Softer push than a full pass so neighbours
+        // ease aside under a drag instead of snapping.
+        for (let i = 0; i < arr.length; i++) {
+          for (let j = i + 1; j < arr.length; j++) {
+            const a = arr[i];
+            const b = arr[j];
+            let dx = b.n.x - a.n.x;
+            let dy = b.n.y - a.n.y;
+            let d = Math.hypot(dx, dy);
+            if (d === 0) ((dx = Math.random() - 0.5), (dy = Math.random() - 0.5), (d = Math.hypot(dx, dy)));
+            const minD = a.r + b.r + (effScale ? 14 : 20);
+            if (d >= minD) continue;
+            const aF = fixedInst(a) || !!holdKeys?.has(a.key);
+            const bF = fixedInst(b) || !!holdKeys?.has(b.key);
+            if (aF && bF) continue;
+            const push = ((minD - d) / d) * 0.28;
+            maxMove = Math.max(maxMove, (minD - d) * 0.28);
+            if (!aF) ((a.n.x -= dx * push * (bF ? 2 : 1)), (a.n.y -= dy * push * (bF ? 2 : 1)));
+            if (!bF) ((b.n.x += dx * push * (aF ? 2 : 1)), (b.n.y += dy * push * (aF ? 2 : 1)));
+          }
+        }
+        return maxMove;
+      }
       const cents = new Map();
       for (const o of arr) {
         const key = clusterKeyRef.current(o.s);
@@ -154,15 +198,18 @@ export function useSimulation({
         }
       }
 
-      // 3. Adjacency springs
+      // 3. Adjacency springs — rest length aims at the compliance-score
+      //    threshold (restGapUnits), and links still beyond it pull harder, so
+      //    an auto-layout pass spends its energy fixing actual violations.
       for (const l of adjacencies) {
         const sa = byId.get(l.space_a);
         const sb = byId.get(l.space_b);
         if (!sa || !sb) continue;
         const pair = closestPair(sa, sb);
         if (!pair) continue;
-        const rest = radiusOfRef.current(sa) + radiusOfRef.current(sb) + (l.strength === 'required' ? 20 : 90);
-        const k = (l.strength === 'required' ? 0.05 : 0.016) * nf;
+        const rest = radiusOfRef.current(sa) + radiusOfRef.current(sb) + restGapUnits(l.strength);
+        const unmetBoost = pair.d > rest ? 1.5 : 1;
+        const k = (l.strength === 'required' ? 0.05 : 0.016) * nf * unmetBoost;
         const dx = pair.b.x - pair.a.x;
         const dy = pair.b.y - pair.a.y;
         const d = Math.hypot(dx, dy) || 0.01;
@@ -188,6 +235,7 @@ export function useSimulation({
           if (aF && bF) continue;
           if (d < minD) {
             const push = ((minD - d) / d) * 0.45;
+            maxMove = Math.max(maxMove, (minD - d) * 0.45);
             if (!aF) ((a.n.x -= dx * push * (bF ? 2 : 1)), (a.n.y -= dy * push * (bF ? 2 : 1)));
             if (!bF) ((b.n.x += dx * push * (aF ? 2 : 1)), (b.n.y += dy * push * (aF ? 2 : 1)));
           } else if (d < minD + 110) {
@@ -216,24 +264,43 @@ export function useSimulation({
             o.n.vy *= 0.55;
             o.n.x += o.n.vx;
             o.n.y += o.n.vy;
+            maxMove = Math.max(maxMove, Math.abs(o.n.vx) + Math.abs(o.n.vy));
           }
         }
       }
+      return maxMove;
     };
 
+    let calmFrames = 0; // consecutive near-still frames during an auto pass
+
     const step = () => {
+      const dragging = !!dragRef.current;
       // Momentary auto-layout: simulate only while a pass is active and still
       // warm. Dragging during a pass keeps reflowing neighbours (held nodes
-      // stay fixed). When it cools below the floor, end the pass and clear the
-      // button's active state.
-      if (autoRunRef.current && (alphaRef.current > 0.012 || dragRef.current)) {
-        simulate(Math.max(alphaRef.current, dragRef.current ? 0.3 : 0));
-        if (!dragRef.current) alphaRef.current *= 0.99;
+      // stay fixed). The pass ends when it cools below the floor OR when the
+      // layout has visibly settled (adaptive cooling — no fixed-length tail).
+      if (autoRunRef.current && (alphaRef.current > 0.012 || dragging)) {
+        const maxMove = simulate(Math.max(alphaRef.current, dragging ? 0.3 : 0));
+        if (!dragging) {
+          alphaRef.current *= 0.985;
+          calmFrames = maxMove < 0.09 ? calmFrames + 1 : 0;
+          if (calmFrames >= 14) alphaRef.current = 0;
+        }
         setTick((t) => t + 1);
-        if (alphaRef.current <= 0.012 && !dragRef.current) {
+        if (alphaRef.current <= 0.012 && !dragging) {
           autoRunRef.current = false;
           setAutoRunning(false);
+          calmFrames = 0;
         }
+      } else if (relaxRef.current && relaxRef.current.frames > 0 && !dragging) {
+        // Post-drop relaxation (primed by onUp): resolve hard overlaps only,
+        // so a bubble PLACED on its neighbours pushes them aside once it
+        // lands — never while it is still being carried — with zero drift.
+        // The dropped instances themselves are held where the user put them.
+        const relax = relaxRef.current;
+        const maxMove = simulate(1, true, relax.hold);
+        relax.frames = maxMove < 0.05 ? 0 : relax.frames - 1;
+        if (maxMove > 0) setTick((t) => t + 1);
       }
       raf = requestAnimationFrame(step);
     };
