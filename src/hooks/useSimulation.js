@@ -49,6 +49,7 @@ export function useSimulation({
   nodesRef,
   alphaRef,
   dragRef,
+  relaxRef, // { frames, hold: Set<instanceKey> } post-drop relaxation (set by onUp)
   radiusOf,
   instPin,
   groupKey,
@@ -102,10 +103,11 @@ export function useSimulation({
     };
 
     // One physics pass. `collideOnly` skips every layout force and resolves
-    // hard overlaps only — used while dragging (and briefly after a drop) so
-    // neighbours step aside under the cursor without the layout drifting.
+    // hard overlaps only — used briefly after a drop so neighbours step aside
+    // for the placed bubble without the layout drifting; `holdKeys` (the
+    // just-dropped instances) stay exactly where the user put them.
     // Returns the largest single-node movement, so callers can detect settling.
-    const simulate = (alpha, collideOnly = false) => {
+    const simulate = (alpha, collideOnly = false, holdKeys = null) => {
       let maxMove = 0;
       const nodes = nodesRef.current;
       const arr = instances
@@ -133,8 +135,8 @@ export function useSimulation({
             if (d === 0) ((dx = Math.random() - 0.5), (dy = Math.random() - 0.5), (d = Math.hypot(dx, dy)));
             const minD = a.r + b.r + (effScale ? 14 : 20);
             if (d >= minD) continue;
-            const aF = fixedInst(a);
-            const bF = fixedInst(b);
+            const aF = fixedInst(a) || !!holdKeys?.has(a.key);
+            const bF = fixedInst(b) || !!holdKeys?.has(b.key);
             if (aF && bF) continue;
             const push = ((minD - d) / d) * 0.28;
             maxMove = Math.max(maxMove, (minD - d) * 0.28);
@@ -269,7 +271,6 @@ export function useSimulation({
       return maxMove;
     };
 
-    let relaxFrames = 0; // collision-relax frames still owed after a drop
     let calmFrames = 0; // consecutive near-still frames during an auto pass
 
     const step = () => {
@@ -291,13 +292,14 @@ export function useSimulation({
           setAutoRunning(false);
           calmFrames = 0;
         }
-      } else if (dragging || relaxFrames > 0) {
-        // Physical drag feel without layout drift: resolve hard overlaps only,
-        // so neighbours ease aside under the dragged bubble and finish
-        // settling briefly after the drop.
-        const maxMove = simulate(1, true);
-        if (dragging) relaxFrames = 26;
-        else relaxFrames = maxMove < 0.05 ? 0 : relaxFrames - 1;
+      } else if (relaxRef.current && relaxRef.current.frames > 0 && !dragging) {
+        // Post-drop relaxation (primed by onUp): resolve hard overlaps only,
+        // so a bubble PLACED on its neighbours pushes them aside once it
+        // lands — never while it is still being carried — with zero drift.
+        // The dropped instances themselves are held where the user put them.
+        const relax = relaxRef.current;
+        const maxMove = simulate(1, true, relax.hold);
+        relax.frames = maxMove < 0.05 ? 0 : relax.frames - 1;
         if (maxMove > 0) setTick((t) => t + 1);
       }
       raf = requestAnimationFrame(step);

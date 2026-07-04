@@ -84,23 +84,26 @@ test('dragging a bubble moves it and persists the dropped position', async () =>
   }
 });
 
-test('dropping a bubble onto another relaxes the overlap apart', async () => {
+test('a placed bubble pushes neighbours aside — only after the drop', async () => {
   const { container, svg, unmount } = mount();
   try {
     const at = (id) => posOf(container.querySelector(`g.bubble[data-space-id="${id}"]`));
     const a = container.querySelector('g.bubble[data-space-id="2"]');
     const pa = at(2);
     const pb = at(3);
-    // Drag Lobby directly onto Office's centre and drop it there.
+    // Carry Lobby over Office's centre — while it is held, nothing yields.
     await act(async () => a.dispatchEvent(ev('pointerdown', { clientX: pa.x, clientY: pa.y })));
     await act(async () => svg.dispatchEvent(ev('pointermove', { clientX: pb.x, clientY: pb.y })));
-    await act(async () => flushFrames(2)); // sim frames during the drag prime the relaxation
+    await act(async () => flushFrames(10));
+    assert.deepEqual(at(3), pb, 'the neighbour does not move while the bubble is carried');
+    // Drop it there: the placed bubble stays put; the neighbour steps aside.
     await act(async () => svg.dispatchEvent(ev('pointerup', { clientX: pb.x, clientY: pb.y })));
-    const dropped = Math.hypot(at(2).x - at(3).x, at(2).y - at(3).y);
-    // Post-drop collision relaxation separates the pair without any layout pass.
     await act(async () => flushFrames(60));
-    const settled = Math.hypot(at(2).x - at(3).x, at(2).y - at(3).y);
-    assert.ok(settled > Math.max(100, dropped), `overlap relaxed apart (${Math.round(dropped)} → ${Math.round(settled)})`);
+    const aEnd = at(2);
+    const bEnd = at(3);
+    assert.ok(Math.hypot(aEnd.x - pb.x, aEnd.y - pb.y) < 1, 'the dropped bubble stays exactly where it was placed');
+    assert.ok(Math.hypot(bEnd.x - pb.x, bEnd.y - pb.y) > 50, 'the neighbour was pushed aside');
+    assert.ok(Math.hypot(aEnd.x - bEnd.x, aEnd.y - bEnd.y) > 100, 'the overlap fully resolved');
   } finally {
     unmount();
   }
