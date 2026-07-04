@@ -1,17 +1,15 @@
-import { lazy, memo, Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api.js';
 import { fmtArea, areaToM2, distToMeters, distUnit, leafSpaces, rootContainer } from '../compute.js';
 // pdfExport is lazy-loaded on demand — keeps jsPDF out of the initial bundle.
 import { useHistory } from '../useHistory.js';
-import { darkHex } from '../viz.js';
 import { SCALE_PRESETS, ratioToScale, scaleToRatio, zoomAbout } from '../scale.js';
-import { convexHull, smoothHullPath, pinsOf, filterCss,
-  parsePoly, normalizePolygon, polygonPath, polyBounds, regularPolygon,
+import { pinsOf, filterCss,
+  parsePoly, normalizePolygon, polygonPath, regularPolygon,
   polygonArea, smoothPolygonPoints } from '../geometry.js';
 import { edgeGap, adjacencyScore, closestInstancePair } from '../adjacency.js';
 import { pinPatch } from '../pins.js';
-import { prefs } from '../prefs.js';
-import { orderedLevels, levelRankMap, CAMERAS } from '../floors.js';
+import { orderedLevels, levelRankMap } from '../floors.js';
 import { buildStackScene, build3DScene } from './diagram/scenes.js';
 import * as selection from './diagram/selection.js';
 import * as linking from './diagram/linking.js';
@@ -20,130 +18,27 @@ import { useDiagramPrefs } from '../hooks/useDiagramPrefs.js';
 import { useViewport, W, H } from '../hooks/useViewport.js';
 import { useImageDims } from '../hooks/useImageDims.js';
 import { useImageData, seedImageData } from '../hooks/useImageData.js';
-import { useTickStore, TickLayer } from '../hooks/useTick.js';
+import { useTickStore } from '../hooks/useTick.js';
 import { useSimulation } from '../hooks/useSimulation.js';
 import { bakeImage } from '../imageUtils.js';
 import HelpPanel from './HelpPanel.jsx';
 import NorthRose from './diagram/NorthRose.jsx';
 import MatrixPanel from './diagram/MatrixPanel.jsx';
-import LayerRow from './diagram/LayerRow.jsx';
 import DiagramRail from './diagram/DiagramRail.jsx';
+import DiagramCanvas from './diagram/DiagramCanvas.jsx';
+import SelectionHud from './diagram/SelectionHud.jsx';
+import { StageTopbar, MorePopover, ToolDock } from './diagram/DiagramToolbar.jsx';
+import { LayersPopover, SatellitePanel, ScalePanel } from './diagram/LayersPanel.jsx';
 import StagePopover from './diagram/StagePopover.jsx';
 import { Empty } from './ui.jsx';
 
-// three.js + react-three-fiber are the bulk of the main bundle; the 3-D view
-// is one floor mode, so load it on demand (same pattern as pdfExport).
-const Stacked3D = lazy(() => import('./diagram/Stacked3D.jsx'));
-
 const PALETTE = ['#e8b04b', '#5b9dd9', '#4cc38a', '#c678dd', '#e5707a', '#56b6c2', '#d19a66', '#98c379', '#7aa2f7', '#f7768e'];
 const SAT_CANVAS = 768;
-const EMPTY_SET = new Set();
 
 // BubbleTab unmounts when you leave the Diagram tab, which would otherwise lose
 // every non-pinned bubble's position and let the sim re-scatter them on return.
 // This module-level cache keeps the last layout per project for the session.
 const layoutCache = new Map(); // projectId → Map(instanceKey → {x,y})
-
-// Bake rotation (clockwise deg) and/or a CSS filter into a data URL on a canvas
-// sized to the rotated bounding box — keeps the PDF export scale-accurate.
-
-/**
- * Renders a bubble's name (and optional area) as word-wrapped SVG text,
- * vertically centred inside a circle of radius `r`.
- *
- * Strategy: character-count greedy wrap using an average char-width heuristic
- * (fontSize × 0.55). Lines are stacked with <tspan dy> and the whole block is
- * offset so its visual centre lands at y = 0 (the bubble's centre).
- *
- * Tiny bubbles (r ≤ 13) fall back to a single label below the circle.
- *
- * Memoized: labels re-render (and re-wrap) only when their own props change,
- * not on every sim tick.
- */
-const BubbleLabel = memo(function BubbleLabel({ label, r, areaStr, ink }) {
-  const fontSize = Math.max(9, Math.min(14, r / 3.2));
-  const lineH    = fontSize * 1.22;
-  const charW    = fontSize * 0.55;
-  const maxW     = Math.max(r * 1.65, 28);
-  const cpl      = Math.max(4, Math.floor(maxW / charW)); // chars per line
-
-  // Tiny bubble: single line sitting below the circle
-  if (r <= 13) {
-    return (
-      <text textAnchor="middle" dy={r + 11} className="bubble-name" style={{ fontSize, fill: ink }}>
-        {label}
-      </text>
-    );
-  }
-
-  // Greedy word-wrap, capped at 3 lines
-  const words = label.split(/\s+/);
-  const lines = [];
-  let cur = '';
-  for (const w of words) {
-    if (!cur) { cur = w; continue; }
-    if ((cur + ' ' + w).length <= cpl) { cur += ' ' + w; }
-    else { lines.push(cur); cur = w; }
-  }
-  if (cur) lines.push(cur);
-  if (lines.length > 3) {
-    lines[2] = lines.slice(2).join(' ');
-    if (lines[2].length > cpl) lines[2] = lines[2].slice(0, cpl - 1) + '…';
-    lines.length = 3;
-  }
-
-  const showArea   = !!areaStr && r > 26;
-  const totalLines = lines.length + (showArea ? 1 : 0);
-  // First tspan dy: raise so the whole block is vertically centred at y=0.
-  const startDy    = -((totalLines - 1) * lineH) / 2 + fontSize * 0.35;
-
-  return (
-    <text textAnchor="middle" className="bubble-name" style={{ fontSize, fill: ink }}>
-      {lines.map((ln, i) => (
-        <tspan key={i} x="0" dy={i === 0 ? startDy : lineH}>{ln}</tspan>
-      ))}
-      {showArea && (
-        <tspan x="0" dy={lineH} className="bubble-area" style={ink ? { fill: ink, fillOpacity: 0.72 } : undefined}>{areaStr}</tspan>
-      )}
-    </text>
-  );
-});
-
-/**
- * The toolbar's adjacency-compliance badge. The score depends on live node
- * positions, so instead of computing it on every chrome render (or worse,
- * every sim frame), it subscribes to the tick store and recomputes at most
- * every 300 ms — plus immediately when the underlying data changes.
- */
-function AdjacencyBadge({ store, compute, dataKey, active, onToggle }) {
-  const computeRef = useRef(compute);
-  computeRef.current = compute;
-  const [result, setResult] = useState(() => compute());
-  const lastRef = useRef(0);
-  useEffect(() => {
-    setResult(computeRef.current());
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dataKey]);
-  useEffect(
-    () =>
-      store.subscribe(() => {
-        const now = performance.now();
-        if (now - lastRef.current < 300) return;
-        lastRef.current = now;
-        setResult(computeRef.current());
-      }),
-    [store]
-  );
-  return (
-    <button
-      className={`adj-badge ${active ? 'active' : ''}`}
-      onClick={onToggle}
-      title={`${result.met}/${result.total} relationships satisfied — click to highlight the ${result.unmet.length} unmet`}
-    >
-      <span className="adj-dot" /> {result.score == null ? '—' : `${Math.round(result.score * 100)}%`} adjacency
-    </button>
-  );
-}
 
 export default function BubbleTab({ project, spaces, adjacencies, images = [], onChanged, selectedSpaceId = null, onSelectSpace }) {
   // Selection + link-tool state lives in one pure state machine (see
@@ -1679,171 +1574,68 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
 
       <div className="diagram-main">
         <div className="bubble-stage" ref={stageRef}>
-          {/* One responsive top bar: controls on the left, actions on the
-              right. Wrapping inside a single flex row prevents the two glass
-              clusters from overlapping when the stage is narrow. */}
-          <div className="stage-topbar">
-          {/* Top-left control cluster (glass). */}
-          <div className="stage-controls">
-            {hasBuildings && (
-              <div className="ctrl-field">
-                <span className="ctrl-label">Colour</span>
-                <div className="seg seg-sm">
-                  <button className={colorBy === 'department' ? 'active' : ''} onClick={() => setPref('colorBy', 'department')}>Category</button>
-                  <button className={colorBy === 'building' ? 'active' : ''} onClick={() => setPref('colorBy', 'building')}>Building</button>
-                </div>
-              </div>
-            )}
-            {hasLevels && (
-              <label className="ctrl-field">
-                <span className="ctrl-label">Floors</span>
-                <select className="ctrl-select" value={floorMode} onChange={(e) => setPref('floorView', e.target.value)}>
-                  <option value="all">All floors</option>
-                  {levels.map((l) => <option key={l} value={l}>{l}</option>)}
-                  <option value="offset">Stacked · offset</option>
-                  <option value="overlaid">Stacked · overlaid</option>
-                  <option value="3d">Stacked · 3D</option>
-                </select>
-              </label>
-            )}
-            <label className="ctrl-field">
-              <span className="ctrl-label">Scale</span>
-              <select className="ctrl-select" value={scaleValue} onChange={(e) => onScaleSelect(e.target.value)}>
-                <option value="auto">{fitScale ? 'Auto' : 'Relative'}</option>
-                {presets.map(([r, label]) => <option key={r} value={r}>{label}</option>)}
-                {scaleValue !== 'auto' && !presets.some(([r]) => String(r) === scaleValue) && <option value={scaleValue}>≈ 1:{scaleValue}</option>}
-              </select>
-            </label>
-            <button className={`ctrl-btn ${panel === 'layers' ? 'active' : ''}`} onClick={() => setPanel(panel === 'layers' ? null : 'layers')} title="Image & satellite layers">⧉ Layers</button>
-            <button className={`ctrl-btn ${panel === 'more' ? 'active' : ''}`} onClick={() => setPanel(panel === 'more' ? null : 'more')} title="More options">⋯</button>
-          </div>
+          <StageTopbar
+            hasBuildings={hasBuildings}
+            colorBy={colorBy}
+            setPref={setPref}
+            hasLevels={hasLevels}
+            floorMode={floorMode}
+            levels={levels}
+            scaleValue={scaleValue}
+            presets={presets}
+            fitScale={fitScale}
+            onScaleSelect={onScaleSelect}
+            panel={panel}
+            setPanel={setPanel}
+            history={history}
+            showScore={showScore}
+            tickStore={tickStore}
+            computeAdjacency={computeAdjacency}
+            adjDataKey={`${adjacencies.length}:${spaces.length}:${effScale ?? 0}`}
+            highlightGaps={highlightGaps}
+            onToggleGaps={() => setHighlightGaps((v) => !v)}
+            onExportPng={exportPng}
+            onExportPdf={exportPdf}
+            onHelp={() => setShowHelp(true)}
+          />
 
-          {/* Top-right actions cluster (glass). */}
-          <div className="stage-actions">
-            <button className="act-btn" onClick={history.undo} disabled={!history.canUndo} title={history.canUndo ? `Undo ${history.undoLabel} (Ctrl+Z)` : 'Nothing to undo'}>↶</button>
-            <button className="act-btn" onClick={history.redo} disabled={!history.canRedo} title={history.canRedo ? `Redo ${history.redoLabel} (Ctrl+Shift+Z)` : 'Nothing to redo'}>↷</button>
-            {showScore && (
-              <AdjacencyBadge
-                store={tickStore}
-                compute={computeAdjacency}
-                dataKey={`${adjacencies.length}:${spaces.length}:${effScale ?? 0}`}
-                active={highlightGaps}
-                onToggle={() => setHighlightGaps((v) => !v)}
-              />
-            )}
-            <button className="act-btn wide" onClick={exportPng} title="Export the current view as a PNG image (2×)">↓ PNG</button>
-            <button className="act-btn wide" onClick={exportPdf} title="Export a scale-accurate PDF">↓ PDF</button>
-            <button className="act-btn" onClick={() => setShowHelp(true)} title="Shortcuts & help (?)">?</button>
-          </div>
-          </div>
-
-          {/* More options popover — the diagram extras. */}
           {panel === 'more' && (
-            <div className="stage-popover more-popover">
-              <div className="more-section">Auto-layout forces</div>
-              <div className="more-row">
-                <span className="more-label">Rooms</span>
-                <input type="range" min="0" max="1.5" step="0.05" value={nodeForce} onChange={(e) => { setPref('nodeForce', Number(e.target.value)); nudgeLayout(); }} title="How strongly rooms push apart and pull toward their links" />
-                <span className="more-val mono">{Math.round(nodeForce * 100)}%</span>
-              </div>
-              <div className="more-row">
-                <span className="more-label">Buildings</span>
-                <input type="range" min="0" max="1.5" step="0.05" value={buildingForce} onChange={(e) => { setPref('buildingForce', Number(e.target.value)); nudgeLayout(); }} title="How strongly each building holds its shape and original position (0 = free to drift)" />
-                <span className="more-val mono">{Math.round(buildingForce * 100)}%</span>
-              </div>
-              <div className="more-divider" />
-              <div className="more-row">
-                <span className="more-label">Style</span>
-                <select className="ctrl-select" value={bubbleStyle} onChange={(e) => setBubbleStyle(e.target.value)}>
-                  <option value="solid">Solid (flat)</option>
-                  <option value="outline">Outline</option>
-                  <option value="sketch">Sketch</option>
-                </select>
-              </div>
-              <div className="more-row">
-                <button className="btn small" onClick={() => convertAll(leaves.every((s) => shapeOf(s) === 'box') ? 'bubble' : 'box')}>
-                  {leaves.every((s) => shapeOf(s) === 'box') ? '○ All bubbles' : '▢ All boxes'}
-                </button>
-                <button className={`btn small ${hulls ? 'on' : ''}`} onClick={toggleHulls}>⬡ Category hulls</button>
-              </div>
-              {(hulls || hasBuildings) && (
-                <div className="more-row">
-                  <span className="more-label">Hull pad</span>
-                  <input type="range" min="6" max="80" step="2" value={hullPad} onChange={(e) => setHullSize(Number(e.target.value))} />
-                </div>
-              )}
-              <div className="more-row">
-                <button className={`btn small ${showMatrix ? 'on' : ''}`} onClick={() => setShowMatrix(true)}>▦ Adjacency matrix</button>
-                <button className={`btn small ${split ? 'on' : ''}`} onClick={toggleSplit}>◫ Side panel</button>
-              </div>
-              {hasLevels && (floorMode === 'offset' || floorMode === '3d') && (
-                <div className="more-row">
-                  <span className="more-label">Floor gap</span>
-                  <input type="range" min="0.2" max="1.3" step="0.05" value={floorGap} onChange={(e) => setPref('floorGap', Number(e.target.value))} />
-                </div>
-              )}
-              {is3D && (
-                <div className="more-row">
-                  <span className="more-label">3D camera</span>
-                  <select className="ctrl-select" value={cam3d} onChange={(e) => setPref('cam3d', e.target.value)}>
-                    <option value="persp">Perspective</option>
-                    <option value="iso">Isometric</option>
-                    <option value="ortho">Orthographic</option>
-                    <option value="top">Top / plan</option>
-                    <option value="front">Front</option>
-                    <option value="side">Side</option>
-                  </select>
-                </div>
-              )}
-              {stackMode && (
-                <div className="more-row">
-                  <span className="more-label">Camera</span>
-                  <select className="ctrl-select" value={stackCam} onChange={(e) => setPref('stackCam', e.target.value)}>
-                    {Object.entries(CAMERAS).map(([k, c]) => <option key={k} value={k}>{c.label}</option>)}
-                  </select>
-                </div>
-              )}
-              {(stackMode || is3D) && imgLayers.length > 0 && (
-                <div className="more-row">
-                  <button className={`btn small ${stackImages ? 'on' : ''}`} onClick={() => setPref('stackImages', !stackImages)}>⊞ Site image on floors</button>
-                </div>
-              )}
-            </div>
+            <MorePopover
+              nodeForce={nodeForce}
+              buildingForce={buildingForce}
+              setPref={setPref}
+              nudgeLayout={nudgeLayout}
+              bubbleStyle={bubbleStyle}
+              setBubbleStyle={setBubbleStyle}
+              allBoxes={leaves.every((s) => shapeOf(s) === 'box')}
+              convertAll={convertAll}
+              hulls={hulls}
+              toggleHulls={toggleHulls}
+              hasBuildings={hasBuildings}
+              hullPad={hullPad}
+              setHullSize={setHullSize}
+              showMatrix={showMatrix}
+              onShowMatrix={() => setShowMatrix(true)}
+              split={split}
+              toggleSplit={toggleSplit}
+              hasLevels={hasLevels}
+              floorMode={floorMode}
+              floorGap={floorGap}
+              is3D={is3D}
+              cam3d={cam3d}
+              stackMode={stackMode}
+              stackCam={stackCam}
+              stackImages={stackImages}
+              hasImages={imgLayers.length > 0}
+            />
           )}
-          <div className="tool-dock">
-            <button
-              className={`tool-btn ${tool === 'select' ? 'active' : ''}`}
-              onClick={() => applySel((s) => linking.setTool(s, 'select'))}
-              title="Select & move — V"
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 3l7 17 2.5-7L20 11z" /></svg>
-              <span className="tool-key">V</span>
-            </button>
-            <button
-              className={`tool-btn ${tool === 'link' ? 'active' : ''}`}
-              onClick={() => applySel((s) => linking.setTool(s, 'link'))}
-              title="Link adjacency — L"
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="6" cy="17" r="3" /><circle cx="18" cy="7" r="3" /><line x1="8" y1="15" x2="16" y2="9" strokeLinecap="round" /></svg>
-              <span className="tool-key">L</span>
-            </button>
-            <div className="tool-dock-sep" />
-            <button
-              className={`tool-btn ${autoRunning ? 'active' : ''}`}
-              onClick={runAutoLayout}
-              title="Auto-layout — run a force pass (A)"
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="6" cy="6" r="2.5" /><circle cx="18" cy="6" r="2.5" /><circle cx="12" cy="17" r="2.5" /><line x1="7.5" y1="7.8" x2="10.5" y2="15" /><line x1="16.5" y1="7.8" x2="13.5" y2="15" /></svg>
-              <span className="tool-key">A</span>
-            </button>
-            <button
-              className="tool-btn"
-              onClick={() => { setView({ x: 0, y: 0 }); commitView({ x: 0, y: 0 }); }}
-              title="Recentre view"
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3" /><line x1="12" y1="2" x2="12" y2="6" strokeLinecap="round" /><line x1="12" y1="18" x2="12" y2="22" strokeLinecap="round" /><line x1="2" y1="12" x2="6" y2="12" strokeLinecap="round" /><line x1="18" y1="12" x2="22" y2="12" strokeLinecap="round" /></svg>
-            </button>
-          </div>
+          <ToolDock
+            tool={tool}
+            onTool={(t) => applySel((s) => linking.setTool(s, t))}
+            autoRunning={autoRunning}
+            onAutoLayout={runAutoLayout}
+            onRecentre={() => { setView({ x: 0, y: 0 }); commitView({ x: 0, y: 0 }); }}
+          />
           {error && (
             <StagePopover className="error" onClose={() => setError(null)}>
               {error}
@@ -1851,81 +1643,49 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
           )}
 
           {panel === 'layers' && (
-            <StagePopover className="layers-popover" title="Image layers" onClose={() => setPanel(null)}>
-              <div className="layers-list">
-                {imgLayers.length === 0 && <Empty small>No images yet — add a site plan or satellite below.</Empty>}
-                {imgLayers.map((im) => (
-                  <LayerRow
-                    key={im.id}
-                    title={`${im.kind === 'satellite' ? '🛰' : '🖼'} ${im.name || (im.kind === 'satellite' ? 'Satellite' : 'Image')}`}
-                    layer={im}
-                    dims={dims[im.id]}
-                    units={units}
-                    calibrated={im.mpp > 0}
-                    onToggleVisible={(v) => toggleLayerVisible(im, v)}
-                    onOpacity={(v) => layerSlider(im, 'opacity', v)}
-                    onRotate={(v) => layerSlider(im, 'rot', v)}
-                    onCalibrate={() => startCalibrate(im.id)}
-                    onMove={() => applyLt((l) => layerTools.toggleMove(l, im.id))}
-                    moving={moveLayer === im.id}
-                    onRotateMode={() => applyLt((l) => layerTools.toggleRotate(l, im.id))}
-                    rotating={rotateLayer === im.id}
-                    onFilter={(v) => layerSlider(im, 'filter', v)}
-                    onDelete={() => deleteImageLayer(im.id)}
-                  />
-                ))}
-              </div>
-              <div className="layers-add">
-                <button className="btn small" onClick={() => fileRef.current?.click()}>＋ Add image</button>
-                <button className="btn small" onClick={() => setPanel('sat')}>＋ Add satellite</button>
-              </div>
-              <input ref={fileRef} type="file" accept="image/*" hidden onChange={onUpload} />
-              <p className="hint popover-hint">
-                Add as many images as you like. Calibrate each on its own and they share the diagram scale.
-                Use <strong>Move</strong> and <strong>Rotate</strong> (then drag the canvas) to align a layer.
-              </p>
-            </StagePopover>
+            <LayersPopover
+              imgLayers={imgLayers}
+              dims={dims}
+              units={units}
+              moveLayer={moveLayer}
+              rotateLayer={rotateLayer}
+              onToggleVisible={toggleLayerVisible}
+              onOpacity={(im, v) => layerSlider(im, 'opacity', v)}
+              onRotate={(im, v) => layerSlider(im, 'rot', v)}
+              onFilter={(im, v) => layerSlider(im, 'filter', v)}
+              onCalibrate={startCalibrate}
+              onToggleMove={(id) => applyLt((l) => layerTools.toggleMove(l, id))}
+              onToggleRotate={(id) => applyLt((l) => layerTools.toggleRotate(l, id))}
+              onDelete={deleteImageLayer}
+              fileRef={fileRef}
+              onUpload={onUpload}
+              onAddSatellite={() => setPanel('sat')}
+              onClose={() => setPanel(null)}
+            />
           )}
 
           {panel === 'sat' && (
-            <form className="stage-popover sat-panel" onSubmit={fetchSatellite}>
-              <input placeholder="Site address or place (e.g. 1 Macquarie St, Sydney)" value={satQuery} onChange={(e) => setSatQuery(e.target.value)} required />
-              <select value={satZoom} onChange={(e) => setSatZoom(e.target.value)}>
-                <option value="16">Wide (~1.5 km)</option>
-                <option value="17">Area (~750 m)</option>
-                <option value="18">Site (~380 m)</option>
-                <option value="19">Close (~190 m)</option>
-              </select>
-              <button className="btn primary small" disabled={satBusy}>
-                {satBusy ? 'Fetching…' : 'Fetch imagery'}
-              </button>
-              <button type="button" className="btn small ghost" onClick={() => setPanel('layers')}>
-                Cancel
-              </button>
-            </form>
+            <SatellitePanel
+              satQuery={satQuery}
+              setSatQuery={setSatQuery}
+              satZoom={satZoom}
+              setSatZoom={setSatZoom}
+              satBusy={satBusy}
+              onFetch={fetchSatellite}
+              onCancel={() => setPanel('layers')}
+            />
           )}
 
           {scalePoints && (
-            <div className="stage-popover scale-panel">
-              {scalePoints.length < 2 ? (
-                <span>
-                  Calibrating <strong>{imgById.get(calibrateLayer)?.name || 'image'}</strong> — click{' '}
-                  {scalePoints.length === 0 ? 'the first' : 'the second'} point of a known distance on it.
-                </span>
-              ) : (
-                <>
-                  <span>Distance between the points:</span>
-                  <input type="number" min="0.1" step="any" autoFocus value={scaleDistance} onChange={(e) => applyLt((l) => layerTools.setScaleDistance(l, e.target.value))} placeholder={distUnit(units)} />
-                  <span>{distUnit(units)}</span>
-                  <button className="btn primary small" onClick={applyScale}>
-                    Apply
-                  </button>
-                </>
-              )}
-              <button className="btn small ghost" onClick={() => applyLt(layerTools.endCalibrate)}>
-                Cancel
-              </button>
-            </div>
+            <ScalePanel
+              scalePoints={scalePoints}
+              layerName={imgById.get(calibrateLayer)?.name}
+              scaleDistance={scaleDistance}
+              units={units}
+              onDistance={(v) => applyLt((l) => layerTools.setScaleDistance(l, v))}
+              onApply={applyScale}
+              onCancel={() => applyLt(layerTools.endCalibrate)}
+            />
           )}
 
           <div className="stage-legend">
@@ -1939,445 +1699,77 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
             ))}
           </div>
 
-          {/* Everything below re-renders on animation ticks (sim frames, drags)
-              without touching the chrome above — see useTick.js. The scenes
-              are rebuilt inside the closure so they read fresh node positions. */}
-          <TickLayer store={tickStore}>
-          {() => {
-          const stack = stackMode ? makeStackScene() : null;
-          const scene3d = is3D ? make3DScene() : null;
-          // Unmet-link highlighting is positional; only pay for it while it's on.
-          const unmetLinkIds = highlightGaps && effScale
-            ? new Set(computeAdjacency().unmet.map((l) => l.id))
-            : EMPTY_SET;
-          return (<>
-          {is3D && scene3d && (
-            <div className="stage-3d">
-              <Suspense fallback={<div className="stage-3d-hint">Loading 3-D view…</div>}>
-                <Stacked3D scene={scene3d} gap={floorGap} showImage={stackImages} camMode={cam3d} />
-              </Suspense>
-              <div className="stage-3d-hint">Drag to orbit · scroll to zoom · right-drag to pan</div>
-            </div>
-          )}
-          <svg
-            ref={svgRef}
-            viewBox={`${originX} ${originY} ${vb.w} ${vb.h}`}
-            className={`bubble-svg ${scalePoints ? 'scaling' : ''} ${panActive || moveLayer || rotateLayer ? 'panning' : ''} ${tool === 'link' ? 'linking' : ''}`}
-            onPointerDown={onSvgPointerDown}
-            onPointerMove={onMove}
-            onPointerUp={onUp}
-            onPointerLeave={onUp}
-          >
-            <defs>
-              <filter id="sketchy" x="-20%" y="-20%" width="140%" height="140%">
-                <feTurbulence type="fractalNoise" baseFrequency="0.018" numOctaves="2" seed="7" result="n" />
-                <feDisplacementMap in="SourceGraphic" in2="n" scale="5" xChannelSelector="R" yChannelSelector="G" />
-              </filter>
-              {/* Colour-independent shading overlaid on a coloured circle to make
-                  it read as a lit 3D sphere (highlight top-left, shaded rim). */}
-              {/* Diffuse shading + rim shadow — colour-independent, layered over fill */}
-              <radialGradient id="sphere3d" cx="36%" cy="30%" r="72%">
-                <stop offset="0%" stopColor="rgba(255,255,255,0.52)" />
-                <stop offset="35%" stopColor="rgba(255,255,255,0.10)" />
-                <stop offset="65%" stopColor="rgba(0,0,0,0.02)" />
-                <stop offset="100%" stopColor="rgba(0,0,0,0.52)" />
-              </radialGradient>
-              {/* Tight specular hot-spot */}
-              <radialGradient id="sphere-spec" cx="32%" cy="26%" r="38%">
-                <stop offset="0%" stopColor="rgba(255,255,255,0.82)" />
-                <stop offset="100%" stopColor="rgba(255,255,255,0)" />
-              </radialGradient>
-              {/* Contact shadow — dark centre fading to transparent */}
-              <radialGradient id="sphere-shadow-grad">
-                <stop offset="0%" stopColor="rgba(0,0,0,0.38)" />
-                <stop offset="65%" stopColor="rgba(0,0,0,0.14)" />
-                <stop offset="100%" stopColor="rgba(0,0,0,0)" />
-              </radialGradient>
-            </defs>
-            {(() => {
-              const imgs = imgLayers.map((im) => {
-                if (!im.visible || !im.image) return null; // pixels may still be loading
-                const r = layerRect(im);
-                if (!r) return null;
-                const active = moveLayer === im.id || rotateLayer === im.id;
-                return (
-                  <image
-                    key={im.id}
-                    href={im.image}
-                    x={r.x}
-                    y={r.y}
-                    width={r.w}
-                    height={r.h}
-                    opacity={im.opacity}
-                    preserveAspectRatio="none"
-                    transform={imgTransform(r)}
-                    style={im.filter ? { filter: filterCss(im.filter) } : undefined}
-                    className={active ? 'layer-active' : ''}
-                  />
-                );
-              });
-              // In the stacked view, warp the images onto the ground-floor plane
-              // (not clipped — the full site image shows through). The ⊞ Images
-              // toggle can hide them.
-              if (!stack || !stack.groundTransform) return imgs;
-              if (!stackImages) return null;
-              return <g transform={stack.groundTransform}>{imgs}</g>;
-            })()}
-
-            {/* Topographic site contours — concentric rings that echo each
-                building's convex-hull SHAPE (not a generic ellipse), replacing
-                the grid (flat site-plan field). Grouped by clusterKey (building),
-                so each building gets ONE field that matches its hull, independent
-                of the bubble colour mode. */}
-            {!stackMode && (() => {
-              // Padded sample points per building (same construction the hulls use),
-              // so the contour outline matches the building hull exactly.
-              const byG = new Map();
-              for (const o of instances) {
-                if (!levelVisible(o.s)) continue;
-                const n = nodes.get(o.key);
-                if (!n) continue;
-                const g = clusterKey(o.s);
-                if (!byG.has(g)) byG.set(g, []);
-                const r = radiusOf(o.s) + hullPad;
-                for (let a = 0; a < Math.PI * 2; a += Math.PI / 4)
-                  byG.get(g).push({ x: n.x + Math.cos(a) * r, y: n.y + Math.sin(a) * r });
-              }
-              const rings = [];
-              for (const [g, pts] of byG) {
-                const hull = convexHull(pts);
-                if (hull.length < 3) continue;
-                const cx = hull.reduce((s, p) => s + p.x, 0) / hull.length;
-                const cy = hull.reduce((s, p) => s + p.y, 0) / hull.length;
-                // Concentric contours = the hull outline scaled about its centroid,
-                // from just inside the hull outward into the surrounding "terrain".
-                for (let k = 1; k <= 6; k++) {
-                  const f = k / 6;
-                  const scale = 0.4 + f * 1.2; // 0.6 (inner) … 1.6 (outer)
-                  const scaled = hull.map((p) => ({ x: cx + (p.x - cx) * scale, y: cy + (p.y - cy) * scale }));
-                  const d = smoothHullPath(scaled);
-                  if (!d) continue;
-                  rings.push(
-                    <path
-                      key={`contour:${g}:${k}`}
-                      d={d}
-                      className="site-contour"
-                      style={{ opacity: 0.9 - f * 0.6 }}
-                    />
-                  );
-                }
-              }
-              return rings;
-            })()}
-
-            {(() => {
-              // Building hulls always show (when buildings exist); category hulls
-              // are optional via the ⬡ Categories toggle.
-              const out = [];
-              const addHulls = (keyFn, cls, withLabel) => {
-                const byG = new Map();
-                for (const o of instances) {
-                  if (!levelVisible(o.s)) continue;
-                  const n = nodes.get(o.key);
-                  if (!n) continue;
-                  const g = keyFn(o.s);
-                  if (g == null) continue;
-                  if (!byG.has(g)) byG.set(g, []);
-                  const r = radiusOf(o.s) + hullPad;
-                  for (let a = 0; a < Math.PI * 2; a += Math.PI / 4)
-                    byG.get(g).push({ x: n.x + Math.cos(a) * r, y: n.y + Math.sin(a) * r });
-                }
-                for (const [g, pts] of byG) {
-                  const hull = convexHull(pts);
-                  const d = smoothHullPath(hull);
-                  if (!d) continue;
-                  const color = colorForLabel(g);
-                  out.push(<path key={`${cls}:${g}`} d={d} className={`group-hull ${cls}`} fill={color} stroke={color} />);
-                  if (withLabel) {
-                    const top = hull.reduce((m, p) => (p.y < m.y ? p : m), hull[0]);
-                    out.push(
-                      <text key={`lbl:${g}`} x={top.x} y={top.y - 4} textAnchor="middle" className="hull-label" fill={color}>
-                        {g}
-                      </text>
-                    );
-                  }
-                }
-              };
-              if (!stackMode && hasBuildings) addHulls((s) => { const root = rootContainer(s, byId); return root ? root.name : null; }, 'building-hull', true);
-              if (!stackMode && hulls) addHulls((s) => s.department || 'General', 'cat-hull', false);
-              return out;
-            })()}
-
-            {/* Stacked axonometric view. Dashed corner guides tie the floors into
-                one building; each floor is an iso-tilted group so its plate,
-                bubbles and the warped images foreshorten onto the plane. */}
-            {stack &&
-              stack.guides.map((g, i) => (
-                <line key={`guide:${i}`} x1={g.x1} y1={g.y1} x2={g.x2} y2={g.y2} className="floor-guide" />
-              ))}
-            {/* Floor plates: projected polygon (screen-space) + slab edge faces.
-                The polygon is computed from the 3-D footprint corners so the
-                shape is correct for every camera angle. */}
-            {stack &&
-              stack.floors.map((f) => (
-                <g key={`floor:${f.label}`}>
-                  <polygon points={f.platePts} className={`floor-plate floor-plane ${floorMode}`}
-                    stroke={f.color} fill={`${f.color}${floorMode === 'overlaid' ? '0c' : '1a'}`} />
-                  {floorMode === 'offset' && (
-                    <>
-                      <polygon points={f.slabFront} fill={f.color} className="slab-face slab-front" />
-                      <polygon points={f.slabRight} fill={f.color} className="slab-face slab-right" />
-                    </>
-                  )}
-                  <text x={f.labelPos.x} y={f.labelPos.y} className="floor-plate-label"
-                    fill={f.color} textAnchor="middle">{f.label}</text>
-                </g>
-              ))}
-            {/* Links drawn in screen space so cross-floor connectors read clearly. */}
-            {stack &&
-              adjacencies.map((l) => {
-                const sa = byId.get(l.space_a), sb = byId.get(l.space_b);
-                if (!sa || !sb) return null;
-                const inter = rankOf(sa) !== rankOf(sb);
-                if (inter && floorMode !== 'offset') return null;
-                const pair = stack.closestPairScreen(sa, sb);
-                if (!pair) return null;
-                return <line key={`sl:${l.id}`} x1={pair.a.x} y1={pair.a.y} x2={pair.b.x} y2={pair.b.y} className={`link ${l.strength}${inter ? ' interfloor' : ''}`} />;
-              })}
-            {/* Rooms as lit 3D spheres sitting on their floor plane. */}
-            {stack &&
-              stack.ordered.map((o) => {
-                const p = stack.screenPos.get(o.key);
-                if (!p) return null;
-                const r = p.r;
-                const kind = shapeOf(o.s);
-                const box = kind === 'box';
-                const poly = kind === 'poly' ? polyVertsOf(o.s) : null;
-                const pbS = poly ? polyBounds(poly) : null;
-                const side = r * Math.sqrt(Math.PI);
-                const polyD = poly ? polygonPath(poly) : null;
-                const extrude = r * 0.5; // screen-space "thickness" for the raised blob
-                // Contact shadow: under the sphere bottom, or under the extruded blob's base.
-                const shadow = poly
-                  ? { cy: extrude + pbS.maxY * 0.95, rx: (pbS.maxX - pbS.minX) / 2 * 0.92, ry: (pbS.maxX - pbS.minX) / 2 * 0.22 }
-                  : { cy: r * 0.65, rx: r * 0.9, ry: r * 0.24 };
-                const label = `${o.s.name}${Math.max(1, o.s.count || 1) > 1 ? ` ${o.i + 1}` : ''}`;
-                return (
-                  <g key={`sph:${o.key}`} transform={`translate(${p.x}, ${p.y})`} className="bubble stacked sphere">
-                    <title>{label} — {fmtArea(ea(o.s), units)}</title>
-                    <ellipse cx="0" cy={shadow.cy} rx={shadow.rx} ry={shadow.ry} fill="url(#sphere-shadow-grad)" />
-                    {poly ? (
-                      <>
-                        {/* Extruded body: a darkened copy dropped below the top face
-                            so the freeform shape reads as a raised 3-D blob. */}
-                        <path d={polyD} transform={`translate(0, ${extrude})`} fill={colorOf(o.s)} />
-                        <path d={polyD} transform={`translate(0, ${extrude})`} fill="rgba(0,0,0,0.32)" />
-                        <path d={polyD} fill={colorOf(o.s)} />
-                        <path d={polyD} fill="url(#sphere3d)" />
-                        <path d={polyD} fill="url(#sphere-spec)" />
-                      </>
-                    ) : box ? (
-                      <>
-                        <rect x={-side / 2} y={-side / 2} width={side} height={side} rx={Math.min(5, side / 8)} fill={colorOf(o.s)} />
-                        <rect x={-side / 2} y={-side / 2} width={side} height={side} rx={Math.min(5, side / 8)} fill="url(#sphere3d)" />
-                        <rect x={-side / 2} y={-side / 2} width={side} height={side} rx={Math.min(5, side / 8)} fill="url(#sphere-spec)" />
-                      </>
-                    ) : (
-                      <>
-                        <circle r={r} fill={colorOf(o.s)} />
-                        <circle r={r} fill="url(#sphere3d)" />
-                        <circle r={r} fill="url(#sphere-spec)" />
-                      </>
-                    )}
-                    <BubbleLabel label={label} r={r} areaStr={fmtArea(ea(o.s), units)} />
-                  </g>
-                );
-              })}
-
-            {scalePoints &&
-              scalePoints.map((p, i) => (
-                <g key={i} className="scale-point">
-                  <circle cx={p.x} cy={p.y} r="6" />
-                  <circle cx={p.x} cy={p.y} r="2" />
-                </g>
-              ))}
-            {scalePoints?.length === 2 && (
-              <line x1={scalePoints[0].x} y1={scalePoints[0].y} x2={scalePoints[1].x} y2={scalePoints[1].y} className="scale-line" />
-            )}
-
-            {!stackMode &&
-              adjacencies.map((l) => {
-                const sa = byId.get(l.space_a);
-                const sb = byId.get(l.space_b);
-                if (!sa || !sb) return null;
-                if (!levelVisible(sa) || !levelVisible(sb)) return null;
-                const pair = closestPair(sa, sb);
-                if (!pair) return null;
-                const isSelLink = selLink && ((selLink.space_a === l.space_a && selLink.space_b === l.space_b) || (selLink.space_a === l.space_b && selLink.space_b === l.space_a));
-                const connected = selected != null && (l.space_a === selected || l.space_b === selected);
-                return (
-                  <g key={l.id} className="link-hit" onClick={() => onLinkClick(l)}>
-                    <line x1={pair.a.x} y1={pair.a.y} x2={pair.b.x} y2={pair.b.y} className="link-hitarea" />
-                    <line
-                      x1={pair.a.x}
-                      y1={pair.a.y}
-                      x2={pair.b.x}
-                      y2={pair.b.y}
-                      className={`link ${l.strength}${isSelLink || connected ? ' selected' : ''}${highlightGaps && unmetLinkIds.has(l.id) ? ' unmet' : ''}`}
-                    />
-                  </g>
-                );
-              })}
-
-            {!stackMode &&
-              instances.map((o) => {
-              const n = nodes.get(o.key);
-              if (!n) return null;
-              const { s, i } = o;
-              if (!levelVisible(s)) return null;
-              const r = radiusOf(s);
-              const isSel = selected === s.id && (Math.max(1, s.count || 1) === 1 || selectedInst === i);
-              const pinned = !!instPin(s, i);
-              const inMulti = multi.has(o.key);
-              const count = Math.max(1, s.count || 1);
-              const kind = shapeOf(s);
-              const box = kind === 'box';
-              const poly = kind === 'poly' ? polyVertsOf(s) : null;
-              const polyHandles = kind === 'poly' ? polyHandlesOf(s) : null;
-              const pb = poly ? polyBounds(poly) : null;
-              const side = r * Math.sqrt(Math.PI); // square of equal area
-              const editing = editShape === s.id && i === editAnchorInst(s);
-              // Live area of the rendered outline, recomputed each frame (the area
-              // lock keeps it ≈ the brief target — shown so the size reads "live").
-              const polyAreaStr = poly ? fmtArea(ea(s) * (polygonArea(poly) / (areaUnits(s) || 1)), units) : null;
-              const fillOp = isSel ? Math.min((project.bubble_opacity ?? 0.32) + 0.25, 1) : pinned ? Math.min((project.bubble_opacity ?? 0.32) + 0.1, 1) : project.bubble_opacity ?? 0.32;
-              const sw = isSel ? 3 : pinned ? 2.5 : 1.5;
-              const outline = bubbleStyle === 'outline';
-              const sketch = bubbleStyle === 'sketch';
-              // Flat "site-plan" matte: solid fill + poché keyline (a darkened tone
-              // of the same hue), white keyline when selected, dark ink for labels.
-              const flat = !outline && !sketch;
-              const baseColor = colorOf(s);
-              const fillOpEff = outline ? 0 : flat ? (isSel ? 1 : 0.95) : fillOp;
-              const swEff = outline ? sw + 1 : sw;
-              const strokeColor = flat ? (isSel ? '#ffffff' : darkHex(baseColor, 0.4)) : baseColor;
-              const inkColor = flat ? darkHex(baseColor, 0.62) : undefined;
-              const shapeFilter = sketch ? 'url(#sketchy)' : undefined;
-              return (
-                <g
-                  key={o.key}
-                  data-space-id={s.id}
-                  data-instance={i}
-                  className={`bubble ${isSel ? 'selected' : ''} ${inMulti ? 'multi' : ''}`}
-                  transform={`translate(${n.x}, ${n.y})`}
-                  onPointerDown={(e) => onBubbleDown(e, o)}
-                  onPointerEnter={() => (hoverRef.current = { space: s, idx: i })}
-                  onPointerLeave={() => (hoverRef.current?.space.id === s.id && hoverRef.current?.idx === i ? (hoverRef.current = null) : null)}
-                >
-                  <title>
-                    {s.name}
-                    {count > 1 ? ` ${i + 1} of ${count}` : ''} — {fmtArea(ea(s), units)} · P pin · B box
-                  </title>
-                  {pinned &&
-                    (poly ? (
-                      <path d={polyRingPath(poly, 6)} className="pin-ring" />
-                    ) : box ? (
-                      <rect x={-side / 2 - 5} y={-side / 2 - 5} width={side + 10} height={side + 10} rx="3" className="pin-ring" />
-                    ) : (
-                      <circle r={r + 5} className="pin-ring" />
-                    ))}
-                  {inMulti &&
-                    (poly ? (
-                      <path d={polyRingPath(poly, 9)} className="multi-ring" />
-                    ) : box ? (
-                      <rect x={-side / 2 - 7} y={-side / 2 - 7} width={side + 14} height={side + 14} rx="4" className="multi-ring" />
-                    ) : (
-                      <circle r={r + 7} className="multi-ring" />
-                    ))}
-                  {poly ? (
-                    <path className={`poly-shape ${editing ? 'editing' : ''}`} d={polygonPath(poly)} fill={baseColor} fillOpacity={fillOpEff} stroke={strokeColor} strokeWidth={swEff} strokeLinejoin="round" filter={shapeFilter} />
-                  ) : box ? (
-                    <rect x={-side / 2} y={-side / 2} width={side} height={side} rx={flat ? 0 : Math.min(4, side / 8)} fill={baseColor} fillOpacity={fillOpEff} stroke={strokeColor} strokeWidth={swEff} filter={shapeFilter} />
-                  ) : (
-                    <circle r={r} fill={baseColor} fillOpacity={fillOpEff} stroke={strokeColor} strokeWidth={swEff} filter={shapeFilter} />
-                  )}
-                  <BubbleLabel
-                    label={`${s.name}${count > 1 ? ` ${i + 1}` : ''}`}
-                    r={r}
-                    areaStr={fmtArea(ea(s), units)}
-                    ink={inkColor}
-                  />
-                  {editing && polyHandles && (
-                    <g className="poly-edit">
-                      {polyHandles.map((p, vi) => {
-                        const a = polyHandles[vi];
-                        const b = polyHandles[(vi + 1) % polyHandles.length];
-                        const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-                        return (
-                          <circle
-                            key={`add:${vi}`}
-                            cx={mid.x}
-                            cy={mid.y}
-                            r="4"
-                            className="poly-add"
-                            onPointerDown={(e) => e.stopPropagation()}
-                            onClick={(e) => (e.stopPropagation(), addPolyVertex(s, vi))}
-                          />
-                        );
-                      })}
-                      {polyHandles.map((p, vi) => (
-                        <circle
-                          key={`v:${vi}`}
-                          cx={p.x}
-                          cy={p.y}
-                          r="6"
-                          className="poly-handle"
-                          onPointerDown={(e) => onPolyVertexDown(e, s, vi)}
-                          onDoubleClick={(e) => (e.stopPropagation(), removePolyVertex(s, vi))}
-                        />
-                      ))}
-                      {pb && (
-                        <text className="poly-area-badge" x="0" y={pb.minY - 12} textAnchor="middle">
-                          {polyAreaStr}
-                        </text>
-                      )}
-                    </g>
-                  )}
-                </g>
-              );
-            })}
-
-            {scaleBar && (
-              <g className="scale-bar" transform={`translate(${originX + 20}, ${originY + vb.h - 24})`}>
-                <rect x="-8" y="-16" width={scaleBar.len + 150} height="30" rx="4" className="scale-bar-bg" />
-                <line x1="0" y1="0" x2={scaleBar.len} y2="0" />
-                <line x1="0" y1="-5" x2="0" y2="5" />
-                <line x1={scaleBar.len} y1="-5" x2={scaleBar.len} y2="5" />
-                <text x={scaleBar.len + 8} y="4">
-                  {scaleBar.label} · {scaleLabelFor(effScale)}
-                </text>
-              </g>
-            )}
-
-            {attributionLayer && (
-              <text x={originX + vb.w - 8} y={originY + vb.h - 8} textAnchor="end" className="attribution">
-                {attributionLayer.attribution}
-              </text>
-            )}
-
-            {marquee && (
-              <rect
-                className="marquee"
-                x={Math.min(marquee.x0, marquee.x1)}
-                y={Math.min(marquee.y0, marquee.y1)}
-                width={Math.abs(marquee.x1 - marquee.x0)}
-                height={Math.abs(marquee.y1 - marquee.y0)}
-              />
-            )}
-          </svg>
-          </>);
-          }}
-          </TickLayer>
+          {/* Everything inside DiagramCanvas re-renders on animation ticks (sim
+              frames, drags) without touching the chrome above — see useTick.js. */}
+          <DiagramCanvas
+            tickStore={tickStore}
+            stackMode={stackMode}
+            is3D={is3D}
+            floorMode={floorMode}
+            hulls={hulls}
+            hullPad={hullPad}
+            hasBuildings={hasBuildings}
+            highlightGaps={highlightGaps}
+            effScale={effScale}
+            floorGap={floorGap}
+            stackImages={stackImages}
+            cam3d={cam3d}
+            bubbleStyle={bubbleStyle}
+            bubbleOpacity={project.bubble_opacity}
+            panActive={panActive}
+            tool={tool}
+            svgRef={svgRef}
+            originX={originX}
+            originY={originY}
+            vb={vb}
+            units={units}
+            nodes={nodes}
+            instances={instances}
+            adjacencies={adjacencies}
+            byId={byId}
+            imgLayers={imgLayers}
+            selected={selected}
+            selectedInst={selectedInst}
+            multi={multi}
+            selLink={selLink}
+            editShape={editShape}
+            marquee={marquee}
+            scalePoints={scalePoints}
+            moveLayer={moveLayer}
+            rotateLayer={rotateLayer}
+            scaleBar={scaleBar}
+            attributionLayer={attributionLayer}
+            makeStackScene={makeStackScene}
+            make3DScene={make3DScene}
+            computeAdjacency={computeAdjacency}
+            layerRect={layerRect}
+            imgTransform={imgTransform}
+            levelVisible={levelVisible}
+            clusterKey={clusterKey}
+            radiusOf={radiusOf}
+            colorForLabel={colorForLabel}
+            colorOf={colorOf}
+            rankOf={rankOf}
+            closestPair={closestPair}
+            shapeOf={shapeOf}
+            polyVertsOf={polyVertsOf}
+            polyHandlesOf={polyHandlesOf}
+            polyRingPath={polyRingPath}
+            areaUnits={areaUnits}
+            editAnchorInst={editAnchorInst}
+            instPin={instPin}
+            ea={ea}
+            scaleLabelFor={scaleLabelFor}
+            onSvgPointerDown={onSvgPointerDown}
+            onMove={onMove}
+            onUp={onUp}
+            onBubbleDown={onBubbleDown}
+            onLinkClick={onLinkClick}
+            onPolyVertexDown={onPolyVertexDown}
+            addPolyVertex={addPolyVertex}
+            removePolyVertex={removePolyVertex}
+            hoverRef={hoverRef}
+          />
 
           {hasLevels && floorMode !== 'all' && (
             <div className="floor-caption">
@@ -2388,118 +1780,46 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
 
           <NorthRose deg={project.north_deg || 0} onSet={setNorth} />
 
-          {/* One contextual action bar (bottom-centre): link form, multi form,
-              or single-room form depending on the current selection. */}
-          {(() => {
-            // Link selected → link form.
-            if (selLink) {
-              const a = byId.get(selLink.space_a);
-              const b = byId.get(selLink.space_b);
-              const cur = findPair(selLink.space_a, selLink.space_b)?.strength ?? null;
-              return (
-                <div className="action-bar" onClick={(e) => e.stopPropagation()}>
-                  <span className="action-glyph">
-                    <svg width="15" height="15" viewBox="0 0 24 24" style={{ color: 'var(--accent2)' }}><circle cx="6" cy="17" r="3" fill="currentColor" /><circle cx="18" cy="7" r="3" fill="currentColor" /><line x1="8" y1="15" x2="16" y2="9" stroke="currentColor" strokeWidth="2" /></svg>
-                  </span>
-                  <span className="action-name">{a?.name} — {b?.name}</span>
-                  <span className="seg seg-sm">
-                    <button className={cur === 'desired' ? 'active' : ''} onClick={() => setLinkStrength(selLink.space_a, selLink.space_b, 'desired')}>Desired</button>
-                    <button className={cur === 'required' ? 'active' : ''} onClick={() => setLinkStrength(selLink.space_a, selLink.space_b, 'required')}>Required</button>
-                  </span>
-                  <button className="action-btn danger" onClick={removeSelLink} title="Remove link">Remove</button>
-                </div>
-              );
-            }
-            // Link mode (no link selected) → choose the type new links get.
-            if (tool === 'link') {
-              return (
-                <div className="action-bar" onClick={(e) => e.stopPropagation()}>
-                  <span className="action-glyph">
-                    <svg width="15" height="15" viewBox="0 0 24 24" style={{ color: 'var(--accent2)' }}><circle cx="6" cy="17" r="3" fill="currentColor" /><circle cx="18" cy="7" r="3" fill="currentColor" /><line x1="8" y1="15" x2="16" y2="9" stroke="currentColor" strokeWidth="2" /></svg>
-                  </span>
-                  <span className="action-name">{linkFrom != null ? 'Pick the second room' : 'New link'}</span>
-                  <span className="seg seg-sm">
-                    <button className={linkKind === 'desired' ? 'active' : ''} onClick={() => applySel((s) => linking.setLinkKind(s, 'desired'))}>Desired</button>
-                    <button className={linkKind === 'required' ? 'active' : ''} onClick={() => applySel((s) => linking.setLinkKind(s, 'required'))}>Required</button>
-                  </span>
-                </div>
-              );
-            }
-            // Multiple rooms → batch form.
-            if (multi.size > 1) {
-              return (
-                <div className="action-bar" onClick={(e) => e.stopPropagation()}>
-                  <span className="action-count">{multi.size}</span>
-                  <span className="action-name">rooms selected</span>
-                  <button className="action-btn" onClick={() => multiPin(true)} title="Pin all — P">📌 Pin all</button>
-                  <button className="action-btn" onClick={() => multiShape('box')} title="Box all — B">▢ Box all</button>
-                  <button className="action-btn" onClick={multiCustomShape} title="Freeform shape all — S">✎ Shape all</button>
-                  <input
-                    className="action-cat"
-                    list="diagram-categories"
-                    placeholder="Category…"
-                    value={catDraft}
-                    onChange={(e) => setCatDraft(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter') multiSetCategory(catDraft); }}
-                  />
-                  <datalist id="diagram-categories">
-                    {departments.map((d) => <option key={d} value={d} />)}
-                  </datalist>
-                  <button className="action-btn icon danger" onClick={multiDelete} title="Remove all (Del)" aria-label="Remove all">
-                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6h18" /><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6M14 11v6" /></svg>
-                  </button>
-                </div>
-              );
-            }
-            // Single room → room form.
-            const sel = selected != null ? byId.get(selected) : null;
-            if (!sel) return null;
-            const selCount = Math.max(1, sel.count || 1);
-            const selInstPinned = !!instPin(sel, selectedInst);
-            const selBox = shapeOf(sel) === 'box';
-            const editingSel = editShape === sel.id;
-            return (
-              <div className="action-bar" onClick={(e) => e.stopPropagation()}>
-                <span className="swatch" style={{ background: colorOf(sel) }} />
-                <span className="action-name">{sel.name}{selCount > 1 ? ` ${selectedInst + 1}` : ''}</span>
-                <span className="action-area mono">{fmtArea(ea(sel), units)}</span>
-                <button className={`action-btn ${selInstPinned ? 'active' : ''}`} onClick={() => savePin(sel, selectedInst, !selInstPinned)} title="Pin — P">📌 {selInstPinned ? 'Unpin' : 'Pin'}</button>
-                <button className={`action-btn ${selBox ? 'active' : ''}`} onClick={() => toggleShape(sel)} title="Box — B">{selBox ? '○ Bubble' : '▢ Box'}</button>
-                <button className={`action-btn ${editingSel ? 'active' : ''}`} onClick={() => editCustomShape(sel)} title="Freeform shape — S">✎ {editingSel ? 'Done' : 'Shape'}</button>
-                <input
-                  className="action-cat"
-                  list="diagram-categories"
-                  placeholder="Category"
-                  defaultValue={sel.department || ''}
-                  key={sel.id + ':' + (sel.department || '')}
-                  onKeyDown={(e) => { if (e.key === 'Enter') { const v = e.target.value.trim(); if (v && v !== sel.department) commitSpace(sel, { department: v }, 'set category'); } }}
-                  title="Reassign category (Enter to apply)"
-                />
-                <datalist id="diagram-categories">
-                  {departments.map((d) => <option key={d} value={d} />)}
-                </datalist>
-                <button className="action-btn icon danger" onClick={() => removeSpace(sel)} title="Remove (Del)" aria-label="Remove">
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6h18" /><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6M14 11v6" /></svg>
-                </button>
-              </div>
-            );
-          })()}
-
-          {/* Contextual hint — hidden while an action bar is showing. */}
-          {!selLink && multi.size === 0 && selected == null && tool !== 'link' && (
-            <div className="stage-hint">
-              {rotateLayer
-                ? 'Rotating image — drag the canvas to turn it. Toggle Rotate off when done.'
-                : moveLayer
-                ? 'Moving image layer — drag the canvas to reposition it.'
-                : panActive
-                ? 'Pan — drag the canvas. Release Space (or toggle Pan off) to edit.'
-                : tool === 'link'
-                ? (linkFrom != null ? 'Link mode — click a second room to connect them.' : 'Link mode (L) — click two rooms to link · click a link to edit it')
-                : 'Click a room to select · drag to move · Shift-click for several · hold Space to pan · press ? for shortcuts' +
-                  (effScale ? ` · ${scaleLabelFor(effScale)}` : '')}
-            </div>
-          )}
+          {/* One contextual action bar (bottom-centre) — or the hint when
+              nothing is selected. */}
+          <SelectionHud
+            selLink={selLink}
+            byId={byId}
+            findPair={findPair}
+            onSetLinkStrength={setLinkStrength}
+            onRemoveLink={removeSelLink}
+            tool={tool}
+            linkFrom={linkFrom}
+            linkKind={linkKind}
+            onLinkKind={(k) => applySel((s) => linking.setLinkKind(s, k))}
+            multi={multi}
+            onMultiPin={multiPin}
+            onMultiShape={multiShape}
+            onMultiCustomShape={multiCustomShape}
+            catDraft={catDraft}
+            setCatDraft={setCatDraft}
+            onMultiSetCategory={multiSetCategory}
+            onMultiDelete={multiDelete}
+            departments={departments}
+            selectedSpace={selectedSpace}
+            selectedInst={selectedInst}
+            instPin={instPin}
+            shapeOf={shapeOf}
+            editShape={editShape}
+            colorOf={colorOf}
+            ea={ea}
+            units={units}
+            onPin={savePin}
+            onToggleShape={toggleShape}
+            onEditShape={editCustomShape}
+            onSetCategory={(space, v) => commitSpace(space, { department: v }, 'set category')}
+            onRemoveSpace={removeSpace}
+            rotateLayer={rotateLayer}
+            moveLayer={moveLayer}
+            panActive={panActive}
+            effScale={effScale}
+            scaleLabelFor={scaleLabelFor}
+          />
         </div>
       </div>
 
