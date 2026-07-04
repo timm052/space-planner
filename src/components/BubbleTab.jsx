@@ -16,6 +16,7 @@ import { buildStackScene, build3DScene } from './diagram/scenes.js';
 import * as selection from './diagram/selection.js';
 import * as linking from './diagram/linking.js';
 import * as layerTools from './diagram/layerTools.js';
+import { useDiagramPrefs } from '../hooks/useDiagramPrefs.js';
 import { useViewport, W, H } from '../hooks/useViewport.js';
 import { useImageDims } from '../hooks/useImageDims.js';
 import { useImageData, seedImageData } from '../hooks/useImageData.js';
@@ -165,30 +166,20 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const [satZoom, setSatZoom] = useState(18);
   const [satBusy, setSatBusy] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
-  const [split, setSplit] = useState(() => prefs.getBool('split', true));
-  const [colorBy, setColorBy] = useState('department');
   const [drafts, setDrafts] = useState({});
   const [catDraft, setCatDraft] = useState(''); // batch category/department assignment input
   const [localColors, setLocalColors] = useState({}); // optimistic category colour overrides
   const [marquee, setMarquee] = useState(null); // { x0,y0,x1,y1 } in svg coords while selecting
-  const [hulls, setHulls] = useState(() => prefs.getBool('hulls', false));
-  const [hullPad, setHullPad] = useState(() => prefs.getNum('hullpad', 0) || 26);
   const [showMatrix, setShowMatrix] = useState(false);
   const [highlightGaps, setHighlightGaps] = useState(false); // flag unmet adjacencies on the diagram
-  const [floorView, setFloorView] = useState('all'); // 'all' | <level label> | 'offset' | 'overlaid'
-  const [floorGap, setFloorGap] = useState(0.6); // floor spacing as a fraction of plate height
-  const [stackCam, setStackCam] = useState('iso'); // stacked-SVG view camera preset (CAMERAS in floors.js)
-  const [stackImages, setStackImages] = useState(true); // show warped site images in the stacked view
-  const [cam3d, setCam3d] = useState('persp'); // WebGL 3-D view camera preset (Stacked3D)
-  const [railW, setRailW] = useState(() => prefs.getNum('railw', 0) || 340);
-  const [areaMode, setAreaMode] = useState('category'); // Areas panel grouping
-  const [collapsed, setCollapsed] = useState(() => new Set()); // collapsed Areas groups
   const [editShape, setEditShape] = useState(null); // space id whose polygon is being edited
   const [spaceHeld, setSpaceHeld] = useState(false); // transient pan while Space is held
-  // Auto-layout force strengths (user-adjustable). Buildings barely move by
-  // default so clusters hold their position; rooms move more freely.
-  const [nodeForce, setNodeForce] = useState(() => prefs.getNum('nodeforce', 1));
-  const [buildingForce, setBuildingForce] = useState(() => prefs.getNum('buildingforce', 0.5));
+  // View preferences (split rail, colour mode, hulls, floor view, cameras,
+  // auto-layout forces, …) live in one hook; persisted keys round-trip
+  // through prefs.js. The destructure keeps every read site unchanged.
+  const { view: viewPrefs, setPref } = useDiagramPrefs();
+  const { split, colorBy, hulls, hullPad, railW, areaMode, collapsed,
+    floorView, floorGap, stackCam, stackImages, cam3d, nodeForce, buildingForce } = viewPrefs;
 
   // Apply a selection transition: set the next state and run its declared
   // effects. The refs let event handlers (some registered with narrow effect
@@ -373,7 +364,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     floorView === 'offset' || floorView === 'overlaid' || floorView === '3d' || floorView === 'all' || levels.includes(floorView)
       ? floorView
       : 'all';
-  useEffect(() => setFloorView('all'), [project.id]);
+  useEffect(() => setPref('floorView', 'all'), [project.id]); // eslint-disable-line react-hooks/exhaustive-deps
   // Leave shape-edit mode when the selection moves to another space.
   useEffect(() => {
     if (editShape != null && editShape !== selected) setEditShape(null);
@@ -728,14 +719,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   useEffect(() => {
     alphaRef.current = Math.max(alphaRef.current, 0.35);
   }, [drafts]);
-  // Persist force strengths whenever they change. NOTE: this effect must never
-  // start an auto pass — under StrictMode it double-invokes on mount, which would
-  // run auto-layout on tab open. The live pass is triggered from the slider
-  // onChange (a real user action) via nudgeLayout() instead.
-  useEffect(() => {
-    prefs.set('nodeforce', nodeForce);
-    prefs.set('buildingforce', buildingForce);
-  }, [nodeForce, buildingForce]);
+  // Force strengths persist via setPref. NOTE: persisting must never start an
+  // auto pass — the live pass is triggered from the slider onChange (a real
+  // user action) via nudgeLayout() instead.
   // Re-energise the sim for a brief settling pass (used when a force slider moves).
   const nudgeLayout = () => {
     alphaRef.current = Math.max(alphaRef.current, 0.5);
@@ -1143,22 +1129,12 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       setError(e.message);
     }
   }
-  function toggleHulls() {
-    setHulls((v) => {
-      prefs.set('hulls', !v);
-      return !v;
-    });
-  }
-  function setHullSize(v) {
-    setHullPad(v);
-    prefs.set('hullpad', v);
-  }
+  const toggleHulls = () => setPref('hulls', !hulls);
+  const setHullSize = (v) => setPref('hullPad', v);
   function toggleCollapse(key) {
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      next.has(key) ? next.delete(key) : next.add(key);
-      return next;
-    });
+    const next = new Set(collapsed);
+    next.has(key) ? next.delete(key) : next.add(key);
+    setPref('collapsed', next);
   }
   function setBubbleStyle(v) {
     saveProject({ bubble_style: v });
@@ -1169,10 +1145,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     const startX = e.clientX;
     const startW = railW;
     const clamp = (w) => Math.max(260, Math.min(680, w));
-    const onMove = (ev) => setRailW(clamp(startW + (startX - ev.clientX)));
+    const onMove = (ev) => setPref('railW', clamp(startW + (startX - ev.clientX)), { persist: false });
     const onUp = (ev) => {
-      const w = clamp(startW + (startX - ev.clientX));
-      prefs.set('railw', w);
+      setPref('railW', clamp(startW + (startX - ev.clientX)));
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
     };
@@ -1430,11 +1405,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     }
     await saveProject(fields);
   }
-  function toggleSplit() {
-    const next = !split;
-    setSplit(next);
-    prefs.set('split', next);
-  }
+  const toggleSplit = () => setPref('split', !split);
   function onAreaDraft(space, value) {
     setDrafts((d) => ({ ...d, [space.id]: value }));
     clearTimeout(draftTimers.current.get(space.id));
@@ -1718,15 +1689,15 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
               <div className="ctrl-field">
                 <span className="ctrl-label">Colour</span>
                 <div className="seg seg-sm">
-                  <button className={colorBy === 'department' ? 'active' : ''} onClick={() => setColorBy('department')}>Category</button>
-                  <button className={colorBy === 'building' ? 'active' : ''} onClick={() => setColorBy('building')}>Building</button>
+                  <button className={colorBy === 'department' ? 'active' : ''} onClick={() => setPref('colorBy', 'department')}>Category</button>
+                  <button className={colorBy === 'building' ? 'active' : ''} onClick={() => setPref('colorBy', 'building')}>Building</button>
                 </div>
               </div>
             )}
             {hasLevels && (
               <label className="ctrl-field">
                 <span className="ctrl-label">Floors</span>
-                <select className="ctrl-select" value={floorMode} onChange={(e) => setFloorView(e.target.value)}>
+                <select className="ctrl-select" value={floorMode} onChange={(e) => setPref('floorView', e.target.value)}>
                   <option value="all">All floors</option>
                   {levels.map((l) => <option key={l} value={l}>{l}</option>)}
                   <option value="offset">Stacked · offset</option>
@@ -1772,12 +1743,12 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
               <div className="more-section">Auto-layout forces</div>
               <div className="more-row">
                 <span className="more-label">Rooms</span>
-                <input type="range" min="0" max="1.5" step="0.05" value={nodeForce} onChange={(e) => { setNodeForce(Number(e.target.value)); nudgeLayout(); }} title="How strongly rooms push apart and pull toward their links" />
+                <input type="range" min="0" max="1.5" step="0.05" value={nodeForce} onChange={(e) => { setPref('nodeForce', Number(e.target.value)); nudgeLayout(); }} title="How strongly rooms push apart and pull toward their links" />
                 <span className="more-val mono">{Math.round(nodeForce * 100)}%</span>
               </div>
               <div className="more-row">
                 <span className="more-label">Buildings</span>
-                <input type="range" min="0" max="1.5" step="0.05" value={buildingForce} onChange={(e) => { setBuildingForce(Number(e.target.value)); nudgeLayout(); }} title="How strongly each building holds its shape and original position (0 = free to drift)" />
+                <input type="range" min="0" max="1.5" step="0.05" value={buildingForce} onChange={(e) => { setPref('buildingForce', Number(e.target.value)); nudgeLayout(); }} title="How strongly each building holds its shape and original position (0 = free to drift)" />
                 <span className="more-val mono">{Math.round(buildingForce * 100)}%</span>
               </div>
               <div className="more-divider" />
@@ -1808,13 +1779,13 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
               {hasLevels && (floorMode === 'offset' || floorMode === '3d') && (
                 <div className="more-row">
                   <span className="more-label">Floor gap</span>
-                  <input type="range" min="0.2" max="1.3" step="0.05" value={floorGap} onChange={(e) => setFloorGap(Number(e.target.value))} />
+                  <input type="range" min="0.2" max="1.3" step="0.05" value={floorGap} onChange={(e) => setPref('floorGap', Number(e.target.value))} />
                 </div>
               )}
               {is3D && (
                 <div className="more-row">
                   <span className="more-label">3D camera</span>
-                  <select className="ctrl-select" value={cam3d} onChange={(e) => setCam3d(e.target.value)}>
+                  <select className="ctrl-select" value={cam3d} onChange={(e) => setPref('cam3d', e.target.value)}>
                     <option value="persp">Perspective</option>
                     <option value="iso">Isometric</option>
                     <option value="ortho">Orthographic</option>
@@ -1827,14 +1798,14 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
               {stackMode && (
                 <div className="more-row">
                   <span className="more-label">Camera</span>
-                  <select className="ctrl-select" value={stackCam} onChange={(e) => setStackCam(e.target.value)}>
+                  <select className="ctrl-select" value={stackCam} onChange={(e) => setPref('stackCam', e.target.value)}>
                     {Object.entries(CAMERAS).map(([k, c]) => <option key={k} value={k}>{c.label}</option>)}
                   </select>
                 </div>
               )}
               {(stackMode || is3D) && imgLayers.length > 0 && (
                 <div className="more-row">
-                  <button className={`btn small ${stackImages ? 'on' : ''}`} onClick={() => setStackImages((v) => !v)}>⊞ Site image on floors</button>
+                  <button className={`btn small ${stackImages ? 'on' : ''}`} onClick={() => setPref('stackImages', !stackImages)}>⊞ Site image on floors</button>
                 </div>
               )}
             </div>
@@ -2542,7 +2513,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
           groupKey={groupKey}
           areaTree={areaTree}
           areaMode={areaMode}
-          setAreaMode={setAreaMode}
+          setAreaMode={(m) => setPref('areaMode', m)}
           collapsed={collapsed}
           toggleCollapse={toggleCollapse}
           colorForLabel={colorForLabel}
