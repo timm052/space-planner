@@ -6,7 +6,7 @@ import { useHistory } from '../useHistory.js';
 import { SCALE_PRESETS, ratioToScale, scaleToRatio, zoomAbout } from '../scale.js';
 import { pinsOf, filterCss,
   parsePoly, normalizePolygon, polygonCentroid, polygonPath, regularPolygon,
-  polygonArea, smoothPolygonPoints } from '../geometry.js';
+  polygonArea, smoothPolygonPoints, solveAreaLockedVertex } from '../geometry.js';
 import { edgeGap, adjacencyScore, closestInstancePair } from '../adjacency.js';
 import { pinPatch } from '../pins.js';
 import { orderedLevels, levelRankMap } from '../floors.js';
@@ -112,6 +112,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const alphaRef = useRef(layoutCache.has(project.id) ? 0 : 1);
   const dragRef = useRef(null);
   const polyDragRef = useRef(null); // { space, vi } while dragging a polygon vertex handle
+  const polyOverride = useRef(new Map()); // space.id → { json, verts } saved outline awaiting refetch
   const panRef = useRef(null);
   const layerMoveRef = useRef(null);
   const rotateRef = useRef(null); // { id, startAngle, startRot } while rotating an image by mouse
@@ -151,6 +152,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   useEffect(() => {
     history.clear();
     setLocalColors({});
+    polyOverride.current.clear();
   }, [project.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const units = project.units;
@@ -387,11 +389,19 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   // On-screen area of any shape, in diagram-units². All shapes share this so a
   // bubble, box and polygon for the same space cover the same footprint area.
   const areaUnits = (s) => Math.PI * radiusOf(s) ** 2;
-  // Normalized verts for a space, preferring the live drag override (so a vertex
-  // being dragged updates the outline before it's committed).
+  // Normalized verts for a space, preferring (1) the live drag verts, then
+  // (2) the just-saved outline until the refetch delivers it — releasing a
+  // vertex used to flash the PRE-edit shape for the refetch round-trip, a
+  // visible snap back and forth. The override drops itself once the space's
+  // shape_json catches up.
   const liveNormOf = (s) => {
     const d = polyDragRef.current;
     if (d && d.space.id === s.id) return d.verts;
+    const ov = polyOverride.current.get(s.id);
+    if (ov) {
+      if (s.shape_json === ov.json) polyOverride.current.delete(s.id); // refetch caught up
+      else return ov.verts;
+    }
     return parsePoly(s);
   };
   // Polygons render as smooth, bubble-like blobs (a dense sampled curve through
@@ -500,8 +510,12 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   // exactly where the user left it and the label glides to its centre. The
   // position rides in the same undo entry as the shape.
   function savePoly(space, verts, label = 'shape') {
+    const norm = normalizePolygon(verts);
     const before = { shape: space.shape, shape_json: space.shape_json ?? null };
-    const after = { shape: 'poly', shape_json: JSON.stringify(normalizePolygon(verts)) };
+    const after = { shape: 'poly', shape_json: JSON.stringify(norm) };
+    // Render the saved outline immediately (liveNormOf) so releasing the
+    // handle doesn't flash the pre-edit shape while the refetch is in flight.
+    polyOverride.current.set(space.id, { json: after.shape_json, verts: norm });
     const idx = editAnchorInst(space);
     const node = nodesRef.current.get(`${space.id}:${idx}`);
     const c = polygonCentroid(verts);
@@ -714,8 +728,16 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       const node = nodesRef.current.get(`${d.space.id}:${editAnchorInst(d.space)}`);
       if (node) {
         const { x, y } = toSvgCoords(e);
-        const f = polyScaleOf(d.space) || 1;
-        d.verts[d.vi] = { x: (x - node.x) / f, y: (y - node.y) / f };
+        // Solve the vertex + area-lock scale together (see geometry.js): the
+        // dragged handle lands exactly under the cursor, the outline is a
+        // smooth deterministic function of it — no cross-frame feedback.
+        d.verts = solveAreaLockedVertex(
+          d.verts,
+          d.vi,
+          { x: x - node.x, y: y - node.y },
+          areaUnits(d.space),
+          SMOOTH_SEG
+        ).verts;
         d.moved += 1;
         setTick((t) => t + 1);
       }

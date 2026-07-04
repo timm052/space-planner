@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { convexHull, smoothHullPath, pinsOf, filterCss, IMAGE_FILTERS,
   polygonArea, polygonCentroid, normalizePolygon, parsePoly, polygonPath, polyBounds,
-  regularPolygon, lShape, smoothPolygonPoints } from '../src/geometry.js';
+  regularPolygon, lShape, smoothPolygonPoints, solveAreaLockedVertex } from '../src/geometry.js';
 
 // ---- convexHull ---------------------------------------------------------
 
@@ -154,4 +154,52 @@ test('every non-empty IMAGE_FILTERS preset has a real CSS mapping', () => {
     if (value === '') assert.equal(filterCss(value), 'none');
     else assert.notEqual(filterCss(value), 'none');
   }
+});
+
+// ---- solveAreaLockedVertex ------------------------------------------------
+// The vertex-drag fixed point: the dragged handle must land exactly under the
+// cursor while the area lock holds the rendered (smoothed) outline's area.
+
+test('solveAreaLockedVertex puts the dragged vertex exactly at the target', () => {
+  const verts = regularPolygon(6);
+  const lockedArea = 5000; // ≈ a 40-unit-radius room's footprint
+  const target = { x: 120, y: -35 };
+  const { verts: out, f } = solveAreaLockedVertex(verts, 2, target, lockedArea, 14);
+  // Rendered position of the vertex = normalized vert × scale.
+  assert.ok(Math.abs(out[2].x * f - target.x) < 0.1, `x lands on target (${out[2].x * f})`);
+  assert.ok(Math.abs(out[2].y * f - target.y) < 0.1, `y lands on target (${out[2].y * f})`);
+});
+
+test('solveAreaLockedVertex holds the rendered area to the lock', () => {
+  const verts = regularPolygon(5);
+  const lockedArea = 7200;
+  const { verts: out, f } = solveAreaLockedVertex(verts, 0, { x: 150, y: 60 }, lockedArea, 14);
+  const rendered = polygonArea(smoothPolygonPoints(out, 14)) * f * f;
+  assert.ok(Math.abs(rendered - lockedArea) / lockedArea < 0.001, `area locked (${rendered})`);
+});
+
+test('solveAreaLockedVertex is deterministic and continuous in the cursor', () => {
+  const verts = regularPolygon(6);
+  const a1 = solveAreaLockedVertex(verts, 1, { x: 90, y: 40 }, 5000, 14);
+  const a2 = solveAreaLockedVertex(verts, 1, { x: 90, y: 40 }, 5000, 14);
+  assert.deepEqual(a1, a2, 'same cursor → identical result (no hidden state)');
+  const b = solveAreaLockedVertex(verts, 1, { x: 91, y: 40 }, 5000, 14);
+  for (let i = 0; i < verts.length; i++) {
+    const d = Math.hypot(b.verts[i].x - a1.verts[i].x, b.verts[i].y - a1.verts[i].y);
+    assert.ok(d < 0.05, `1px cursor step moves vert ${i} smoothly (${d})`);
+  }
+});
+
+test('solveAreaLockedVertex does not mutate its input', () => {
+  const verts = regularPolygon(4);
+  const snapshot = JSON.stringify(verts);
+  solveAreaLockedVertex(verts, 0, { x: 200, y: 0 }, 3000, 14);
+  assert.equal(JSON.stringify(verts), snapshot);
+});
+
+test('solveAreaLockedVertex converges even for extreme pulls', () => {
+  const verts = regularPolygon(3);
+  const { verts: out, f } = solveAreaLockedVertex(verts, 0, { x: 900, y: 0 }, 2000, 14);
+  assert.ok(Number.isFinite(f) && f > 0);
+  assert.ok(Math.abs(out[0].x * f - 900) < 2, 'still lands near the cursor after a huge pull');
 });
