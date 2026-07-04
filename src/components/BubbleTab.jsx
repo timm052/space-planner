@@ -5,7 +5,7 @@ import { fmtArea, areaToM2, distToMeters, distUnit, leafSpaces, rootContainer } 
 import { useHistory } from '../useHistory.js';
 import { SCALE_PRESETS, ratioToScale, scaleToRatio, zoomAbout } from '../scale.js';
 import { pinsOf, filterCss,
-  parsePoly, normalizePolygon, polygonPath, regularPolygon,
+  parsePoly, normalizePolygon, polygonCentroid, polygonPath, regularPolygon,
   polygonArea, smoothPolygonPoints } from '../geometry.js';
 import { edgeGap, adjacencyScore, closestInstancePair } from '../adjacency.js';
 import { pinPatch } from '../pins.js';
@@ -102,6 +102,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
 
   const draftTimers = useRef(new Map());
   const nodesRef = useRef(new Map());
+  // Post-drop relaxation owed to the sim (see useSimulation): primed by onUp
+  // when a dragged bubble lands so neighbours are pushed aside only once the
+  // bubble is PLACED — never while it is carried. `hold` keeps the dropped
+  // instances exactly where the user put them while neighbours yield.
+  const relaxRef = useRef(null); // { frames, hold: Set<instanceKey> }
   // Start idle if we have a cached layout to restore (avoids a re-scatter on
   // tab return); otherwise energise so the first layout settles.
   const alphaRef = useRef(layoutCache.has(project.id) ? 0 : 1);
@@ -487,9 +492,34 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     setEditShape(space.id);
   }
   // Persist a new normalized outline for a space (undoable).
-  function savePoly(space, normVerts, label = 'shape') {
+  //
+  // normalizePolygon re-centres the verts about their centroid, which used to
+  // visually SNAP the drawn shape back onto the node after editing (and leave
+  // the name label off the shape's middle). Compensate by moving the anchor
+  // instance's node to the outline's centroid — the geometry on screen stays
+  // exactly where the user left it and the label glides to its centre. The
+  // position rides in the same undo entry as the shape.
+  function savePoly(space, verts, label = 'shape') {
     const before = { shape: space.shape, shape_json: space.shape_json ?? null };
-    const after = { shape: 'poly', shape_json: JSON.stringify(normalizePolygon(normVerts)) };
+    const after = { shape: 'poly', shape_json: JSON.stringify(normalizePolygon(verts)) };
+    const idx = editAnchorInst(space);
+    const node = nodesRef.current.get(`${space.id}:${idx}`);
+    const c = polygonCentroid(verts);
+    if (node && Math.hypot(c.x, c.y) > 1e-6) {
+      // Screen shift removed by normalization = centroid × the render scale the
+      // outline had during the edit (smoothing is affine, so this is exact).
+      const k = polygonArea(smoothPolygonPoints(verts, SMOOTH_SEG)) || polygonArea(verts) || 1;
+      const f = Math.sqrt(areaUnits(space) / k);
+      node.x += c.x * f;
+      node.y += c.y * f;
+      const patch = pinPatch(space, [idx], (i, prev) => {
+        const pos = { x: node.x, y: node.y };
+        return prev?.locked ? { ...pos, locked: true } : pos;
+      });
+      Object.assign(before, patch.before);
+      Object.assign(after, patch.after);
+      for (const [i, p] of Object.entries(patch.touched)) pinOverride.current.set(`${space.id}:${i}`, p);
+    }
     history.record({ label, undo: () => applySpace(space.id, before), redo: () => applySpace(space.id, after) });
     setError(null);
     applySpace(space.id, after).catch((e) => setError(e.message));
@@ -627,7 +657,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   // Force simulation — delegated to the hook. radiusOf/groupKey/instPin are
   // ref-wrapped inside useSimulation so they are always fresh without needing
   // to be listed in the effect deps.
-  useSimulation({ instances, leaves, adjacencies, byId, autoRunRef, setAutoRunning, effScale, nodesRef, alphaRef, dragRef, radiusOf, instPin, groupKey, clusterKey, nodeForce, buildingForce, setTick });
+  useSimulation({ instances, leaves, adjacencies, byId, autoRunRef, setAutoRunning, effScale, nodesRef, alphaRef, dragRef, relaxRef, radiusOf, instPin, groupKey, clusterKey, nodeForce, buildingForce, setTick });
 
   // Closest instance pair between two spaces — used by PDF export, adjacency
   // rendering, and the scale bar. Reads nodesRef so it is always current.
@@ -790,7 +820,10 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     if (!drag) return;
     if (drag.starts) {
       // Group drag: pin every moved bubble where it was dropped (one undo step).
-      if (drag.moved >= 6) await pinKeys(drag.starts.map((s) => s.key));
+      if (drag.moved >= 6) {
+        relaxRef.current = { frames: 40, hold: drag.groupSet }; // neighbours yield at the drop
+        await pinKeys(drag.starts.map((s) => s.key));
+      }
       return;
     }
     const space = byId.get(drag.spaceId);
@@ -798,6 +831,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     if (drag.moved >= 6) {
       // Dragging SAVES the room's position (so it stays where you drop it and
       // reloads there) but does NOT lock it — locking is deliberate (Pin / P).
+      relaxRef.current = { frames: 40, hold: new Set([drag.key]) }; // neighbours yield at the drop
       await saveDragPos(space, drag.idx);
       return;
     }
