@@ -2,6 +2,7 @@ import { lazy, memo, Suspense } from 'react';
 import { fmtArea, rootContainer } from '../../compute.js';
 import { convexHull, smoothHullPath, filterCss, polygonPath, polyBounds, polygonArea } from '../../geometry.js';
 import { darkHex } from '../../viz.js';
+import { fitLabel, measureText } from '../../textfit.js';
 import { TickLayer } from '../../hooks/useTick.js';
 
 // three.js + react-three-fiber are the bulk of the main bundle; the 3-D view
@@ -14,48 +15,35 @@ const EMPTY_SET = new Set();
  * Renders a bubble's name (and optional area) as word-wrapped SVG text,
  * vertically centred inside a circle of radius `r`.
  *
- * Strategy: character-count greedy wrap using an average char-width heuristic
- * (fontSize × 0.55). Lines are stacked with <tspan dy> and the whole block is
- * offset so its visual centre lands at y = 0 (the bubble's centre).
+ * The wrap uses REAL measured text widths with balanced line-breaking, and
+ * the font steps down when a name genuinely can't fit (see textfit.js) —
+ * lines no longer overflow narrow bubbles or break lopsidedly. Lines are
+ * stacked with <tspan dy> and the block is offset so its visual centre lands
+ * at y = 0 (the bubble's centre).
  *
  * Tiny bubbles (r ≤ 13) fall back to a single label below the circle.
  *
- * Memoized: labels re-render (and re-wrap) only when their own props change,
+ * Memoized: labels re-render (and re-fit) only when their own props change,
  * not on every sim tick.
  */
 const BubbleLabel = memo(function BubbleLabel({ label, r, areaStr, ink }) {
-  const fontSize = Math.max(9, Math.min(14, r / 3.2));
-  const lineH    = fontSize * 1.22;
-  const charW    = fontSize * 0.55;
+  const baseSize = Math.max(9, Math.min(14, r / 3.2));
   const maxW     = Math.max(r * 1.65, 28);
-  const cpl      = Math.max(4, Math.floor(maxW / charW)); // chars per line
 
   // Tiny bubble: single line sitting below the circle
   if (r <= 13) {
     return (
-      <text textAnchor="middle" dy={r + 11} className="bubble-name" style={{ fontSize, fill: ink }}>
+      <text textAnchor="middle" dy={r + 11} className="bubble-name" style={{ fontSize: baseSize, fill: ink }}>
         {label}
       </text>
     );
   }
 
-  // Greedy word-wrap, capped at 3 lines
-  const words = label.split(/\s+/);
-  const lines = [];
-  let cur = '';
-  for (const w of words) {
-    if (!cur) { cur = w; continue; }
-    if ((cur + ' ' + w).length <= cpl) { cur += ' ' + w; }
-    else { lines.push(cur); cur = w; }
-  }
-  if (cur) lines.push(cur);
-  if (lines.length > 3) {
-    lines[2] = lines.slice(2).join(' ');
-    if (lines[2].length > cpl) lines[2] = lines[2].slice(0, cpl - 1) + '…';
-    lines.length = 3;
-  }
+  const { fontSize, lines } = fitLabel({ label, maxWidth: maxW, baseSize, minSize: 8, maxLines: 3 });
+  const lineH = fontSize * 1.22;
 
-  const showArea   = !!areaStr && r > 26;
+  // The 10px mono area tag also has to fit before it earns a line.
+  const showArea   = !!areaStr && r > 26 && measureText(areaStr, 10) <= maxW;
   const totalLines = lines.length + (showArea ? 1 : 0);
   // First tspan dy: raise so the whole block is vertically centred at y=0.
   const startDy    = -((totalLines - 1) * lineH) / 2 + fontSize * 0.35;
