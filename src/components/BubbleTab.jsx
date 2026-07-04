@@ -13,6 +13,9 @@ import { pinPatch } from '../pins.js';
 import { prefs } from '../prefs.js';
 import { orderedLevels, levelRankMap, CAMERAS } from '../floors.js';
 import { buildStackScene, build3DScene } from './diagram/scenes.js';
+import * as selection from './diagram/selection.js';
+import * as linking from './diagram/linking.js';
+import * as layerTools from './diagram/layerTools.js';
 import { useViewport, W, H } from '../hooks/useViewport.js';
 import { useImageDims } from '../hooks/useImageDims.js';
 import { useImageData, seedImageData } from '../hooks/useImageData.js';
@@ -142,8 +145,14 @@ function AdjacencyBadge({ store, compute, dataKey, active, onToggle }) {
 }
 
 export default function BubbleTab({ project, spaces, adjacencies, images = [], onChanged, selectedSpaceId = null, onSelectSpace }) {
-  const [selected, setSelected] = useState(null);
-  const [selectedInst, setSelectedInst] = useState(0); // which instance of the selected space
+  // Selection + link-tool state lives in one pure state machine (see
+  // diagram/selection.js and diagram/linking.js). Transitions are applied via
+  // applySel() below; the destructure keeps every read site unchanged.
+  const [sel, setSel] = useState(selection.initialSelection);
+  const { tool, selected, selectedInst, multi, selLink, linkFrom, linkKind } = sel;
+  // Image-layer tool modes (calibrate / move / rotate) — same pattern.
+  const [lt, setLt] = useState(layerTools.initialLayerTools);
+  const { calibrateLayer, moveLayer, rotateLayer, scalePoints, scaleDistance } = lt;
   // Animation ticks bypass React state: the sim/drags mutate nodesRef then
   // bump this store, re-rendering ONLY the <TickLayer> canvas below — not the
   // toolbar/rail/popover chrome. Same call signature as the old setTick.
@@ -151,11 +160,6 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const setTick = tickStore.bump;
   const [, forceChrome] = useState(0); // re-render chrome for optimistic in-place edits (layer sliders)
   const [error, setError] = useState(null);
-  const [scalePoints, setScalePoints] = useState(null);
-  const [scaleDistance, setScaleDistance] = useState('');
-  const [calibrateLayer, setCalibrateLayer] = useState(null); // image id being calibrated
-  const [moveLayer, setMoveLayer] = useState(null); // image id being moved
-  const [rotateLayer, setRotateLayer] = useState(null); // image id being rotated by mouse
   const [panel, setPanel] = useState(null); // 'layers' | 'sat' | null
   const [satQuery, setSatQuery] = useState('');
   const [satZoom, setSatZoom] = useState(18);
@@ -164,7 +168,6 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const [split, setSplit] = useState(() => prefs.getBool('split', true));
   const [colorBy, setColorBy] = useState('department');
   const [drafts, setDrafts] = useState({});
-  const [multi, setMulti] = useState(() => new Set()); // selected instance keys for batch ops
   const [catDraft, setCatDraft] = useState(''); // batch category/department assignment input
   const [localColors, setLocalColors] = useState({}); // optimistic category colour overrides
   const [marquee, setMarquee] = useState(null); // { x0,y0,x1,y1 } in svg coords while selecting
@@ -181,15 +184,35 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const [areaMode, setAreaMode] = useState('category'); // Areas panel grouping
   const [collapsed, setCollapsed] = useState(() => new Set()); // collapsed Areas groups
   const [editShape, setEditShape] = useState(null); // space id whose polygon is being edited
-  const [tool, setTool] = useState('select'); // 'select' | 'link' — canvas mode
-  const [linkKind, setLinkKind] = useState('desired'); // relationship type new links get in Link mode
   const [spaceHeld, setSpaceHeld] = useState(false); // transient pan while Space is held
   // Auto-layout force strengths (user-adjustable). Buildings barely move by
   // default so clusters hold their position; rooms move more freely.
   const [nodeForce, setNodeForce] = useState(() => prefs.getNum('nodeforce', 1));
   const [buildingForce, setBuildingForce] = useState(() => prefs.getNum('buildingforce', 0.5));
-  const [selLink, setSelLink] = useState(null); // { space_a, space_b } of the selected link
-  const [linkFrom, setLinkFrom] = useState(null); // first room picked in Link mode
+
+  // Apply a selection transition: set the next state and run its declared
+  // effects. The refs let event handlers (some registered with narrow effect
+  // deps) always read the LATEST state, and chained transitions within one
+  // event see each other's result before React re-renders. fx runs outside
+  // any setState updater so StrictMode's double-invoke can't repeat it.
+  const selRef = useRef(sel);
+  selRef.current = sel;
+  function applySel(transition) {
+    const { sel: next, fx } = transition(selRef.current);
+    selRef.current = next;
+    setSel(next);
+    for (const f of fx) {
+      if (f.type === 'notify') onSelectSpace?.(f.id);
+      else if (f.type === 'maybeCreateLink' && !findPair(f.a, f.b)) createLink(f.a, f.b, f.kind);
+    }
+  }
+  const ltRef = useRef(lt);
+  ltRef.current = lt;
+  function applyLt(transition) {
+    const next = transition(ltRef.current);
+    ltRef.current = next;
+    setLt(next);
+  }
 
   const draftTimers = useRef(new Map());
   const nodesRef = useRef(new Map());
@@ -425,20 +448,13 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
         e.preventDefault();
         history.redo();
       } else if (e.key.toLowerCase() === 'v' && !mod) {
-        setTool('select');
-        setLinkFrom(null);
+        applySel((s) => linking.setTool(s, 'select'));
       } else if (e.key.toLowerCase() === 'l' && !mod) {
-        setTool('link');
-        setSelected(null);
-        setSelLink(null);
+        applySel((s) => linking.setTool(s, 'link'));
       } else if (e.key.toLowerCase() === 'a' && !mod) {
         runAutoLayout();
       } else if (e.key === 'Escape') {
-        if (multi.size) setMulti(new Set());
-        setSelected(null);
-        onSelectSpace?.(null);
-        setSelLink(null);
-        setLinkFrom(null);
+        applySel(selection.escape);
       } else if ((e.key === 'Delete' || e.key === 'Backspace') && multi.size) {
         e.preventDefault();
         multiDelete();
@@ -465,20 +481,12 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   // propagation is event-driven via pickSpace()/clearPick() at the actual
   // selection points, which avoids an effect feedback cycle.
   useEffect(() => {
-    setSelected(selectedSpaceId);
-    setSelectedInst(0);
-     
-  }, [selectedSpaceId]);
+    applySel((s) => selection.applyExternal(s, selectedSpaceId));
+
+  }, [selectedSpaceId]); // eslint-disable-line react-hooks/exhaustive-deps
   // Select a space and notify the shared state (no-ops to onSelectSpace are cheap).
-  const pickSpace = (id, inst = 0) => {
-    setSelected(id);
-    setSelectedInst(inst);
-    onSelectSpace?.(id);
-  };
-  const clearPick = () => {
-    setSelected(null);
-    onSelectSpace?.(null);
-  };
+  const pickSpace = (id, inst = 0) => applySel((s) => selection.pick(s, id, inst));
+  const clearPick = () => applySel(selection.clearPick);
 
   const shapeOf = (s) => {
     if (s.shape === 'poly' && parsePoly(s)) return 'poly';
@@ -918,10 +926,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     if (e.shiftKey) {
       // Shift-click toggles a bubble in the multi-selection (no drag, no marquee).
       e.stopPropagation();
-      setSelLink(null);
-      setSelected(null);
-      onSelectSpace?.(null);
-      toggleMulti(o.key);
+      applySel((s) => selection.shiftToggle(s, o.key));
       return;
     }
     try {
@@ -1006,14 +1011,6 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   }
 
   // ---------- multi-select (marquee + shift-click) ----------
-  function toggleMulti(key) {
-    setMulti((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  }
   const multiList = () =>
     [...multi]
       .map((k) => {
@@ -1028,20 +1025,13 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     marqueeRef.current = null;
     setMarquee(null);
     if (!box || !m) return;
-    const minX = Math.min(box.x0, box.x1), maxX = Math.max(box.x0, box.x1);
-    const minY = Math.min(box.y0, box.y1), maxY = Math.max(box.y0, box.y1);
     // A near-zero drag is a click on empty canvas → clear selection.
-    if (maxX - minX < 4 && maxY - minY < 4) {
-      if (!m.additive) (setMulti(new Set()), setSelected(null), onSelectSpace?.(null), setSelLink(null), setLinkFrom(null));
+    if (selection.isClickBox(box)) {
+      applySel((s) => selection.emptyCanvasClick(s, m.additive));
       return;
     }
-    const hit = new Set(m.additive ? multi : []);
-    for (const o of instances) {
-      const n = nodesRef.current.get(o.key);
-      if (n && n.x >= minX && n.x <= maxX && n.y >= minY && n.y <= maxY) hit.add(o.key);
-    }
-    if (hit.size) { setSelLink(null); setSelected(null); onSelectSpace?.(null); }
-    setMulti(hit);
+    const hits = selection.hitsInBox(instances, (k) => nodesRef.current.get(k), box);
+    applySel((s) => selection.marqueeEnd(s, hits, m.additive));
   }
 
   // Group instance keys by space → { space, idxs } (for batch pin edits).
@@ -1132,7 +1122,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     setError(null);
     try {
       for (const id of ids) await api.deleteSpace(id);
-      setMulti(new Set());
+      applySel(selection.afterMultiDelete);
       history.clear(); // deletions invalidate recorded closures referencing these spaces
       onChanged();
     } catch (e) {
@@ -1146,7 +1136,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     setError(null);
     try {
       await api.deleteSpace(space.id);
-      setSelected(null);
+      applySel(selection.afterRemoveSelected);
       history.clear();
       onChanged();
     } catch (e) {
@@ -1192,23 +1182,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
 
   async function handleBubbleClick(spaceId, idx = 0) {
     setError(null);
-    setSelLink(null);
-    // Link mode: pick a first room, then a second to connect them (default desired).
-    if (tool === 'link') {
-      if (linkFrom == null) return setLinkFrom(spaceId);
-      if (linkFrom === spaceId) return setLinkFrom(null);
-      const a = linkFrom;
-      setLinkFrom(null);
-      if (!findPair(a, spaceId)) await createLink(a, spaceId, linkKind);
-      return;
-    }
-    // Select mode: select the room; click again to deselect; re-target an instance.
-    if (selected == null) return pickSpace(spaceId, idx);
-    if (selected === spaceId) {
-      if (selectedInst !== idx) return setSelectedInst(idx);
-      return clearPick();
-    }
-    pickSpace(spaceId, idx);
+    // Link mode: pick a first room, then a second to connect them (the
+    // maybeCreateLink fx creates the adjacency unless the pair exists).
+    // Select mode: select / retarget instance / deselect.
+    if (selRef.current.tool === 'link') applySel((s) => linking.linkClick(s, spaceId));
+    else applySel((s) => selection.selectClick(s, spaceId, idx));
   }
 
   // findPair reads the latest adjacencies via a ref so history closures stay
@@ -1257,17 +1235,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   async function removeSelLink() {
     if (!selLink) return;
     await setLinkStrength(selLink.space_a, selLink.space_b, null);
-    setSelLink(null);
+    applySel(linking.clearSelLink);
   }
 
   // Clicking a link selects it (Select mode) → shows the link action bar.
-  function onLinkClick(l) {
-    setSelected(null);
-    onSelectSpace?.(null);
-    setMulti(new Set());
-    setLinkFrom(null);
-    setSelLink({ space_a: l.space_a, space_b: l.space_b });
-  }
+  const onLinkClick = (l) => applySel((s) => linking.selectLink(s, l));
 
   async function saveProject(fields, { silent } = {}) {
     if (!silent) setError(null);
@@ -1330,9 +1302,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     setError(null);
     try {
       await api.deleteImage(id);
-      if (moveLayer === id) setMoveLayer(null);
-      if (rotateLayer === id) setRotateLayer(null);
-      if (calibrateLayer === id) (setCalibrateLayer(null), setScalePoints(null));
+      applyLt((l) => layerTools.layerDeleted(l, id));
       onChanged();
     } catch (e) {
       setError(e.message);
@@ -1341,31 +1311,25 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
 
   function startCalibrate(id) {
     setPanel(null);
-    setMoveLayer(null);
-    setRotateLayer(null);
-    setCalibrateLayer(id);
-    setScalePoints([]);
-    setScaleDistance('');
+    applyLt((l) => layerTools.startCalibrate(l, id));
   }
 
   function onSvgScaleClick(e) {
-    if (!scalePoints || scalePoints.length >= 2) return;
-    setScalePoints([...scalePoints, toSvgCoords(e)]);
+    applyLt((l) => layerTools.addScalePoint(l, toSvgCoords(e)));
   }
 
   async function applyScale() {
-    const [a, b] = scalePoints;
-    const dUnits = Math.hypot(b.x - a.x, b.y - a.y);
-    const meters = distToMeters(Number(scaleDistance), units);
     const im = imgById.get(calibrateLayer);
     const rect = layerRect(im);
     const nd = im && dims[im.id];
-    if (!(meters > 0) || dUnits < 2 || !rect || !nd) return setError('Pick two points and enter a positive distance.');
-    const naturalPx = (dUnits / rect.w) * nd.w;
-    const mpp = meters / naturalPx;
-    setScalePoints(null);
-    setScaleDistance('');
-    setCalibrateLayer(null);
+    const mpp = layerTools.computeMpp({
+      points: scalePoints,
+      meters: distToMeters(Number(scaleDistance), units),
+      rectW: rect?.w,
+      naturalW: nd?.w,
+    });
+    if (mpp == null) return setError('Pick two points and enter a positive distance.');
+    applyLt(layerTools.endCalibrate);
     try {
       await api.updateImage(im.id, { mpp });
       onChanged();
@@ -1878,7 +1842,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
           <div className="tool-dock">
             <button
               className={`tool-btn ${tool === 'select' ? 'active' : ''}`}
-              onClick={() => { setTool('select'); setLinkFrom(null); }}
+              onClick={() => applySel((s) => linking.setTool(s, 'select'))}
               title="Select & move — V"
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 3l7 17 2.5-7L20 11z" /></svg>
@@ -1886,7 +1850,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
             </button>
             <button
               className={`tool-btn ${tool === 'link' ? 'active' : ''}`}
-              onClick={() => { setTool('link'); setSelected(null); setSelLink(null); }}
+              onClick={() => applySel((s) => linking.setTool(s, 'link'))}
               title="Link adjacency — L"
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="6" cy="17" r="3" /><circle cx="18" cy="7" r="3" /><line x1="8" y1="15" x2="16" y2="9" strokeLinecap="round" /></svg>
@@ -1931,9 +1895,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                     onOpacity={(v) => layerSlider(im, 'opacity', v)}
                     onRotate={(v) => layerSlider(im, 'rot', v)}
                     onCalibrate={() => startCalibrate(im.id)}
-                    onMove={() => ((setRotateLayer(null)), setMoveLayer(moveLayer === im.id ? null : im.id))}
+                    onMove={() => applyLt((l) => layerTools.toggleMove(l, im.id))}
                     moving={moveLayer === im.id}
-                    onRotateMode={() => ((setMoveLayer(null)), setRotateLayer(rotateLayer === im.id ? null : im.id))}
+                    onRotateMode={() => applyLt((l) => layerTools.toggleRotate(l, im.id))}
                     rotating={rotateLayer === im.id}
                     onFilter={(v) => layerSlider(im, 'filter', v)}
                     onDelete={() => deleteImageLayer(im.id)}
@@ -1980,14 +1944,14 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
               ) : (
                 <>
                   <span>Distance between the points:</span>
-                  <input type="number" min="0.1" step="any" autoFocus value={scaleDistance} onChange={(e) => setScaleDistance(e.target.value)} placeholder={distUnit(units)} />
+                  <input type="number" min="0.1" step="any" autoFocus value={scaleDistance} onChange={(e) => applyLt((l) => layerTools.setScaleDistance(l, e.target.value))} placeholder={distUnit(units)} />
                   <span>{distUnit(units)}</span>
                   <button className="btn primary small" onClick={applyScale}>
                     Apply
                   </button>
                 </>
               )}
-              <button className="btn small ghost" onClick={() => ((setScalePoints(null), setCalibrateLayer(null)))}>
+              <button className="btn small ghost" onClick={() => applyLt(layerTools.endCalibrate)}>
                 Cancel
               </button>
             </div>
@@ -2484,8 +2448,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                   </span>
                   <span className="action-name">{linkFrom != null ? 'Pick the second room' : 'New link'}</span>
                   <span className="seg seg-sm">
-                    <button className={linkKind === 'desired' ? 'active' : ''} onClick={() => setLinkKind('desired')}>Desired</button>
-                    <button className={linkKind === 'required' ? 'active' : ''} onClick={() => setLinkKind('required')}>Required</button>
+                    <button className={linkKind === 'desired' ? 'active' : ''} onClick={() => applySel((s) => linking.setLinkKind(s, 'desired'))}>Desired</button>
+                    <button className={linkKind === 'required' ? 'active' : ''} onClick={() => applySel((s) => linking.setLinkKind(s, 'required'))}>Required</button>
                   </span>
                 </div>
               );
