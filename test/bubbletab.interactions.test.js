@@ -6,7 +6,7 @@
 // world and the pan starts at 0, so once getBoundingClientRect is stubbed to
 // a 900×620 rect at the origin, client coordinates == diagram coordinates.
 import './helpers/dom.js'; // MUST be first — sets up window/document for react-dom
-import { fetchCalls } from './helpers/dom.js';
+import { fetchCalls, flushFrames } from './helpers/dom.js';
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import React, { createElement as h } from 'react';
@@ -79,6 +79,28 @@ test('dragging a bubble moves it and persists the dropped position', async () =>
     assert.ok(!body.pin_json.includes('locked'), 'a drag saves without locking');
     // No action bar: a real drag (≥6px) is not a click-select.
     assert.equal(container.querySelector('.action-bar'), null);
+  } finally {
+    unmount();
+  }
+});
+
+test('dropping a bubble onto another relaxes the overlap apart', async () => {
+  const { container, svg, unmount } = mount();
+  try {
+    const at = (id) => posOf(container.querySelector(`g.bubble[data-space-id="${id}"]`));
+    const a = container.querySelector('g.bubble[data-space-id="2"]');
+    const pa = at(2);
+    const pb = at(3);
+    // Drag Lobby directly onto Office's centre and drop it there.
+    await act(async () => a.dispatchEvent(ev('pointerdown', { clientX: pa.x, clientY: pa.y })));
+    await act(async () => svg.dispatchEvent(ev('pointermove', { clientX: pb.x, clientY: pb.y })));
+    await act(async () => flushFrames(2)); // sim frames during the drag prime the relaxation
+    await act(async () => svg.dispatchEvent(ev('pointerup', { clientX: pb.x, clientY: pb.y })));
+    const dropped = Math.hypot(at(2).x - at(3).x, at(2).y - at(3).y);
+    // Post-drop collision relaxation separates the pair without any layout pass.
+    await act(async () => flushFrames(60));
+    const settled = Math.hypot(at(2).x - at(3).x, at(2).y - at(3).y);
+    assert.ok(settled > Math.max(100, dropped), `overlap relaxed apart (${Math.round(dropped)} → ${Math.round(settled)})`);
   } finally {
     unmount();
   }

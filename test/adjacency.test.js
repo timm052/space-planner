@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import {
   edgeGap,
   linkSatisfied,
+  linkCredit,
   adjacencyScore,
   scoreBand,
+  CREDIT_FALLOFF,
   DEFAULT_THRESHOLDS_M,
   LINK_WEIGHT,
 } from '../src/adjacency.js';
@@ -24,6 +26,42 @@ test('linkSatisfied compares the gap against the per-strength threshold', () => 
 test('linkSatisfied falls back to the desired threshold for unknown strengths', () => {
   assert.equal(linkSatisfied('mystery', DEFAULT_THRESHOLDS_M.desired, DEFAULT_THRESHOLDS_M), true);
   assert.equal(linkSatisfied('mystery', DEFAULT_THRESHOLDS_M.desired + 1, DEFAULT_THRESHOLDS_M), false);
+});
+
+test('linkCredit gives full credit within the threshold and none past the falloff', () => {
+  const t = DEFAULT_THRESHOLDS_M.required;
+  assert.equal(linkCredit('required', 0), 1);
+  assert.equal(linkCredit('required', t), 1); // exactly at the threshold
+  assert.equal(linkCredit('required', t * CREDIT_FALLOFF), 0); // at the falloff limit
+  assert.equal(linkCredit('required', 999), 0);
+});
+
+test('linkCredit falls smoothly and monotonically between threshold and limit', () => {
+  const t = DEFAULT_THRESHOLDS_M.desired;
+  const mid = linkCredit('desired', t * 2); // halfway through the falloff band
+  assert.ok(Math.abs(mid - 0.5) < 1e-9, 'smoothstep midpoint is exactly half credit');
+  let prev = 1;
+  for (let gap = t; gap <= t * CREDIT_FALLOFF; gap += t / 10) {
+    const c = linkCredit('desired', gap);
+    assert.ok(c <= prev + 1e-12, `credit never rises as the gap grows (gap ${gap})`);
+    prev = c;
+  }
+});
+
+test('linkCredit with a zero threshold is all-or-nothing', () => {
+  const strict = { required: 0, desired: 0 };
+  assert.equal(linkCredit('required', 0, strict), 1);
+  assert.equal(linkCredit('required', 0.01, strict), 0);
+});
+
+test('adjacencyScore grades partial credit between threshold and falloff', () => {
+  // A desired link halfway through its falloff band scores half its weight,
+  // but still counts as UNMET for the badge count / highlighting.
+  const gap = DEFAULT_THRESHOLDS_M.desired * 2;
+  const r = adjacencyScore([{ id: 1, strength: 'desired', gap }]);
+  assert.ok(Math.abs(r.score - 0.5) < 1e-9);
+  assert.equal(r.met, 0);
+  assert.deepEqual(r.unmet.map((l) => l.id), [1]);
 });
 
 test('adjacencyScore weights required links above desired ones', () => {
