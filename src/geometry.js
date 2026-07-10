@@ -101,12 +101,10 @@ export function hullOfDiscs(discs, digFactor = 3) {
 
 // ---------- clipped Voronoi (master-plan interior) ----------
 
-// Clip a polygon to the half-plane of points at least as close to `p` as to
-// `q` (Sutherland–Hodgman against the p–q perpendicular bisector).
-export function clipHalfPlane(poly, p, q) {
-  const mx = (p.x + q.x) / 2, my = (p.y + q.y) / 2;
-  const ax = q.x - p.x, ay = q.y - p.y;
-  const side = (pt) => (pt.x - mx) * ax + (pt.y - my) * ay; // > 0 → closer to q
+// Clip `poly` to the half-plane {x : (x − m)·n ≤ 0} — Sutherland–Hodgman
+// against an arbitrary line. Shared core of both Voronoi clippers below.
+function clipLine(poly, mx, my, nx, ny) {
+  const side = (pt) => (pt.x - mx) * nx + (pt.y - my) * ny;
   const out = [];
   for (let i = 0; i < poly.length; i++) {
     const a = poly[i], b = poly[(i + 1) % poly.length];
@@ -120,22 +118,94 @@ export function clipHalfPlane(poly, p, q) {
   return out;
 }
 
-// The Voronoi partition of `boundary` under `seeds` ([{x,y}, …]): one clipped
-// cell polygon per seed (null when the cell degenerates). Each cell is the
-// boundary clipped by the bisector against every other seed — O(n²) clips,
-// trivial for room counts, no dependency. Co-located seeds have no bisector
-// and simply share the space their neighbours leave them.
-export function voronoiCells(seeds, boundary) {
+// Clip a polygon to the half-plane of points at least as close to `p` as to
+// `q` (the p–q perpendicular bisector).
+export function clipHalfPlane(poly, p, q) {
+  return clipLine(poly, (p.x + q.x) / 2, (p.y + q.y) / 2, q.x - p.x, q.y - p.y);
+}
+
+// The POWER-DIAGRAM partition of `boundary` under weighted `seeds`
+// ([{x, y, w?}, …], w defaults to 0): one clipped convex cell per seed (null
+// when the cell degenerates). The dividing line between two seeds is their
+// radical axis — still a straight line perpendicular to the seed axis, but
+// shifted toward the lighter seed by (wᵢ − wⱼ)/(2|d|), so a heavier weight
+// claims more area. With all weights equal this IS the Voronoi diagram.
+// O(n²) clips, trivial for room counts. Co-located seeds have no axis and
+// simply share the space their neighbours leave them.
+export function powerCells(seeds, boundary) {
   return seeds.map((s, i) => {
+    const wi = s.w || 0;
     let cell = boundary;
     for (let j = 0; j < seeds.length && cell.length; j++) {
       if (j === i) continue;
       const o = seeds[j];
-      if (Math.hypot(o.x - s.x, o.y - s.y) < 1e-9) continue;
-      cell = clipHalfPlane(cell, s, o);
+      const dx = o.x - s.x, dy = o.y - s.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < 1e-18) continue;
+      // Radical axis: midpoint shifted along d̂ by (wᵢ − wⱼ)/(2|d|).
+      const shift = (wi - (o.w || 0)) / (2 * d2);
+      const mx = (s.x + o.x) / 2 + dx * shift;
+      const my = (s.y + o.y) / 2 + dy * shift;
+      cell = clipLine(cell, mx, my, dx, dy);
     }
     return cell.length >= 3 ? cell : null;
   });
+}
+
+// The unweighted special case, kept for callers (and tests) that want plain
+// proximity cells.
+export function voronoiCells(seeds, boundary) {
+  return powerCells(seeds, boundary);
+}
+
+// Iteratively balance power-diagram weights so each seed's cell area
+// approaches its share of the boundary: cell i aims at
+// area(boundary) × targets[i] / Σtargets. Damped additive updates (a weight
+// is a squared length, as is an area error, so the units line up); weights
+// are re-centred each pass since only their differences matter. A vanished
+// cell reads as area 0, so its weight grows back until it reappears.
+// Returns the weights array; pass them back as `initial` for a warm start
+// (e.g. re-balancing live while a seed is dragged).
+export function balanceCellWeights(seeds, boundary, targets, { iters = 80, damp = 0.55, initial = null, tol = 0.01 } = {}) {
+  const n = seeds.length;
+  const A = Math.abs(polygonArea(boundary));
+  if (!n || !(A > 0)) return new Array(n).fill(0);
+  const sum = targets.reduce((t, v) => t + Math.max(v, 0), 0) || 1;
+  const want = targets.map((t) => (A * Math.max(t, 0)) / sum);
+  const w = initial && initial.length === n ? [...initial] : new Array(n).fill(0);
+  const weighted = seeds.map((s, i) => ({ x: s.x, y: s.y, w: w[i] }));
+  // The area's response to a weight change steepens as seeds get close, so a
+  // fixed step can overshoot and ring. Adaptive damping: whenever the worst
+  // error grows, the step shrinks; steady progress lets it creep back up.
+  let step = damp;
+  let prevWorst = Infinity;
+  let best = { worst: Infinity, w: [...w] };
+  for (let it = 0; it < iters; it++) {
+    for (let i = 0; i < n; i++) weighted[i].w = w[i];
+    const cells = powerCells(weighted, boundary);
+    let worst = 0;
+    for (let i = 0; i < n; i++) {
+      const area = cells[i] ? Math.abs(polygonArea(cells[i])) : 0;
+      worst = Math.max(worst, Math.abs(want[i] - area));
+    }
+    if (worst < best.worst) best = { worst, w: [...w] };
+    if (worst / A < tol) break;
+    if (worst > prevWorst * 1.001) step *= 0.6;
+    else step = Math.min(damp, step * 1.05);
+    prevWorst = worst;
+    let mean = 0;
+    for (let i = 0; i < n; i++) {
+      const area = cells[i] ? Math.abs(polygonArea(cells[i])) : 0;
+      w[i] += step * (want[i] - area);
+      mean += w[i];
+    }
+    mean /= n;
+    for (let i = 0; i < n; i++) {
+      w[i] -= mean; // only differences matter — keep the weights centred
+      w[i] = Math.max(-4 * A, Math.min(4 * A, w[i])); // runaway guard
+    }
+  }
+  return best.w;
 }
 
 // Ray-cast point-in-polygon (boundary points count as outside on some edges —

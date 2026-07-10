@@ -4,7 +4,7 @@ import { fmtArea, areaToM2, distToMeters, distUnit, leafSpaces, rootContainer, i
 // pdfExport is lazy-loaded on demand — keeps jsPDF out of the initial bundle.
 import { useHistory } from '../useHistory.js';
 import { SCALE_PRESETS, ratioToScale, scaleToRatio, zoomAbout } from '../scale.js';
-import { pinsOf, filterCss, parsePoly, regularPolygon, outlinePoints, polygonArea, polygonCentroid, hullOfDiscs, simplifyOutline, normalizePolygon, voronoiCells, pointInPolygon, closestPointOnPolygon } from '../geometry.js';
+import { pinsOf, filterCss, parsePoly, regularPolygon, outlinePoints, polygonArea, polygonCentroid, hullOfDiscs, simplifyOutline, normalizePolygon, powerCells, balanceCellWeights, pointInPolygon, closestPointOnPolygon } from '../geometry.js';
 import { pinPatch } from '../pins.js';
 import { edgeGap, adjacencyScore, closestInstancePair, aggregateByRoot, CONCEPT_THRESHOLDS_U } from '../adjacency.js';
 import { orderedLevels, levelRankMap } from '../floors.js';
@@ -857,20 +857,36 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   // to `a` / the required footprint.
   // The padded concept discs (bubble + hull padding) of a building's rooms —
   // the raw material both the hull match and the Voronoi seed mapping use.
-  function conceptDiscsOf(c) {
+  function conceptDiscsOf(c, { placeMissing = false } = {}) {
     const cache = layoutCache.get(cacheKeyFor('concept'));
     const maxLeaf = Math.max(...leaves.map(leafEa), 1);
     const rOf = (s) => 16 + 50 * Math.sqrt(leafEa(s) / maxLeaf); // concept (relative) radius
     const discs = [];
+    const missing = [];
     for (const l of leaves) {
       if (rootContainer(l, byId)?.id !== c.id) continue;
       const pins = pinsOf(l);
       for (let i = 0; i < Math.max(1, l.count || 1); i++) {
         // Concept position: the saved pin, else this session's concept layout.
         const p = pins[i] ?? (isConcept ? nodesRef.current.get(`${l.id}:${i}`) : cache?.get(`${l.id}:${i}`));
-        if (!p) continue;
-        discs.push({ x: p.x, y: p.y, r: rOf(l) + hullPad, s: l, i });
+        if (p) discs.push({ x: p.x, y: p.y, r: rOf(l) + hullPad, s: l, i });
+        else missing.push({ l, i });
       }
+    }
+    // The interior sketch must show EVERY room, even before the Concept view
+    // has ever been arranged — rooms without a concept position land on a
+    // deterministic golden-angle spiral around the others. Their cell SIZE
+    // comes from the power weights, so the crude position only decides which
+    // neighbours the cell touches. (Hull matching deliberately does not pass
+    // this flag — a hull of synthetic positions would be meaningless.)
+    if (placeMissing && missing.length) {
+      const cx = discs.length ? discs.reduce((t, d) => t + d.x, 0) / discs.length : W / 2;
+      const cy = discs.length ? discs.reduce((t, d) => t + d.y, 0) / discs.length : H / 2;
+      missing.forEach(({ l, i }, k) => {
+        const a = k * 2.39996; // golden angle
+        const rr = k === 0 && !discs.length ? 0 : 40 * Math.sqrt(k + 1);
+        discs.push({ x: cx + Math.cos(a) * rr, y: cy + Math.sin(a) * rr, r: rOf(l) + hullPad, s: l, i });
+      });
     }
     return discs;
   }
@@ -915,13 +931,24 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const seedRef = useRef(null); // { key, spaceId, idx, rootId, moved } while dragging a seed
   const seedOverride = useRef(new Map()); // instanceKey → world {x,y} until the pin round-trips
   useEffect(() => { seedOverride.current.clear(); }, [spaces, env, project.id]);
+  // The storey the interior sketch shows. The envelope is ONE floor plate, so
+  // a multi-level program always shows a single storey (ground by default —
+  // there is no "all floors" overlay; that would draw a fiction). Rooms with
+  // no level assigned count as ground, matching the 3-D view's convention.
+  const interiorStorey = levels.length >= 2 ? (levels.includes(interiorLevel) ? interiorLevel : levels[0]) : null;
+  const interiorStoreyOf = (s) => (s.level || '').trim() || levels[0];
+  // Balanced power-diagram weights per building — cached because they are
+  // invariant under rigid motion (dragging/rotating an envelope moves seeds
+  // and boundary together), keyed by everything that DOES change the relative
+  // geometry. Re-balanced live (warm-started) while a seed is dragged.
+  const cellWeightsRef = useRef(new WeakMap()); // interiorFrames → Map(key → weights[])
   // Per-building concept frame (discs + hull centroid/area) — the static part
   // of the seed mapping, recomputed only when the brief/pins change.
   const interiorFrames = useMemo(() => {
     if (!isEnvelope) return null;
     const m = new Map();
     for (const c of buildingRoots) {
-      const discs = conceptDiscsOf(c);
+      const discs = conceptDiscsOf(c, { placeMissing: true });
       if (!discs.length) continue;
       const hull = hullOfDiscs(discs);
       if (hull.length < 3) continue;
@@ -948,13 +975,12 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       const toWorld = (x, y) => ({ x: n.x + x * cos - y * sin, y: n.y + x * sin + y * cos });
       const boundary = verts.map((v) => toWorld(v.x, v.y));
       const f = Math.sqrt(areaUnits(c) / fr.hullArea);
-      // Storey filter: the envelope is ONE footprint, so a multi-level program
-      // shows one storey's rooms at a time when asked — 'all' overlays every
-      // floor (the historical behaviour). The mapping frame stays the whole
-      // building's hull either way, so seeds don't jump when filtering.
-      const discs = interiorLevel === 'all'
+      // Storey filter: one floor plate, one storey's rooms (see interiorStorey).
+      // The mapping frame stays the whole building's hull, so seeds don't jump
+      // when switching storeys.
+      const discs = interiorStorey == null
         ? fr.discs
-        : fr.discs.filter((d) => (d.s.level || '').trim() === interiorLevel);
+        : fr.discs.filter((d) => interiorStoreyOf(d.s) === interiorStorey);
       const seeds = discs.map((d) => {
         const key = `${d.s.id}:${d.i}`;
         let p = seedOverride.current.get(key) ?? toWorld((d.x - fr.hc.x) * f, (d.y - fr.hc.y) * f);
@@ -966,7 +992,32 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
         }
         return { x: p.x, y: p.y, s: d.s, i: d.i, key };
       });
-      const cells = voronoiCells(seeds, boundary);
+      // AREA-TRUE cells: a power diagram whose weights are balanced so each
+      // cell's share of the envelope matches the room's share of the storey's
+      // programme — the sketch reads as a plan, not as proximity luck. Weights
+      // are rigid-motion invariant, so the cache survives envelope drags;
+      // dragging a seed re-balances live from the previous solution.
+      // Balance on the BRIEF's areas (not the phantom-circle areaUnits, whose
+      // relative-mode +16 base offset compresses the ratios).
+      const targets = seeds.map((sd) => Math.max(leafEa(sd.s), 0.1));
+      let byBuilding = cellWeightsRef.current.get(interiorFrames);
+      if (!byBuilding) {
+        byBuilding = new Map();
+        cellWeightsRef.current.set(interiorFrames, byBuilding);
+      }
+      const wKey = `${c.id}|${interiorStorey ?? ''}|${Math.round(areaUnits(c))}|${c.shape_json || ''}|${targets.map((t) => Math.round(t)).join(',')}`;
+      const draggingHere = seedRef.current?.rootId === c.id;
+      let weights = byBuilding.get(wKey);
+      if (!weights || draggingHere) {
+        weights = balanceCellWeights(seeds, boundary, targets, draggingHere ? { iters: 14, initial: weights ?? null } : {});
+        byBuilding.set(wKey, weights);
+      }
+      const cells = powerCells(seeds.map((sd, ix) => ({ ...sd, w: weights[ix] })), boundary);
+      // Rooms linked to the current selection — their cells get a highlight so
+      // re-planning a seed can aim at its partners.
+      const relatedIds = selected != null
+        ? new Set(adjacencies.flatMap((l) => (l.space_a === selected ? [l.space_b] : l.space_b === selected ? [l.space_a] : [])))
+        : null;
       // Circulation (optional): each cell shrinks toward its seed to the
       // room's NET target area; the interstitial band left over renders as
       // hatched circulation. Off (0) → cells simply fill the envelope.
@@ -988,6 +1039,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
           poly: cell, seed: { x: sd.x, y: sd.y }, centre: polygonCentroid(cell),
           areaPU: cellPU, targetPU,
           tight: cellPU != null && cellPU < targetPU * 0.95,
+          related: !!relatedIds?.has(sd.s.id) && sd.s.id !== selected,
         });
       });
       if (cellsOut.length) out.push({ rootId: c.id, cells: cellsOut, boundary, circ });
@@ -2269,7 +2321,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
             fitScale={fitScale}
             onScaleSelect={onScaleSelect}
             interiorLevels={isEnvelope && interior && levels.length >= 2 ? levels : null}
-            interiorLevel={interiorLevel}
+            interiorLevel={interiorStorey ?? ''}
             onInteriorLevel={(v) => setPref('interiorLevel', v)}
             panel={panel}
             setPanel={setPanel}

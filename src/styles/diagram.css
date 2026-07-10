@@ -168,8 +168,34 @@
   stroke-dasharray: 4 3;
   stroke-opacity: 0.9;
 }
-.voronoi-name { font-size: 9.5px; font-weight: 600; pointer-events: none; }
-.voronoi-area { font-size: 8.5px; font-family: 'JetBrains Mono', monospace; opacity: 0.8; pointer-events: none; }
+/* Cells of rooms LINKED to the current selection — a placement aid while
+   re-planning a seed toward its partners. */
+.voronoi-cell.related .voronoi-fill {
+  stroke: var(--accent2, #56b6c2);
+  stroke-width: 1.6;
+  stroke-opacity: 0.95;
+  stroke-dasharray: 2 3;
+}
+/* A panel-coloured halo keeps the labels readable over the hatch and any
+   neighbouring cell colour. Font size is set per cell by the fitter. */
+.voronoi-name {
+  font-weight: 600;
+  pointer-events: none;
+  paint-order: stroke;
+  stroke: var(--panel);
+  stroke-width: 2.5px;
+  stroke-linejoin: round;
+}
+.voronoi-area {
+  font-size: 8.5px;
+  font-family: 'JetBrains Mono', monospace;
+  opacity: 0.85;
+  pointer-events: none;
+  paint-order: stroke;
+  stroke: var(--panel);
+  stroke-width: 2px;
+  stroke-linejoin: round;
+}
 .voronoi-cell.tight .voronoi-area { fill: var(--bad, #e5675f); opacity: 1; }
 /* Generous invisible ring over the seed dot — the real drag target. */
 .voronoi-seed-hit { fill: transparent; stroke: none; cursor: grab; }

@@ -155,13 +155,13 @@ export function StageTopbar({
         {showLayers && (
           <button className={`ctrl-btn ${panel === 'layers' ? 'active' : ''}`} onClick={() => setPanel(panel === 'layers' ? null : 'layers')} title="Image & satellite layers">⧉ Layers</button>
         )}
-        {/* Which storey the envelope interior sketch shows. The envelope is one
-            footprint, so a multi-level program reads clearer one floor at a time. */}
+        {/* Which storey the envelope interior sketch shows. The envelope is ONE
+            floor plate, so the sketch always shows a single storey — there is
+            deliberately no "all floors" overlay. */}
         {interiorLevels && (
-          <label className="ctrl-field" title="Which storey's rooms the interior sketch shows inside each envelope">
+          <label className="ctrl-field" title="Which storey's rooms the interior sketch shows inside each envelope (unassigned rooms count as ground)">
             <span className="ctrl-label">Interior</span>
             <select className="ctrl-select" value={interiorLevel} onChange={(e) => onInteriorLevel(e.target.value)}>
-              <option value="all">All floors</option>
               {interiorLevels.map((l) => <option key={l} value={l}>{l}</option>)}
             </select>
           </label>

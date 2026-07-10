@@ -811,10 +811,24 @@ export default function DiagramCanvas({
                     <path className="circ-fill" d={polygonPath(b.boundary)} fill="url(#circ-hatch)" />
                   )}
                   {b.cells.map((c) => {
-                    const showText = polygonArea(c.poly) > 700; // slivers keep just their seed
                     const isSelCell = selected === c.spaceId;
+                    // Fitted label: measured-width line breaks at a font scaled
+                    // to the cell (same fitter the bubbles use), name block
+                    // above centre and the area line below so neither collides
+                    // with the seed dot. Slivers keep just their seed + tooltip.
+                    const cb = polyBounds(c.poly);
+                    const cw = cb.maxX - cb.minX;
+                    const chh = cb.maxY - cb.minY;
+                    const fit = cw > 30 && chh > 24
+                      ? fitLabel({ label: c.name, maxWidth: cw * 0.8, baseSize: 10, minSize: 7, maxLines: 2 })
+                      : null;
+                    const lineH = fit ? fit.fontSize * 1.12 : 0;
+                    const showName = fit && fit.lines.length > 0 && fit.lines.length * lineH + 10 < chh * 0.9;
+                    const showArea = showName && c.areaPU != null && chh > fit.lines.length * lineH + 34
+                      && measureText(`${fmtArea(c.areaPU, units)} / ${fmtArea(c.targetPU, units)}`, 8.5) < cw * 0.85;
+                    const ink = darkHex(c.color, 0.62);
                     return (
-                      <g key={`vc:${c.key}`} className={`voronoi-cell ${c.tight ? 'tight' : ''}${isSelCell ? ' selected' : ''}`}>
+                      <g key={`vc:${c.key}`} className={`voronoi-cell ${c.tight ? 'tight' : ''}${isSelCell ? ' selected' : ''}${c.related ? ' related' : ''}`}>
                         <path
                           className="voronoi-fill"
                           d={polygonPath(c.poly)}
@@ -827,13 +841,22 @@ export default function DiagramCanvas({
 click to select · drag to move the building · drag the dot to re-plan the room`}
                           </title>
                         </path>
-                        {showText && (
-                          <text className="voronoi-name" x={c.centre.x} y={c.centre.y - (c.areaPU != null ? 3 : -3)} textAnchor="middle" fill={darkHex(c.color, 0.62)}>
-                            {c.name}
-                          </text>
-                        )}
-                        {showText && c.areaPU != null && (
-                          <text className="voronoi-area" x={c.centre.x} y={c.centre.y + 10} textAnchor="middle" fill={darkHex(c.color, 0.62)}>
+                        {showName &&
+                          fit.lines.map((line, li) => (
+                            <text
+                              key={li}
+                              className="voronoi-name"
+                              x={c.centre.x}
+                              y={c.centre.y - 7 - (fit.lines.length - 1 - li) * lineH}
+                              textAnchor="middle"
+                              fontSize={fit.fontSize}
+                              fill={ink}
+                            >
+                              {line}
+                            </text>
+                          ))}
+                        {showArea && (
+                          <text className="voronoi-area" x={c.centre.x} y={c.centre.y + 14} textAnchor="middle" fill={ink}>
                             {fmtArea(c.areaPU, units)} / {fmtArea(c.targetPU, units)}
                           </text>
                         )}

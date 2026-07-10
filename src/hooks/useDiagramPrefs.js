@@ -36,7 +36,7 @@ export function initialDiagramPrefs(store = prefs) {
     snapEdges: store.getBool('snapedges', true), // snap to neighbour edges/corners
     snapGrid: store.getBool('snapgrid', true), // snap to the metric grid
     interior: store.getBool('interior', true), // Voronoi room sketch inside envelopes
-    interiorLevel: 'all', // which storey the interior sketch shows ('all' | level label)
+    interiorLevel: 'all', // storey the interior sketch shows (level label; unset/stale → ground)
   };
 }
 

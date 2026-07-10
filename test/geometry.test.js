@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { convexHull, concaveHull, hullOfDiscs, clipHalfPlane, voronoiCells, pointInPolygon,
+import { convexHull, concaveHull, hullOfDiscs, clipHalfPlane, voronoiCells, powerCells, balanceCellWeights, pointInPolygon,
   closestPointOnPolygon, smoothHullPath, pinsOf, filterCss, IMAGE_FILTERS,
   polygonArea, polygonCentroid, normalizePolygon, parsePoly, polygonPath, polyBounds,
   regularPolygon, lShape, smoothPolygonPoints, solveAreaLockedVertex,
@@ -310,6 +310,50 @@ test('voronoiCells: a lone seed owns the whole boundary; co-located seeds do not
   const twin = voronoiCells([{ x: 3, y: 3 }, { x: 3, y: 3 }, { x: 8, y: 8 }], unitSquare);
   // The two co-located seeds share the same (identical) cell rather than clipping each other away.
   assert.ok(twin[0] && twin[1] && polygonArea(twin[0]) > 0);
+});
+
+test('powerCells with equal weights is the Voronoi diagram', () => {
+  const seeds = [{ x: 2, y: 2, w: 7 }, { x: 8, y: 2, w: 7 }, { x: 2, y: 8, w: 7 }, { x: 8, y: 8, w: 7 }];
+  const cells = powerCells(seeds, unitSquare);
+  for (const c of cells) assert.ok(Math.abs(polygonArea(c) - 25) < 1e-6, 'equal weights → equal quarters');
+});
+
+test('powerCells: a heavier seed claims more area, and cells still tile exactly', () => {
+  const seeds = [{ x: 3, y: 5, w: 8 }, { x: 7, y: 5, w: 0 }];
+  const [heavy, light] = powerCells(seeds, unitSquare);
+  // Radical axis shifts by (8−0)/(2·4) = 1 toward the light seed → split at x=6.
+  assert.ok(Math.abs(polygonArea(heavy) - 60) < 1e-6, `heavy cell is 60 (${polygonArea(heavy)})`);
+  assert.ok(Math.abs(polygonArea(light) - 40) < 1e-6);
+  assert.ok(Math.abs(polygonArea(heavy) + polygonArea(light) - 100) < 1e-6, 'still a partition');
+});
+
+test('balanceCellWeights converges cell areas onto the target shares', () => {
+  const seeds = [{ x: 3, y: 3 }, { x: 7, y: 4 }, { x: 4, y: 8 }];
+  const targets = [6, 3, 1]; // 60 / 30 / 10 of the 100-area square
+  const w = balanceCellWeights(seeds, unitSquare, targets);
+  const cells = powerCells(seeds.map((s, i) => ({ ...s, w: w[i] })), unitSquare);
+  const areas = cells.map((c) => (c ? polygonArea(c) : 0));
+  assert.ok(Math.abs(areas[0] - 60) < 3, `cell 0 ≈ 60 (${areas[0].toFixed(1)})`);
+  assert.ok(Math.abs(areas[1] - 30) < 3, `cell 1 ≈ 30 (${areas[1].toFixed(1)})`);
+  assert.ok(Math.abs(areas[2] - 10) < 3, `cell 2 ≈ 10 (${areas[2].toFixed(1)})`);
+  assert.ok(Math.abs(areas[0] + areas[1] + areas[2] - 100) < 1e-6, 'still a partition');
+});
+
+test('balanceCellWeights revives a cell that a big neighbour squeezed out', () => {
+  // Start with weights that make seed 1's cell vanish; the balancer must grow
+  // it back to its (substantial) target share.
+  const seeds = [{ x: 4, y: 5 }, { x: 6, y: 5 }];
+  const w = balanceCellWeights(seeds, unitSquare, [1, 1], { initial: [300, -300] });
+  const cells = powerCells(seeds.map((s, i) => ({ ...s, w: w[i] })), unitSquare);
+  const a1 = cells[1] ? polygonArea(cells[1]) : 0;
+  assert.ok(Math.abs(a1 - 50) < 3, `squeezed cell recovered to ≈ 50 (${a1.toFixed(1)})`);
+});
+
+test('balanceCellWeights handles degenerate inputs without blowing up', () => {
+  assert.deepEqual(balanceCellWeights([], unitSquare, []), []);
+  const lone = balanceCellWeights([{ x: 5, y: 5 }], unitSquare, [42]);
+  assert.equal(lone.length, 1);
+  assert.ok(Number.isFinite(lone[0]));
 });
 
 test('pointInPolygon and closestPointOnPolygon agree about a square', () => {
