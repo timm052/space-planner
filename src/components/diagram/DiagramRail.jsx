@@ -15,6 +15,7 @@ export default function DiagramRail({
   groups,
   groupKey,
   areaTree,
+  grouping, // 'category' | 'building' — follows the topbar Colour control
   stackData,
   stackLevels,
   levelHeightOf,
@@ -23,8 +24,6 @@ export default function DiagramRail({
   onPickFloor,
   focusBuilding,
   onFocusBuilding,
-  areaMode,
-  setAreaMode,
   collapsed,
   toggleCollapse,
   colorForLabel,
@@ -67,15 +66,12 @@ export default function DiagramRail({
             <span className="sec-tag">A·01</span>
             <span className="sec-title">Areas</span>
           </div>
-          {hasBuildings && (
-            <div className="seg small">
-              <button className={`seg-btn ${areaMode === 'category' ? 'active' : ''}`} onClick={() => setAreaMode('category')}>Category</button>
-              <button className={`seg-btn ${areaMode === 'building' ? 'active' : ''}`} onClick={() => setAreaMode('building')}>Building</button>
-            </div>
-          )}
+          {/* Grouping follows the topbar Colour control — one switch drives
+              both the canvas colouring and this schedule's grouping. */}
+          {hasBuildings && <span className="muted mono rail-head-count">by {grouping}</span>}
         </div>
         <div className="split-rows">
-          {areaMode === 'building' && hasBuildings
+          {grouping === 'building' && hasBuildings
             ? [...areaTree.entries()].map(([b, levels]) => {
                 const bKey = `b:${b}`;
                 const open = !collapsed.has(bKey);
@@ -217,7 +213,8 @@ export default function DiagramRail({
       <section className="rail-section rel">
         <div className="rail-head">
           <div className="sec-head">
-            <span className="sec-tag t-accent2">A·03</span>
+            {/* Numbered after Stacking when that section is present. */}
+            <span className="sec-tag t-accent2">{stackData && stackData.length > 0 ? 'A·03' : 'A·02'}</span>
             <span className="sec-title">Adjacency</span>
           </div>
           <span className="muted mono rail-head-count">

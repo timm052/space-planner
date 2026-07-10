@@ -9,6 +9,19 @@
 // Edge-to-edge gap (metres) under which an adjacency counts as satisfied.
 export const DEFAULT_THRESHOLDS_M = { required: 2, desired: 12 };
 
+// Concept is scale-free, so its links are graded in diagram units against the
+// force sim's own geometry. These are the rest gaps the adjacency springs aim
+// at (edge to edge); the collision force separately keeps ALL bubbles ~20u
+// apart, which is why "met" can't be "touching" — a settled, fully-honoured
+// layout would score 0. A link is met when it sits within its spring's rest
+// gap plus a little slack for sim jitter.
+export const CONCEPT_REST_GAP_U = { required: 20, desired: 90 };
+const CONCEPT_SLACK_U = 8;
+export const CONCEPT_THRESHOLDS_U = {
+  required: CONCEPT_REST_GAP_U.required + CONCEPT_SLACK_U,
+  desired: CONCEPT_REST_GAP_U.desired + CONCEPT_SLACK_U,
+};
+
 // Required relationships matter more than desired ones.
 export const LINK_WEIGHT = { required: 2, desired: 1 };
 
@@ -67,6 +80,36 @@ export function adjacencyScore(links, { thresholds = DEFAULT_THRESHOLDS_M, weigh
     totalWeight,
     unmet,
   };
+}
+
+// Roll room-to-room links up to their top-level containers. The envelope
+// master plan draws buildings, not rooms, so a relationship between rooms in
+// DIFFERENT buildings becomes one building-to-building link; same-building
+// links disappear (they are an interior concern, graded in Concept/Building).
+// `rootIdOf(space)` maps a space to its building root id (null = floating,
+// dropped). Returns pseudo-links [{ id: 'agg:a:b', space_a, space_b, strength,
+// count }] — strength is the strongest member ('required' wins), count how
+// many room links rolled up. The synthetic ids mark them read-only for the UI.
+export function aggregateByRoot(adjacencies, byId, rootIdOf) {
+  const m = new Map();
+  for (const l of adjacencies) {
+    const sa = byId.get(l.space_a);
+    const sb = byId.get(l.space_b);
+    if (!sa || !sb) continue;
+    const ra = rootIdOf(sa);
+    const rb = rootIdOf(sb);
+    if (ra == null || rb == null || ra === rb) continue;
+    const [a, b] = ra < rb ? [ra, rb] : [rb, ra];
+    const key = `${a}:${b}`;
+    const cur = m.get(key);
+    if (cur) {
+      cur.count++;
+      if (l.strength === 'required') cur.strength = 'required';
+    } else {
+      m.set(key, { id: `agg:${key}`, space_a: a, space_b: b, strength: l.strength, count: 1 });
+    }
+  }
+  return [...m.values()];
 }
 
 // UI colour band for a 0..1 score: 'good' | 'warn' | 'bad' | null.

@@ -26,14 +26,17 @@ milestone into a recorded snapshot measured against it:
   - **◯ Concept** — bubbles & relationships. One bubble per room, sized
     *relative* to the largest (scale-free), coloured by department or building,
     with the force layout, links (desired/required), pinning (`P`), momentary
-    auto-layout (`A`) and a topological adjacency hint.
+    auto-layout (`A`) and an adjacency score graded against the layout the
+    simulation aims for.
   - **▱ Master plan** — building **envelopes** on the scaled site. Each
     building is one footprint: place it from the tray (seeds a hexagonal
     outline area-locked to the **required footprint** — the biggest storey),
     reshape its outline, rotate it, and read the drawn-vs-required badge (red
-    when the envelope is too small for the brief). No simulation — nothing
-    moves by itself; overlaps warn instead of pushing apart. Flat briefs
-    without buildings place rooms directly.
+    when the envelope is too small for the brief). Room relationships that
+    cross buildings roll up into building-to-building links between the
+    envelopes, graded in metres. No simulation — nothing moves by itself;
+    overlaps warn instead of pushing apart. Flat briefs without buildings
+    place rooms directly.
   - **▤ Building** — floors & massing. **Block up** lays each building's rooms
     out per floor (linked rooms seeded adjacent) inside its envelope, drawn as
     a dashed underlay. Rooms are area-locked rectangles (corner-drag resize,

@@ -6,7 +6,7 @@ import { useHistory } from '../useHistory.js';
 import { SCALE_PRESETS, ratioToScale, scaleToRatio, zoomAbout } from '../scale.js';
 import { pinsOf, filterCss, parsePoly, regularPolygon, outlinePoints, polygonArea, polygonCentroid, hullOfDiscs, simplifyOutline, normalizePolygon, voronoiCells, pointInPolygon, closestPointOnPolygon } from '../geometry.js';
 import { pinPatch } from '../pins.js';
-import { edgeGap, adjacencyScore, closestInstancePair } from '../adjacency.js';
+import { edgeGap, adjacencyScore, closestInstancePair, aggregateByRoot, CONCEPT_THRESHOLDS_U } from '../adjacency.js';
 import { orderedLevels, levelRankMap } from '../floors.js';
 import { buildStackScene, build3DScene } from './diagram/scenes.js';
 import * as selection from './diagram/selection.js';
@@ -66,6 +66,9 @@ const ENV_CAPS = {
 // every non-pinned bubble's position and let the sim re-scatter them on return.
 // This module-level cache keeps the last layout per project for the session.
 const layoutCache = new Map(); // projectId → Map(instanceKey → {x,y})
+// Each environment also keeps its own pan framing for the session — the site
+// framing that suits the Master plan rarely suits the scale-free Concept.
+const viewCache = new Map(); // `projectId:env` → {x,y}
 
 export default function BubbleTab({ project, spaces, adjacencies, images = [], onChanged, selectedSpaceId = null, onSelectSpace }) {
   // Selection + link-tool state lives in one pure state machine (see
@@ -120,7 +123,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   // auto-layout forces, …) live in one hook; persisted keys round-trip
   // through prefs.js. The destructure keeps every read site unchanged.
   const { view: viewPrefs, setPref } = useDiagramPrefs();
-  const { split, colorBy, hulls, hullPad, railW, areaMode, collapsed,
+  const { split, colorBy, hulls, hullPad, railW, collapsed,
     floorView, floorGap, stackCam, stackImages, cam3d, nodeForce, buildingForce, snapEdges, snapGrid, interior } = viewPrefs;
 
   // Apply a selection transition: set the next state and run its declared
@@ -212,6 +215,10 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   function switchEnv(next) {
     if (next === env) return;
     stashLayout(env); // remember where the current env's rooms are before re-seeding
+    // Each env keeps its own framing: stash this env's pan, restore the next's.
+    viewCache.set(cacheKeyFor(env), { ...viewRef.current });
+    const v = viewCache.get(cacheKeyFor(next));
+    if (v) setView(v);
     setEnv(next);
     setPanel(null); // close any layer/more popover that doesn't belong to the new env
     saveProject({ diagram_env: next }, { silent: true });
@@ -222,6 +229,18 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   // floors can be arranged without the neighbours' noise.
   const [focusBuilding, setFocusBuilding] = useState(null); // root container id | null
   useEffect(() => setFocusBuilding(null), [project.id, env]);
+
+  // Changing environment drops the selection — carried across envs it would
+  // offer the wrong actions (a room selected in Concept isn't drawable in the
+  // envelope plan). Guarded by a ref so mounting doesn't clear the shared
+  // Brief → Diagram selection handoff.
+  const envSelResetRef = useRef(env);
+  useEffect(() => {
+    if (envSelResetRef.current === env) return;
+    envSelResetRef.current = env;
+    applySel(selection.escape);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [env]);
 
   // Auto-layout is a MOMENTARY action, not a persistent toggle. Pressing it
   // re-energises the force sim for a single settling pass that cools to a stop
@@ -1206,7 +1225,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   // to be listed in the effect deps.
   // Master plan is authored, not simulated — the force sim is off there so
   // nothing drifts. Concept (and Building's fallback) keep the sim.
-  useSimulation({ enabled: caps.sim, instances, leaves, adjacencies, byId, autoRunRef, setAutoRunning, effScale, nodesRef, alphaRef, dragRef, relaxRef, radiusOf, instPin, groupKey, clusterKey, nodeForce, buildingForce, setTick });
+  useSimulation({ enabled: caps.sim, instances, leaves, adjacencies, byId, autoRunRef, setAutoRunning, nodesRef, alphaRef, dragRef, relaxRef, radiusOf, instPin, groupKey, clusterKey, nodeForce, buildingForce, setTick });
 
   // Closest instance pair between two spaces — used by PDF export, adjacency
   // rendering, and the scale bar. Reads nodesRef so it is always current.
@@ -1561,7 +1580,12 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   }
 
   // Clicking a link selects it (Select mode) → shows the link action bar.
-  const onLinkClick = (l) => applySel((s) => linking.selectLink(s, l));
+  // Aggregated building-to-building links (envelope master plan) are derived,
+  // not stored — there is nothing to edit, so they don't select.
+  const onLinkClick = (l) => {
+    if (String(l.id).startsWith('agg:')) return;
+    applySel((s) => linking.selectLink(s, l));
+  };
 
   // ---------- scale & split ----------
   async function onScaleSelect(value) {
@@ -1986,6 +2010,18 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       envHint = { text: 'All rooms are on one level — assign levels in the Brief to unlock per-floor editing, the stacking readout and the 3-D massing view.' };
     } else if (isConcept && adjacencies.length === 0) {
       envHint = { text: 'No relationships declared yet — press L (Link tool), then click two rooms to say they belong near each other.' };
+    } else if (isConcept && mpStats.placed === 0) {
+      // Next stage in the pipeline: the relationships exist but nothing is on
+      // the site yet — point at the Master plan.
+      envHint = {
+        text: 'Relationships in place? The next step is the Master plan — put the buildings on the scaled site.',
+        action: { label: '▱ Master plan', run: () => switchEnv('masterplan') },
+      };
+    } else if (isMasterplan && mpStats.total > 0 && mpStats.placed === mpStats.total && blockStats.placed === 0) {
+      envHint = {
+        text: 'Everything is placed on the site — next, block the rooms up into floors in the Building environment.',
+        action: { label: '▤ Building', run: () => switchEnv('building') },
+      };
     }
   }
 
@@ -1994,14 +2030,22 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   // so it is NOT computed on the chrome render path: the toolbar badge
   // recomputes it on throttled sim ticks (AdjacencyBadge) and the SVG derives
   // unmet links per tick inside the TickLayer, only while highlighting.
-  // Concept is scale-free, so its adjacency reading is TOPOLOGICAL — a link is
-  // "met" when its bubbles actually touch (edge gap ≤ 0), not by a metric
-  // distance. Master plan / Building grade the real edge-to-edge gap in metres
-  // (needs a scale). Same scorer, different gap unit + threshold.
+  // Concept is scale-free, so its adjacency reading is graded in diagram
+  // units against the sim's own rest gaps (CONCEPT_THRESHOLDS_U) — a link is
+  // "met" when its bubbles sit where the springs put them. Master plan /
+  // Building grade the real edge-to-edge gap in metres (needs a scale). Same
+  // scorer, different gap unit + threshold.
+  // The envelope master plan draws buildings, not rooms — room-to-room links
+  // roll up into building-to-building pseudo-links (read-only), drawn between
+  // the envelopes and graded like any other metric link. Rooms outside a
+  // building keep their own links. Everywhere else this is just `adjacencies`.
+  const mpUnitIdOf = (s) => rootContainer(s, byId)?.id ?? s.id;
+  const displayAdjacencies = isEnvelope ? aggregateByRoot(adjacencies, byId, mpUnitIdOf) : adjacencies;
+
   const computeAdjacency = () => {
     const metric = !isConcept && effScale;
     if (!isConcept && !effScale) return adjacencyScore([]); // metric needs a scale
-    const links = adjacencies
+    const links = displayAdjacencies
       .map((l) => {
         const sa = byId.get(l.space_a);
         const sb = byId.get(l.space_b);
@@ -2012,14 +2056,14 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
         return { id: l.id, strength: l.strength, gap: metric ? gapU * effScale : gapU };
       })
       .filter(Boolean);
-    // Topological: threshold 0 → credit only when the bubbles are touching.
-    return adjacencyScore(links, metric ? undefined : { thresholds: { required: 0, desired: 0 } });
+    // Scale-free: judge against the Concept sim's rest gaps (see adjacency.js).
+    return adjacencyScore(links, metric ? undefined : { thresholds: CONCEPT_THRESHOLDS_U });
   };
-  // Concept shows the topological hint (no scale needed); Master plan / Building
-  // show the metric score (needs a real scale). The envelope master plan draws
-  // buildings, not rooms, so a room-to-room score has no geometry to read —
-  // relationships are graded in Concept and per floor in Building instead.
-  const showScore = adjacencies.length > 0 && !isEnvelope && (isConcept || !!effScale);
+  // Concept grades against the sim's rest gaps (no scale needed); Master plan /
+  // Building grade metrically (needs a real scale). The envelope master plan
+  // grades the rolled-up building-to-building links — hidden when every link
+  // is internal to one building (nothing to grade between envelopes).
+  const showScore = displayAdjacencies.length > 0 && (isConcept || !!effScale);
 
   // ---- Floor view: all together / one level / stacked isometric planes ----
   // Each floor is a flat plane shown isometrically. 'offset' raises each storey
@@ -2200,7 +2244,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
             showScore={showScore}
             tickStore={tickStore}
             computeAdjacency={computeAdjacency}
-            adjDataKey={`${adjacencies.length}:${spaces.length}:${effScale ?? 0}`}
+            adjDataKey={`${env}:${adjacencies.length}:${spaces.length}:${effScale ?? 0}`}
             highlightGaps={highlightGaps}
             onToggleGaps={() => setHighlightGaps((v) => !v)}
             onExportPng={exportPng}
@@ -2445,7 +2489,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
             units={units}
             nodes={nodes}
             instances={instances}
-            adjacencies={adjacencies}
+            adjacencies={displayAdjacencies}
             byId={byId}
             imgLayers={caps.layers === 'none' ? [] : imgLayers}
             selected={selected}
@@ -2578,8 +2622,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
           onPickFloor={(lvl) => setPref('floorView', lvl || 'all')}
           focusBuilding={focusBuilding}
           onFocusBuilding={(id) => setFocusBuilding((cur) => (cur === id ? null : id))}
-          areaMode={areaMode}
-          setAreaMode={(m) => setPref('areaMode', m)}
+          grouping={colorBy === 'building' && hasBuildings ? 'building' : 'category'}
           collapsed={collapsed}
           toggleCollapse={toggleCollapse}
           colorForLabel={colorForLabel}

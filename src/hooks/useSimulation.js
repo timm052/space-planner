@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { closestInstancePair, DEFAULT_THRESHOLDS_M } from '../adjacency.js';
+import { closestInstancePair, CONCEPT_REST_GAP_U } from '../adjacency.js';
 
 /**
  * Runs the force-directed bubble simulation in a requestAnimationFrame loop.
@@ -29,7 +29,6 @@ import { closestInstancePair, DEFAULT_THRESHOLDS_M } from '../adjacency.js';
  * @param {Map}           params.byId        - Map<spaceId, space> for adjacency lookup.
  * @param {React.MutableRefObject} params.autoRunRef - True while a momentary auto-layout pass is active.
  * @param {function}      params.setAutoRunning - Clears the button's active state when the pass settles.
- * @param {number|null}   params.effScale    - Metres per diagram unit; affects collision gap.
  * @param {React.MutableRefObject} params.nodesRef   - The node-position map.
  * @param {React.MutableRefObject} params.alphaRef   - Simulation cooling parameter (0..1).
  * @param {React.MutableRefObject} params.dragRef    - Current drag state (null when idle).
@@ -46,7 +45,6 @@ export function useSimulation({
   byId,
   autoRunRef,
   setAutoRunning,
-  effScale,
   nodesRef,
   alphaRef,
   dragRef,
@@ -95,17 +93,12 @@ export function useSimulation({
     // Closest instance pair between two spaces (for adjacency springs).
     const closestPair = (sa, sb) => closestInstancePair(nodesRef.current, sa, sb);
 
-    // Adjacency spring rest GAP (edge to edge, diagram units). With a real
-    // scale the springs aim at the same metre thresholds the compliance score
-    // grades against (see adjacency.js), so auto-layout optimises exactly what
-    // the badge measures; without a scale, fall back to the classic px gaps.
-    const restGapUnits = (strength) => {
-      if (effScale) {
-        const t = DEFAULT_THRESHOLDS_M[strength] ?? DEFAULT_THRESHOLDS_M.desired;
-        return Math.min(240, t / effScale);
-      }
-      return strength === 'required' ? 20 : 90;
-    };
+    // Adjacency spring rest GAP (edge to edge, diagram units). The sim only
+    // runs in the scale-free Concept environment, so these are the shared
+    // Concept constants the compliance score also grades against (see
+    // adjacency.js) — auto-layout optimises exactly what the badge measures.
+    const restGapUnits = (strength) =>
+      CONCEPT_REST_GAP_U[strength] ?? CONCEPT_REST_GAP_U.desired;
 
     // One physics pass. `collideOnly` skips every layout force and resolves
     // hard overlaps only — used briefly after a drop so neighbours step aside
@@ -138,7 +131,7 @@ export function useSimulation({
             let dy = b.n.y - a.n.y;
             let d = Math.hypot(dx, dy);
             if (d === 0) ((dx = Math.random() - 0.5), (dy = Math.random() - 0.5), (d = Math.hypot(dx, dy)));
-            const minD = a.r + b.r + (effScale ? 14 : 20);
+            const minD = a.r + b.r + 20;
             if (d >= minD) continue;
             const aF = fixedInst(a) || !!holdKeys?.has(a.key);
             const bF = fixedInst(b) || !!holdKeys?.has(b.key);
@@ -234,7 +227,7 @@ export function useSimulation({
           let dy = b.n.y - a.n.y;
           let d = Math.hypot(dx, dy);
           if (d === 0) ((dx = Math.random() - 0.5), (dy = Math.random() - 0.5), (d = Math.hypot(dx, dy)));
-          const minD = a.r + b.r + (effScale ? 14 : 20);
+          const minD = a.r + b.r + 20;
           const aF = fixedInst(a);
           const bF = fixedInst(b);
           if (aF && bF) continue;
@@ -318,5 +311,5 @@ export function useSimulation({
     raf = requestAnimationFrame(step);
     return () => cancelAnimationFrame(raf);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [instances, adjacencies, effScale]);
+  }, [instances, adjacencies]);
 }

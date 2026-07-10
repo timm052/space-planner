@@ -542,6 +542,11 @@ export default function DiagramCanvas({
                 const connected = selected != null && (l.space_a === selected || l.space_b === selected);
                 return (
                   <g key={l.id} className="link-hit" onClick={() => onLinkClick(l)}>
+                    {/* Aggregated building-to-building links carry how many room
+                        relationships rolled up into them. */}
+                    {l.count > 0 && (
+                      <title>{`${sa.name} ↔ ${sb.name} — ${l.count} room relationship${l.count === 1 ? '' : 's'} between these buildings`}</title>
+                    )}
                     <line x1={pair.a.x} y1={pair.a.y} x2={pair.b.x} y2={pair.b.y} className="link-hitarea" />
                     <line
                       x1={pair.a.x}

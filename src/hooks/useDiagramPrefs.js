@@ -25,7 +25,6 @@ export function initialDiagramPrefs(store = prefs) {
     hulls: store.getBool('hulls', false), // category hulls overlay
     hullPad: store.getNum('hullpad', 0) || 26, // hull padding around bubbles
     railW: store.getNum('railw', 0) || 340, // rail width (px)
-    areaMode: 'category', // Areas panel grouping
     collapsed: new Set(), // collapsed Areas groups
     floorView: 'all', // 'all' | <level label> | 'offset' | 'overlaid' | '3d'
     floorGap: 0.6, // floor spacing as a fraction of plate height
