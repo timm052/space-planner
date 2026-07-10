@@ -28,7 +28,9 @@ function imageFormat(dataUrl) {
 
 // scene = {
 //   bounds:{minX,minY,maxX,maxY}, layers:[{dataUrl,x,y,w,h,opacity}],
-//   links:[{x1,y1,x2,y2,strength}], bubbles:[{x,y,r,color,opacity,label,sublabel}],
+//   links:[{x1,y1,x2,y2,strength}],
+//   bubbles:[{x,y,r,color,opacity,label,sublabel,poly?,labelAbove?}],
+//   cells:[{poly,r,color,label,sublabel}] — interior room cells (master plan),
 //   scale:{ratioLabel, scaleBar:{lenUnits,label}}|null, north:{deg}|null,
 //   title:{name,client,stage,sheet,scaleLabel,date}
 // }   — all geometry in diagram units.
@@ -132,6 +134,42 @@ function renderSheet(doc, scene, { page, mmPerUnit, reduced }) {
   }
   doc.setLineDashPattern([], 0);
 
+  // Interior room cells (master-plan sketch) — light area-true fills under
+  // the envelope outlines, each with a small name/area label.
+  const polyDeltas = (poly) => {
+    const deltas = [];
+    for (let i = 1; i < poly.length; i++)
+      deltas.push([X(poly[i].x) - X(poly[i - 1].x), Y(poly[i].y) - Y(poly[i - 1].y)]);
+    return deltas;
+  };
+  for (const c of scene.cells ?? []) {
+    const [r, g, bl] = hexToRgb(c.color);
+    doc.saveGraphicsState();
+    doc.setGState(new doc.GState({ opacity: 0.3 }));
+    doc.setFillColor(r, g, bl);
+    doc.lines(polyDeltas(c.poly), X(c.poly[0].x), Y(c.poly[0].y), [1, 1], 'F', true);
+    doc.restoreGraphicsState();
+    doc.setDrawColor(Math.round(r * 0.75), Math.round(g * 0.75), Math.round(bl * 0.75));
+    doc.setLineWidth(0.2);
+    doc.lines(polyDeltas(c.poly), X(c.poly[0].x), Y(c.poly[0].y), [1, 1], 'S', true);
+    // Label at the cell's centroid, sized to the cell like a small bubble.
+    let cx = 0, cy = 0;
+    for (const p of c.poly) { cx += p.x; cy += p.y; }
+    cx /= c.poly.length; cy /= c.poly.length;
+    const rmm = c.r * mmPerUnit;
+    if (rmm > 3.5) {
+      const pt = Math.max(4, Math.min(7, rmm * 0.7));
+      doc.setTextColor(30, 30, 30);
+      doc.setFontSize(pt);
+      doc.text(c.label, X(cx), Y(cy) - 0.3, { align: 'center', baseline: 'middle' });
+      if (c.sublabel && rmm > 5.5) {
+        doc.setFontSize(Math.max(3.5, pt * 0.8));
+        doc.setTextColor(70, 70, 70);
+        doc.text(c.sublabel, X(cx), Y(cy) + pt * 0.5, { align: 'center', baseline: 'middle' });
+      }
+    }
+  }
+
   // Bubbles (or boxes). Outline style draws stroke only, to match the viewport.
   const outline = scene.bubbleStyle === 'outline';
   for (const b of scene.bubbles) {
@@ -159,15 +197,25 @@ function renderSheet(doc, scene, { page, mmPerUnit, reduced }) {
     doc.setLineWidth(outline ? 0.4 : 0.25);
     drawShape('S');
 
-    // Label, scaled to the bubble but kept legible.
+    // Label, scaled to the bubble but kept legible. An envelope whose interior
+    // is sketched (labelAbove) wears its name above the outline instead —
+    // its centre belongs to the room cells.
     const pt = Math.max(4.5, Math.min(9, rmm * 0.9));
-    doc.setTextColor(30, 30, 30);
-    doc.setFontSize(pt);
-    doc.text(b.label, X(b.x), Y(b.y) - (b.sublabel ? 0.3 : -pt * 0.12), { align: 'center', baseline: 'middle' });
-    if (b.sublabel && rmm > 6) {
-      doc.setFontSize(Math.max(4, pt * 0.8));
+    if (b.labelAbove && b.poly) {
+      let topY = Infinity;
+      for (const p of b.poly) topY = Math.min(topY, p.y);
       doc.setTextColor(70, 70, 70);
-      doc.text(b.sublabel, X(b.x), Y(b.y) + pt * 0.5, { align: 'center', baseline: 'middle' });
+      doc.setFontSize(6.5);
+      doc.text(`${b.label} · ${b.sublabel}`, X(b.x), Y(topY) - 2, { align: 'center', baseline: 'bottom' });
+    } else {
+      doc.setTextColor(30, 30, 30);
+      doc.setFontSize(pt);
+      doc.text(b.label, X(b.x), Y(b.y) - (b.sublabel ? 0.3 : -pt * 0.12), { align: 'center', baseline: 'middle' });
+      if (b.sublabel && rmm > 6) {
+        doc.setFontSize(Math.max(4, pt * 0.8));
+        doc.setTextColor(70, 70, 70);
+        doc.text(b.sublabel, X(b.x), Y(b.y) + pt * 0.5, { align: 'center', baseline: 'middle' });
+      }
     }
   }
 

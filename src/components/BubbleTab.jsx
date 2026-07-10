@@ -134,6 +134,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const selRef = useRef(sel);
   selRef.current = sel;
   function applySel(transition) {
+    const prevSelected = selRef.current.selected;
     const { sel: next, fx } = transition(selRef.current);
     selRef.current = next;
     setSel(next);
@@ -141,6 +142,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       if (f.type === 'notify') onSelectSpace?.(f.id);
       else if (f.type === 'maybeCreateLink' && !findPair(f.a, f.b)) createLink(f.a, f.b, f.kind);
     }
+    // Every selection change funnels through here (canvas, rail, Brief sync) —
+    // the interior sketch follows the selection onto its storey.
+    if (next.selected != null && next.selected !== prevSelected) followInteriorStorey(next.selected);
   }
   const draftTimers = useRef(new Map());
   const nodesRef = useRef(new Map());
@@ -937,6 +941,17 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   // no level assigned count as ground, matching the 3-D view's convention.
   const interiorStorey = levels.length >= 2 ? (levels.includes(interiorLevel) ? interiorLevel : levels[0]) : null;
   const interiorStoreyOf = (s) => (s.level || '').trim() || levels[0];
+  // Selecting a room that lives on another storey pulls the sketch to that
+  // storey — otherwise the new selection would be invisible in the interior.
+  // Called from applySel on every selection change; inert outside the
+  // envelope master plan or when the sketch is off.
+  function followInteriorStorey(id) {
+    if (!isEnvelope || !interior || levels.length < 2) return;
+    const s = byId.get(id);
+    if (!s || isContainerKind(s) || !rootContainer(s, byId)) return;
+    const lvl = interiorStoreyOf(s);
+    if (levels.includes(lvl) && lvl !== interiorStorey) setPref('interiorLevel', lvl);
+  }
   // Balanced power-diagram weights per building — cached because they are
   // invariant under rigid motion (dragging/rotating an envelope moves seeds
   // and boundary together), keyed by everything that DOES change the relative
@@ -1823,6 +1838,52 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     return [[-bw / 2, -bh / 2], [bw / 2, -bh / 2], [bw / 2, bh / 2], [-bw / 2, bh / 2]]
       .map(([x, y]) => ({ x: pos.x + x * c - y * sn, y: pos.y + x * sn + y * c }));
   };
+  // Interior room cells for one envelope, from PERSISTED data — the sheet
+  // twin of makeInterior (no live node/drag state, no weight cache): the same
+  // concept-frame seed mapping, area-balanced power cells and circulation
+  // shrink, so the exported sketch matches what the canvas shows.
+  function sheetInteriorCells(c, boundary, pos, area) {
+    const fr = interiorFrames?.get(c.id);
+    if (!fr) return [];
+    const rad = ((pos.rot || 0) * Math.PI) / 180;
+    const cos = Math.cos(rad), sin = Math.sin(rad);
+    const toWorld = (x, y) => ({ x: pos.x + x * cos - y * sin, y: pos.y + x * sin + y * cos });
+    const f = Math.sqrt(area / fr.hullArea);
+    const discs = interiorStorey == null
+      ? fr.discs
+      : fr.discs.filter((d) => interiorStoreyOf(d.s) === interiorStorey);
+    if (!discs.length) return [];
+    const seeds = discs.map((d) => {
+      let p = toWorld((d.x - fr.hc.x) * f, (d.y - fr.hc.y) * f);
+      if (!pointInPolygon(boundary, p)) {
+        const cp = closestPointOnPolygon(boundary, p);
+        p = { x: cp.x + (pos.x - cp.x) * 0.05, y: cp.y + (pos.y - cp.y) * 0.05 };
+      }
+      return { x: p.x, y: p.y, s: d.s, i: d.i };
+    });
+    const targets = seeds.map((sd) => Math.max(leafEa(sd.s), 0.1));
+    const weights = balanceCellWeights(seeds, boundary, targets);
+    const cells = powerCells(seeds.map((sd, ix) => ({ ...sd, w: weights[ix] })), boundary);
+    const circ = circOf(c);
+    const out = [];
+    seeds.forEach((sd, ix) => {
+      let cell = cells[ix];
+      if (!cell) return;
+      if (circ > 0) {
+        const k = Math.min(1, Math.sqrt(areaUnits(sd.s) / (polygonArea(cell) || 1)));
+        if (k < 1) cell = cell.map((p) => ({ x: sd.x + (p.x - sd.x) * k, y: sd.y + (p.y - sd.y) * k }));
+      }
+      out.push({
+        poly: cell,
+        r: Math.sqrt(Math.abs(polygonArea(cell)) / Math.PI), // equivalent radius, for label sizing
+        color: colorOf(sd.s),
+        label: `${sd.s.name}${Math.max(1, sd.s.count || 1) > 1 ? ` ${sd.i + 1}` : ''}`,
+        sublabel: fmtArea(leafEa(sd.s), units),
+      });
+    });
+    return out;
+  }
+
   async function buildSheetScene(kind, { floor = null } = {}) {
     const objects = sheetObjects(kind, floor);
     const metric = kind !== 'concept' && !!effScale;
@@ -1831,6 +1892,10 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       ? Math.max(7, Math.sqrt(areaToM2(ea(s), units) / Math.PI) / effScale)
       : 16 + 50 * Math.sqrt(ea(s) / maxRel));
     const bubbles = [];
+    const cells = [];
+    // The interior sketch exports with the master plan sheet exactly as shown:
+    // only while the 👁 toggle is on, and only the active storey.
+    const sketchInterior = kind === 'masterplan' && hasBuildings && interior;
     for (const s of objects) {
       const count = Math.max(1, s.count || 1);
       for (let i = 0; i < count; i++) {
@@ -1841,12 +1906,20 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
         const poly = kind === 'building'
           ? sheetBoxPoly(area, pos)
           : kind === 'masterplan' ? sheetPoly(s, area, pos) : null;
+        let interiorCells = [];
+        if (sketchInterior && poly && i === 0 && isContainerKind(s)) {
+          interiorCells = sheetInteriorCells(s, poly, pos, area);
+          cells.push(...interiorCells);
+        }
         bubbles.push({
           x: pos.x, y: pos.y, r,
           box: false,
           poly,
           color: colorOf(s),
-          opacity: project.bubble_opacity ?? 0.32,
+          // An envelope with a sketched interior goes hollow (the cells carry
+          // the colour) and wears its name above the outline, like the canvas.
+          opacity: interiorCells.length ? 0.06 : project.bubble_opacity ?? 0.32,
+          labelAbove: interiorCells.length > 0,
           label: s.name + (count > 1 ? ` ${i + 1}` : ''),
           sublabel: fmtArea(ea(s), units),
         });
@@ -1910,13 +1983,17 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     const ratioLabel = metric ? scaleLabelFor(effScale) : 'NTS';
     const sheet =
       kind === 'concept' ? 'Concept diagram'
-      : kind === 'masterplan' ? (hasBuildings ? 'Master plan — building envelopes' : 'Master plan')
+      : kind === 'masterplan'
+        ? (cells.length && interiorStorey
+            ? `Master plan — envelopes · ${interiorStorey} interior`
+            : hasBuildings ? 'Master plan — building envelopes' : 'Master plan')
       : floor != null ? `Building — ${floor}` : 'Building massing';
     return {
       bounds,
       layers: sceneLayers,
       links,
       bubbles,
+      cells,
       bubbleStyle,
       scale: metric ? { ratioLabel, scaleBar: scaleBar ? { lenUnits: scaleBar.len, label: scaleBar.label } : null } : null,
       north: metric ? { deg: project.north_deg || 0 } : null,

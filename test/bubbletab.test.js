@@ -206,6 +206,37 @@ test('Voronoi interior: cells render, click one to select its ROOM (no shape too
   }
 });
 
+test('Voronoi interior: selecting an off-storey room pulls the sketch to its storey', async () => {
+  const { normalizePolygon, regularPolygon } = await import('../src/geometry.js');
+  const placedBuilding = {
+    ...building,
+    plan_json: JSON.stringify({ 0: { x: 300, y: 300, a: 600 } }),
+    shape: 'poly',
+    shape_json: JSON.stringify(normalizePolygon(regularPolygon(6))),
+  };
+  const pinnedLobby = { ...lobby, level: 'Ground', pin_json: JSON.stringify({ 0: { x: 280, y: 290 } }) };
+  const pinnedOffice = { ...office, level: 'Level 1', pin_json: JSON.stringify({ 0: { x: 330, y: 315 } }) };
+  const { container, unmount } = mount({
+    project: { ...project, diagram_env: 'masterplan' },
+    spaces: [placedBuilding, pinnedLobby, pinnedOffice],
+  });
+  try {
+    // Ground is the default storey; the Office (Level 1) has no visible cell.
+    assert.ok(!container.textContent.includes('Office') || !container.querySelector('.voronoi-cell')?.textContent.includes('Office'));
+    // Select the Office from the rail — the sketch follows it to Level 1.
+    const row = [...container.querySelectorAll('.split-row')].find((r) => r.textContent.includes('Office'));
+    await act(async () => row.dispatchEvent(new window.MouseEvent('click', { bubbles: true })));
+    const select = [...container.querySelectorAll('.ctrl-field')]
+      .find((f) => f.textContent.includes('Interior'))
+      .querySelector('select');
+    assert.equal(select.value, 'Level 1', 'the storey filter followed the selection');
+    const names = [...container.querySelectorAll('.voronoi-cell')].map((c) => c.textContent);
+    assert.ok(names.some((n) => n.includes('Office')), "the selected room's cell is now visible");
+  } finally {
+    unmount();
+  }
+});
+
 test('Voronoi interior: rooms without a Concept position still get a cell', async () => {
   const { normalizePolygon, regularPolygon } = await import('../src/geometry.js');
   const placedBuilding = {
