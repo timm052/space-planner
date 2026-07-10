@@ -71,6 +71,9 @@ export function StageTopbar({
   presets,
   fitScale,
   onScaleSelect,
+  interiorLevels = null, // storey labels for the interior-sketch filter (null = hide)
+  interiorLevel = 'all',
+  onInteriorLevel,
   panel,
   setPanel,
   history,
@@ -151,6 +154,17 @@ export function StageTopbar({
         )}
         {showLayers && (
           <button className={`ctrl-btn ${panel === 'layers' ? 'active' : ''}`} onClick={() => setPanel(panel === 'layers' ? null : 'layers')} title="Image & satellite layers">⧉ Layers</button>
+        )}
+        {/* Which storey the envelope interior sketch shows. The envelope is one
+            footprint, so a multi-level program reads clearer one floor at a time. */}
+        {interiorLevels && (
+          <label className="ctrl-field" title="Which storey's rooms the interior sketch shows inside each envelope">
+            <span className="ctrl-label">Interior</span>
+            <select className="ctrl-select" value={interiorLevel} onChange={(e) => onInteriorLevel(e.target.value)}>
+              <option value="all">All floors</option>
+              {interiorLevels.map((l) => <option key={l} value={l}>{l}</option>)}
+            </select>
+          </label>
         )}
         <button className={`ctrl-btn ${panel === 'more' ? 'active' : ''}`} onClick={() => setPanel(panel === 'more' ? null : 'more')} title="More options">⋯</button>
       </div>

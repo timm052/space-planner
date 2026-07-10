@@ -124,7 +124,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   // through prefs.js. The destructure keeps every read site unchanged.
   const { view: viewPrefs, setPref } = useDiagramPrefs();
   const { split, colorBy, hulls, hullPad, railW, collapsed,
-    floorView, floorGap, stackCam, stackImages, cam3d, nodeForce, buildingForce, snapEdges, snapGrid, interior } = viewPrefs;
+    floorView, floorGap, stackCam, stackImages, cam3d, nodeForce, buildingForce, snapEdges, snapGrid, interior, interiorLevel } = viewPrefs;
 
   // Apply a selection transition: set the next state and run its declared
   // effects. The refs let event handlers (some registered with narrow effect
@@ -948,7 +948,14 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       const toWorld = (x, y) => ({ x: n.x + x * cos - y * sin, y: n.y + x * sin + y * cos });
       const boundary = verts.map((v) => toWorld(v.x, v.y));
       const f = Math.sqrt(areaUnits(c) / fr.hullArea);
-      const seeds = fr.discs.map((d) => {
+      // Storey filter: the envelope is ONE footprint, so a multi-level program
+      // shows one storey's rooms at a time when asked — 'all' overlays every
+      // floor (the historical behaviour). The mapping frame stays the whole
+      // building's hull either way, so seeds don't jump when filtering.
+      const discs = interiorLevel === 'all'
+        ? fr.discs
+        : fr.discs.filter((d) => (d.s.level || '').trim() === interiorLevel);
+      const seeds = discs.map((d) => {
         const key = `${d.s.id}:${d.i}`;
         let p = seedOverride.current.get(key) ?? toWorld((d.x - fr.hc.x) * f, (d.y - fr.hc.y) * f);
         if (!pointInPolygon(boundary, p)) {
@@ -987,6 +994,16 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     }
     return out.length ? out : null;
   }
+  // Pointer down on a room CELL: dragging still moves the building's envelope
+  // (the cell is part of the building), but a plain click selects the ROOM —
+  // so the sketch's rooms are pickable (rail/Brief sync, area editing, and the
+  // Link tool works room-to-room straight from the site view).
+  function cellPointerDown(e, cell) {
+    const root = byId.get(cell.rootId);
+    if (!root) return;
+    onBubbleDown(e, { s: root, i: 0, key: `${cell.rootId}:0` }, { spaceId: cell.spaceId, idx: cell.i });
+  }
+
   // Seed drag — grabbed on the canvas, routed through the pointer switchyard.
   function seedHandleDown(e, cell) {
     e.stopPropagation();
@@ -1005,7 +1022,12 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     const sd = seedRef.current;
     if (!sd) return false;
     seedRef.current = null;
-    if (!sd.moved) return true;
+    if (!sd.moved) {
+      // A stationary press on the dot is a click — select the room, same as
+      // clicking its cell.
+      await handleBubbleClick(sd.spaceId, sd.idx);
+      return true;
+    }
     // Inverse-map the dropped seed to CONCEPT coordinates and save it as the
     // room's pin. The local override holds the seed in place until the new
     // pin round-trips (cleared when `spaces` refetches).
@@ -1373,10 +1395,13 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       await saveDragPos(space, drag.idx);
       return;
     }
-    await handleBubbleClick(drag.spaceId, drag.idx);
+    await handleBubbleClick(drag.clickAs?.spaceId ?? drag.spaceId, drag.clickAs?.idx ?? drag.idx);
   }
 
-  function onBubbleDown(e, o) {
+  // `clickAs` (optional {spaceId, idx}) redirects a CLICK's selection while the
+  // drag still moves `o` — a Voronoi cell drags its building's envelope, but a
+  // plain click on it selects the ROOM the cell stands for.
+  function onBubbleDown(e, o, clickAs = null) {
     if (scalePoints || panActive || moveLayer || rotateLayer) return;
     if (e.shiftKey) {
       // Shift-click toggles a bubble in the multi-selection (no drag, no marquee).
@@ -1415,7 +1440,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       const p = toSvgCoords(e);
       if (n) offset = { x: n.x - p.x, y: n.y - p.y };
     }
-    dragRef.current = { key: o.key, spaceId: o.s.id, idx: o.i, moved: 0, starts, anchor, groupSet, offset };
+    dragRef.current = { key: o.key, spaceId: o.s.id, idx: o.i, moved: 0, starts, anchor, groupSet, offset, clickAs };
   }
 
   function commitView(v) {
@@ -2151,6 +2176,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const imgTransform = (r) => (r.rot ? `rotate(${r.rot} ${r.cx} ${r.cy})` : undefined);
   const bubbleStyle = project.bubble_style || 'solid';
   const selectedSpace = selected != null ? byId.get(selected) : null;
+  // In the envelope master plan only containers and floating rooms have drawn
+  // geometry — a room selected via its interior cell (or the rail) gets the
+  // data actions (area, category, delete) but no outline editing.
+  const selIsDrawn =
+    !isEnvelope || !selectedSpace || isContainerKind(selectedSpace) || !rootContainer(selectedSpace, byId);
   // When a space is selected, the Relationships panel narrows to its links.
   const relList = selectedSpace ? adjacencies.filter((l) => l.space_a === selected || l.space_b === selected) : adjacencies;
 
@@ -2238,6 +2268,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
             presets={presets}
             fitScale={fitScale}
             onScaleSelect={onScaleSelect}
+            interiorLevels={isEnvelope && interior && levels.length >= 2 ? levels : null}
+            interiorLevel={interiorLevel}
+            onInteriorLevel={(v) => setPref('interiorLevel', v)}
             panel={panel}
             setPanel={setPanel}
             history={history}
@@ -2472,6 +2505,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
             envelopeBadge={envelopeBadge}
             makeInterior={makeInterior}
             onSeedDown={seedHandleDown}
+            onCellDown={cellPointerDown}
             alignGuides={alignRef}
             planGrid={snapGrid ? planGrid : null}
             effScale={effScale}
@@ -2551,7 +2585,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
           {/* One contextual action bar (bottom-centre) — or the hint when
               nothing is selected. */}
           <SelectionHud
-            showShapeTools={caps.shapeTools}
+            showShapeTools={caps.shapeTools && selIsDrawn}
             showRotate90={caps.rotate === '90'}
             onRotate90={rotate90}
             showPin={caps.pin}

@@ -95,6 +95,7 @@ export default function DiagramCanvas({
   envelopeBadge,
   makeInterior,
   onSeedDown,
+  onCellDown,
   alignGuides,
   planGrid,
   effScale,
@@ -796,9 +797,11 @@ export default function DiagramCanvas({
             })}
 
             {/* Voronoi interior sketch — each placed envelope partitioned into
-                room cells seeded from the Concept layout. Cells are see-through
-                to pointers (the envelope stays draggable); the SEED dot is the
-                handle — dragging it re-plans the room and saves its concept pin. */}
+                room cells seeded from the Concept layout. A cell is the room's
+                handle: click it to select the room (works with the Link tool
+                too), drag it to move the whole building (the cell belongs to
+                the envelope). The SEED dot re-plans the room — dragging it
+                saves the room's Concept pin. */}
             {interior &&
               interior.map((b) => (
                 <g key={`vor:${b.rootId}`} className="voronoi-layer">
@@ -809,14 +812,21 @@ export default function DiagramCanvas({
                   )}
                   {b.cells.map((c) => {
                     const showText = polygonArea(c.poly) > 700; // slivers keep just their seed
+                    const isSelCell = selected === c.spaceId;
                     return (
-                      <g key={`vc:${c.key}`} className={`voronoi-cell ${c.tight ? 'tight' : ''}`}>
+                      <g key={`vc:${c.key}`} className={`voronoi-cell ${c.tight ? 'tight' : ''}${isSelCell ? ' selected' : ''}`}>
                         <path
                           className="voronoi-fill"
                           d={polygonPath(c.poly)}
                           fill={c.color}
                           stroke={darkHex(c.color, 0.45)}
-                        />
+                          onPointerDown={onCellDown ? (e) => onCellDown(e, c) : undefined}
+                        >
+                          <title>
+                            {`${c.name}${c.areaPU != null ? ` — ${fmtArea(c.areaPU, units)} cell for a ${fmtArea(c.targetPU, units)} target${c.tight ? ' (does not fit here)' : ''}` : ''}
+click to select · drag to move the building · drag the dot to re-plan the room`}
+                          </title>
+                        </path>
                         {showText && (
                           <text className="voronoi-name" x={c.centre.x} y={c.centre.y - (c.areaPU != null ? 3 : -3)} textAnchor="middle" fill={darkHex(c.color, 0.62)}>
                             {c.name}
@@ -827,9 +837,13 @@ export default function DiagramCanvas({
                             {fmtArea(c.areaPU, units)} / {fmtArea(c.targetPU, units)}
                           </text>
                         )}
-                        <circle className="voronoi-seed" cx={c.seed.x} cy={c.seed.y} r="5" fill={c.color} onPointerDown={(e) => onSeedDown(e, c)}>
-                          <title>{c.name} — drag to re-plan (saves its Concept pin)</title>
+                        {/* Generous invisible hit ring — the 5px dot alone was a
+                            fiddly drag target. It takes the pointer; the dot is
+                            purely visual. */}
+                        <circle className="voronoi-seed-hit" cx={c.seed.x} cy={c.seed.y} r="12" onPointerDown={(e) => onSeedDown(e, c)}>
+                          <title>{c.name} — drag to re-plan the room (saves its Concept pin)</title>
                         </circle>
+                        <circle className="voronoi-seed" cx={c.seed.x} cy={c.seed.y} r="5" fill={c.color} />
                       </g>
                     );
                   })}

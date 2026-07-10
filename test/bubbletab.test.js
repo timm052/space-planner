@@ -155,6 +155,55 @@ test('Master plan with buildings draws building envelopes, not rooms', () => {
   }
 });
 
+test('Voronoi interior: cells render, click one to select its ROOM (no shape tools)', async () => {
+  const { normalizePolygon, regularPolygon } = await import('../src/geometry.js');
+  // A PLACED envelope (plan_json slot + poly outline) with pinned rooms —
+  // everything the interior sketch needs to draw cells.
+  const placedBuilding = {
+    ...building,
+    plan_json: JSON.stringify({ 0: { x: 300, y: 300, a: 600 } }),
+    shape: 'poly',
+    shape_json: JSON.stringify(normalizePolygon(regularPolygon(6))),
+  };
+  const pinnedLobby = { ...lobby, level: 'Ground', pin_json: JSON.stringify({ 0: { x: 280, y: 290 } }) };
+  const pinnedOffice = { ...office, level: 'Level 1', pin_json: JSON.stringify({ 0: { x: 330, y: 315 } }) };
+  const { container, unmount } = mount({
+    project: { ...project, diagram_env: 'masterplan' },
+    spaces: [placedBuilding, pinnedLobby, pinnedOffice],
+  });
+  try {
+    const cells = [...container.querySelectorAll('.voronoi-cell')];
+    assert.equal(cells.length, 2, 'one cell per room inside the placed envelope');
+    // The storey filter select shows once the program has ≥2 levels.
+    const interiorField = [...container.querySelectorAll('.ctrl-field')].find((f) => f.textContent.includes('Interior'));
+    assert.ok(interiorField, 'interior storey selector renders');
+    const opts = [...interiorField.querySelectorAll('option')].map((o) => o.textContent);
+    assert.deepEqual(opts, ['All floors', 'Ground', 'Level 1']);
+    // Clicking a cell selects the ROOM it stands for, not the building —
+    // and interior rooms get no outline editing (they aren't drawn here).
+    const lobbyCell = cells.find((c) => c.textContent.includes('Lobby'));
+    const fill = lobbyCell.querySelector('.voronoi-fill');
+    await act(async () => {
+      fill.dispatchEvent(new window.MouseEvent('pointerdown', { bubbles: true, button: 0 }));
+      fill.dispatchEvent(new window.MouseEvent('pointerup', { bubbles: true, button: 0 }));
+    });
+    const bar = container.querySelector('.action-bar');
+    assert.ok(bar, 'action bar appears');
+    assert.match(bar.textContent, /Lobby/, 'the ROOM is selected, not the building');
+    assert.doesNotMatch(bar.textContent, /Shape/, 'no outline editing for an interior room');
+    // Filtering to Level 1 hides the Ground room's cell.
+    const select = interiorField.querySelector('select');
+    await act(async () => {
+      select.value = 'Level 1';
+      select.dispatchEvent(new window.Event('change', { bubbles: true }));
+    });
+    const names = [...container.querySelectorAll('.voronoi-name')].map((t) => t.textContent);
+    assert.ok(!names.includes('Lobby'), 'Ground room filtered out');
+  } finally {
+    unmount();
+  }
+});
+
 test('BubbleTab shows the empty state when the brief has no spaces', () => {
   const { container, unmount } = mount({ spaces: [] });
   try {

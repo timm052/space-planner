@@ -144,15 +144,24 @@
 .env-badge { fill: var(--muted); font-size: 10px; font-family: 'JetBrains Mono', monospace; pointer-events: none; }
 .env-badge.bad { fill: var(--bad, #e5675f); font-weight: 700; }
 
-/* Voronoi interior sketch — room cells inside a placed envelope. The cells and
-   their labels never take the pointer (the envelope beneath stays draggable);
-   only the seed dot is interactive. */
+/* Voronoi interior sketch — room cells inside a placed envelope. A cell is the
+   room's handle: click selects the room, dragging it moves the building (its
+   pointer-down forwards to the envelope drag); the seed dot re-plans the room. */
 .voronoi-fill {
   fill-opacity: 0.34;
   stroke-width: 1;
   stroke-opacity: 0.55;
   vector-effect: non-scaling-stroke;
-  pointer-events: none;
+  cursor: pointer;
+  transition: fill-opacity 0.12s ease-out;
+}
+.voronoi-fill:hover { fill-opacity: 0.48; }
+.voronoi-cell.selected .voronoi-fill {
+  fill-opacity: 0.5;
+  stroke: var(--accent, #e8b04b);
+  stroke-width: 1.6;
+  stroke-opacity: 1;
+  stroke-dasharray: none;
 }
 .voronoi-cell.tight .voronoi-fill {
   stroke: var(--bad, #e5675f);
@@ -162,14 +171,16 @@
 .voronoi-name { font-size: 9.5px; font-weight: 600; pointer-events: none; }
 .voronoi-area { font-size: 8.5px; font-family: 'JetBrains Mono', monospace; opacity: 0.8; pointer-events: none; }
 .voronoi-cell.tight .voronoi-area { fill: var(--bad, #e5675f); opacity: 1; }
+/* Generous invisible ring over the seed dot — the real drag target. */
+.voronoi-seed-hit { fill: transparent; stroke: none; cursor: grab; }
+.voronoi-seed-hit:active { cursor: grabbing; }
 .voronoi-seed {
   stroke: var(--panel);
   stroke-width: 2;
-  cursor: grab;
   transition: r 0.1s ease-out;
+  pointer-events: none; /* the hit ring takes the pointer */
 }
-.voronoi-seed:hover { r: 7; }
-.voronoi-seed:active { cursor: grabbing; }
+.voronoi-seed-hit:hover ~ .voronoi-seed { r: 7; }
 /* Circulation band inside an envelope — diagonal hatch under the room cells. */
 .circ-hatch-line { stroke: var(--muted); stroke-width: 1; }
 .circ-fill { opacity: 0.3; pointer-events: none; }
