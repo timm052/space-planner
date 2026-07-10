@@ -2,7 +2,7 @@ import { lazy, memo, Suspense } from 'react';
 import { fmtArea, distUnit, rootContainer } from '../../compute.js';
 import { edgeGap, linkSatisfied } from '../../adjacency.js';
 import { hullOfDiscs, smoothHullPath, filterCss, polygonPath, polyBounds, polygonArea } from '../../geometry.js';
-import { darkHex } from '../../viz.js';
+import { darkHex, labelInk } from '../../viz.js';
 import { fitLabel, measureText } from '../../textfit.js';
 import { TickLayer } from '../../hooks/useTick.js';
 
@@ -32,10 +32,12 @@ const BubbleLabel = memo(function BubbleLabel({ label, r, areaStr, ink }) {
   const baseSize = Math.max(9, Math.min(14, r / 3.2));
   const maxW     = Math.max(r * 1.65, 28);
 
-  // Tiny bubble: single line sitting below the circle
+  // Tiny bubble: single line sitting below the circle — on the CANVAS, not on
+  // the room's fill, so it takes the theme text colour + halo (CSS `.below`),
+  // never the colour-tinted ink (dark ink vanished on the dark canvas).
   if (r <= 13) {
     return (
-      <text textAnchor="middle" dy={r + 11} className="bubble-name" style={{ fontSize: baseSize, fill: ink }}>
+      <text textAnchor="middle" dy={r + 11} className="bubble-name below" style={{ fontSize: baseSize }}>
         {label}
       </text>
     );
@@ -75,6 +77,7 @@ const BubbleLabel = memo(function BubbleLabel({ label, r, areaStr, ink }) {
  */
 export default function DiagramCanvas({
   tickStore,
+  theme = 'dark',
   // modes & view
   stackMode,
   is3D,
@@ -392,7 +395,7 @@ export default function DiagramCanvas({
                   if (withLabel) {
                     const top = hull.reduce((m, p) => (p.y < m.y ? p : m), hull[0]);
                     out.push(
-                      <text key={`lbl:${g}`} x={top.x} y={top.y - 4} textAnchor="middle" className="hull-label" fill={color}>
+                      <text key={`lbl:${g}`} x={top.x} y={top.y - 4} textAnchor="middle" className="hull-label" fill={labelInk(color, theme)}>
                         {g}
                       </text>
                     );
@@ -460,7 +463,7 @@ export default function DiagramCanvas({
                     })}
                   </g>
                   <text x={f.labelPos.x} y={f.labelPos.y} className="floor-plate-label"
-                    fill={f.color} textAnchor="middle">{f.label}</text>
+                    fill={labelInk(f.color, theme)} textAnchor="middle">{f.label}</text>
                 </g>
               ))}
             {/* Links drawn in screen space so cross-floor connectors read clearly. */}
@@ -485,7 +488,7 @@ export default function DiagramCanvas({
                 return (
                   <g key={`slbl:${o.key}`} transform={`translate(${p.x}, ${p.y})`} className="bubble stacked">
                     <title>{label} — {fmtArea(ea(o.s), units)}</title>
-                    <BubbleLabel label={label} r={p.r * 0.92} areaStr={fmtArea(ea(o.s), units)} ink={darkHex(colorOf(o.s), 0.62)} />
+                    <BubbleLabel label={label} r={p.r * 0.92} areaStr={fmtArea(ea(o.s), units)} ink={labelInk(colorOf(o.s), theme)} />
                   </g>
                 );
               })}
@@ -796,7 +799,7 @@ export default function DiagramCanvas({
                     const showName = fit && fit.lines.length > 0 && fit.lines.length * lineH + 10 < chh * 0.9;
                     const showArea = showName && c.areaPU != null && chh > fit.lines.length * lineH + 34
                       && measureText(`${fmtArea(c.areaPU, units)} / ${fmtArea(c.targetPU, units)}`, 8.5) < cw * 0.85;
-                    const ink = darkHex(c.color, 0.62);
+                    const ink = labelInk(c.color, theme);
                     return (
                       <g key={`vc:${c.key}`} className={`voronoi-cell ${c.tight ? 'tight' : ''}${isSelCell ? ' selected' : ''}${c.related ? ' related' : ''}`}>
                         <path

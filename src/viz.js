@@ -13,6 +13,27 @@ export function darkHex(hex, amt) {
   return `rgb(${r},${g},${b})`;
 }
 
+// Lighten a hex color toward white by `amt` (0..1) → "rgb(r,g,b)".
+export function lightHex(hex, amt) {
+  const n = parseInt(hex.slice(1), 16);
+  let r = (n >> 16) & 255;
+  let g = (n >> 8) & 255;
+  let b = n & 255;
+  r = Math.round(r + (255 - r) * amt);
+  g = Math.round(g + (255 - g) * amt);
+  b = Math.round(b + (255 - b) * amt);
+  return `rgb(${r},${g},${b})`;
+}
+
+// Colour-tinted TEXT ink that stays readable against the theme background —
+// for labels that sit on the canvas, on floor plates or on translucent fills
+// (anything whose effective backdrop is ≈ the theme bg, NOT a solid colour
+// fill: text on solid fills keeps plain darkHex ink in both themes). Dark
+// theme pushes the hue toward white, light theme toward black.
+export function labelInk(hex, theme) {
+  return theme === 'light' ? darkHex(hex, 0.55) : lightHex(hex, 0.72);
+}
+
 // Squarified treemap (Bruls et al.). items: [{id, value>0}] → [{id,x,y,w,h}].
 // Pass items already sorted by value descending for best aspect ratios.
 export function squarify(items, W, H) {

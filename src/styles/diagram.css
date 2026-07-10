@@ -32,6 +32,16 @@
 .bubble { cursor: grab; }
 .bubble:active { cursor: grabbing; }
 .bubble-name { fill: var(--text); font-weight: 600; font-family: 'Space Grotesk', 'Inter', sans-serif; pointer-events: none; }
+/* A label sitting BESIDE its (tiny) bubble is on the canvas / site image, not
+   on the room's fill — theme text colour with a panel halo keeps it readable
+   in both themes and over imagery. */
+.bubble-name.below {
+  fill: var(--text);
+  paint-order: stroke;
+  stroke: var(--panel);
+  stroke-width: 2.5px;
+  stroke-linejoin: round;
+}
 .bubble-area { fill: rgba(255,255,255,0.7); font-size: 10px; font-family: 'JetBrains Mono', monospace; pointer-events: none; }
 /* Flat drafting links: required = solid hairline, desired = fine dotted. */
 .link { stroke: var(--muted); pointer-events: none; }
@@ -65,7 +75,10 @@
 /* Area-lock resize handles + live dimension readout on a Building box. */
 .resize-handle { fill: var(--panel, #fff); stroke: var(--accent, #4c8bf5); stroke-width: 2; cursor: pointer; }
 .resize-handle:hover { fill: var(--accent, #4c8bf5); }
-.dim-badge { fill: var(--accent, #4c8bf5); font-size: 11px; font-family: 'JetBrains Mono', monospace; pointer-events: none; }
+.dim-badge {
+  fill: var(--accent, #4c8bf5); font-size: 11px; font-family: 'JetBrains Mono', monospace; pointer-events: none;
+  paint-order: stroke; stroke: var(--panel); stroke-width: 2.5px; stroke-linejoin: round;
+}
 
 /* Vertical-adjacency tab: an interfloor link on a room being edited on one floor.
    Green = the pair stacks (aligned in plan); red = it doesn't yet. */
@@ -137,11 +150,19 @@
   vector-effect: non-scaling-stroke;
 }
 .envelope-underlay.focused path { stroke: var(--accent); opacity: 0.8; }
-.envelope-label { fill: var(--muted); font-size: 11px; font-weight: 600; opacity: 0.7; }
+/* Envelope name + feasibility badge sit over the site image — a panel halo
+   keeps them readable on imagery in both themes. */
+.envelope-label {
+  fill: var(--muted); font-size: 11px; font-weight: 600; opacity: 0.9;
+  paint-order: stroke; stroke: var(--panel); stroke-width: 2.5px; stroke-linejoin: round;
+}
 .envelope-underlay.focused .envelope-label { fill: var(--accent); opacity: 1; }
 
 /* Envelope feasibility badge: drawn footprint vs the required one. */
-.env-badge { fill: var(--muted); font-size: 10px; font-family: 'JetBrains Mono', monospace; pointer-events: none; }
+.env-badge {
+  fill: var(--muted); font-size: 10px; font-family: 'JetBrains Mono', monospace; pointer-events: none;
+  paint-order: stroke; stroke: var(--panel); stroke-width: 2px; stroke-linejoin: round;
+}
 .env-badge.bad { fill: var(--bad, #e5675f); font-weight: 700; }
 
 /* Voronoi interior sketch — room cells inside a placed envelope. A cell is the
@@ -640,7 +661,11 @@
   text-align: center;
   font-size: 12px;
   color: var(--muted);
-  background: rgba(11, 13, 18, 0.72);
+  /* Theme glass, not a hardcoded dark pill — the light theme drew its dark
+     muted text on a dark background. */
+  background: var(--glass);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   border: 1px solid var(--border);
   border-radius: 999px;
   padding: 6px 16px;
@@ -721,8 +746,13 @@
 .bubble.overlap .poly-shape { stroke: var(--bad); stroke-width: 2.5; stroke-dasharray: 5 3; }
 .scale-bar line { stroke: var(--text); stroke-width: 2; }
 .scale-bar text { fill: var(--text); font-size: 12px; font-family: 'JetBrains Mono', monospace; }
-.scale-bar-bg { fill: rgba(11, 13, 18, 0.7); }
-.attribution { fill: var(--muted); font-size: 9px; opacity: 0.85; }
+/* Theme-aware pill (was a hardcoded dark fill — the light theme drew its dark
+   text on a dark pill). */
+.scale-bar-bg { fill: var(--panel); fill-opacity: 0.82; }
+.attribution {
+  fill: var(--muted); font-size: 9px; opacity: 0.95;
+  paint-order: stroke; stroke: var(--panel); stroke-width: 2px; stroke-linejoin: round;
+}
 
 /* north rose */
 .north-rose {
@@ -741,7 +771,7 @@
 }
 .north-rose:active { cursor: grabbing; }
 .north-rose svg { width: 50px; height: 50px; }
-.rose-bg { fill: rgba(11, 13, 18, 0.72); stroke: var(--border); stroke-width: 1; }
+.rose-bg { fill: var(--glass); stroke: var(--border); stroke-width: 1; }
 .rose-needle-n { fill: var(--bad); }
 .rose-needle-s { fill: var(--muted); }
 .rose-n { fill: var(--text); font-size: 7px; font-weight: 700; text-anchor: middle; }
@@ -866,7 +896,7 @@
 .stage-3d-hint {
   position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
   font-size: 12px; color: var(--muted); pointer-events: none;
-  background: rgba(11, 13, 18, 0.72); border: 1px solid var(--border);
+  background: var(--glass); border: 1px solid var(--border);
   border-radius: 999px; padding: 6px 14px;
 }
 .r3f-floor-label {
@@ -900,7 +930,7 @@
   letter-spacing: 0.06em;
   text-transform: uppercase;
   paint-order: stroke fill;
-  stroke: rgba(11, 13, 18, 0.75);
+  stroke: var(--panel); /* was a hardcoded dark halo — wrong for light theme */
   stroke-width: 3px;
   stroke-linejoin: round;
 }
@@ -911,7 +941,7 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  background: rgba(11, 13, 18, 0.72);
+  background: var(--glass);
   backdrop-filter: blur(6px);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -1098,8 +1128,12 @@ rect.poly-handle:hover, rect.poly-handle:active { transform: scale(1.2); transfo
   font-family: 'Space Grotesk', 'Inter', sans-serif;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  opacity: 0.7;
+  opacity: 0.85;
   pointer-events: none;
+  paint-order: stroke;
+  stroke: var(--panel);
+  stroke-width: 2.5px;
+  stroke-linejoin: round;
 }
 
 /* ---------- relationships filter ---------- */

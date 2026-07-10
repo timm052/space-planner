@@ -25,6 +25,7 @@ import { useCategoryColors } from '../hooks/useCategoryColors.js';
 import { usePolyEditing } from '../hooks/usePolyEditing.js';
 import { useImageLayers } from '../hooks/useImageLayers.js';
 import { bakeImage } from '../imageUtils.js';
+import { useTheme } from '../theme.jsx';
 import HelpPanel from './HelpPanel.jsx';
 import NorthRose from './diagram/NorthRose.jsx';
 import MatrixPanel from './diagram/MatrixPanel.jsx';
@@ -104,6 +105,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   //              'block' = block up into floors)
   //   adjacency: how the compliance score is judged
   const caps = ENV_CAPS[env] ?? ENV_CAPS.concept;
+  // Canvas label inks are colour-tinted per theme (see labelInk in viz.js).
+  const { theme } = useTheme();
   // Animation ticks bypass React state: the sim/drags mutate nodesRef then
   // bump this store, re-rendering ONLY the <TickLayer> canvas below — not the
   // toolbar/rail/popover chrome. Same call signature as the old setTick.
@@ -2614,6 +2617,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
               frames, drags) without touching the chrome above — see useTick.js. */}
           <DiagramCanvas
             tickStore={tickStore}
+            theme={theme}
             stackMode={stackMode}
             is3D={is3D}
             floorMode={floorMode}
