@@ -12,6 +12,9 @@ const PERSISTED = {
   railW: 'railw',
   nodeForce: 'nodeforce',
   buildingForce: 'buildingforce',
+  snapEdges: 'snapedges',
+  snapGrid: 'snapgrid',
+  interior: 'interior',
 };
 
 /** Initial view-pref values, reading persisted keys from the store. */
@@ -31,6 +34,9 @@ export function initialDiagramPrefs(store = prefs) {
     cam3d: 'persp', // WebGL 3-D camera preset (Stacked3D)
     nodeForce: store.getNum('nodeforce', 1), // auto-layout force: rooms
     buildingForce: store.getNum('buildingforce', 0.5), // auto-layout force: buildings
+    snapEdges: store.getBool('snapedges', true), // snap to neighbour edges/corners
+    snapGrid: store.getBool('snapgrid', true), // snap to the metric grid
+    interior: store.getBool('interior', true), // Voronoi room sketch inside envelopes
   };
 }
 

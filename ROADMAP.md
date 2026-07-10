@@ -44,6 +44,32 @@ The near-term core is now in place:
   presentation-ready image: the SVG is rasterized with styles inlined and the
   self-hosted fonts embedded (`pngExport.js`, lazy-loaded); in the 3-D floor
   mode it grabs the WebGL frame instead.
+- **Three diagram environments** (the decomposition plan in
+  `docs/diagram-environments-plan.md`, phases 0–4): ◯ **Concept** (bubbles,
+  force layout, relationships — scale-free), ▱ **Master plan** (building
+  **envelopes** on the calibrated site: placement tray, area-locked outline
+  editing, drawn-vs-required footprint badge, snap + nudge + rotate, overlap
+  warnings), ▤ **Building** (per-floor room rectangles with area-locked
+  resize, **Block up** promotion seeding adjacency-ordered floor grids inside
+  the envelope, building focus, stacking rail, vertical-adjacency badges).
+  Independent per-env layouts (`pin_json` / `plan_json` / `block_json`), a
+  progress pipeline in the env switcher, per-env help & empty states.
+- **From bubbles to blocks** — shipped as the Building environment (was a
+  "longer term" item): grid/edge snap, stacking by level, gross area per floor
+  in the rail.
+- **Drawing-set PDF export** — one multi-page PDF: NTS concept sheet, scaled
+  master-plan sheet and per-floor building sheets, each on the smallest ISO
+  page that fits its scale.
+- **Concept ⇄ Master plan workflow upgrades** (phase 5 of the environments
+  plan): **concave hulls** that hug each building's real profile instead of a
+  convex wrap (also feeding the envelope "⬡ Hull" match and site contours);
+  a **Voronoi interior sketch** inside each placed envelope — room cells
+  seeded from the Concept layout with live cell-vs-target areas, draggable
+  seeds that write back to the Concept view; **storey heights** per level
+  plus optional per-space heights (double-height / multi-floor volumes render
+  at true height in the 3-D massing); and **optional circulation** — a
+  per-building share that grosses up the required footprint and hatches the
+  interior the room cells leave free.
 
 ## Near term (rounding out the core)
 
@@ -90,8 +116,6 @@ The near-term core is now in place:
 
 ## Longer term (intelligence & output)
 
-- **From bubbles to blocks** — promote the box mode into a rough mass-planning
-  tool: snap boxes to a grid, stack by level, and read out gross area per floor.
 - **Auto-layout suggestions** — use the adjacency graph to propose arrangements
   (force layout is already there; add constraint solving for "required"
   adjacencies and departmental zoning).

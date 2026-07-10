@@ -70,7 +70,10 @@ test('BubbleTab mounts with toolbar, canvas, bubbles and rail', () => {
   try {
     // Toolbar: control cluster + actions cluster.
     assert.ok(container.querySelector('.stage-topbar'), 'stage top bar renders');
-    assert.ok(container.querySelector('.stage-controls select.ctrl-select'), 'scale select renders');
+    assert.ok(container.querySelector('.stage-controls .seg-env'), 'environment switcher renders');
+    // Concept is scale-free — the metric Scale control belongs to Master plan /
+    // Building, so it is NOT shown here (default env is Concept).
+    assert.ok(!container.querySelector('.stage-controls select.ctrl-select'), 'no scale select in Concept');
     const actions = [...container.querySelectorAll('.stage-actions button')].map((b) => b.textContent);
     assert.ok(actions.some((t) => t.includes('PNG')), 'PNG export button present');
     assert.ok(actions.some((t) => t.includes('PDF')), 'PDF export button present');
@@ -130,6 +133,23 @@ test('BubbleTab clicking a bubble opens the room action bar', async () => {
     assert.ok(bar, 'action bar appears for the selected room');
     assert.match(bar.textContent, /Lobby/);
     assert.match(bar.textContent, /Pin/);
+  } finally {
+    unmount();
+  }
+});
+
+test('Master plan with buildings draws building envelopes, not rooms', () => {
+  const { container, unmount } = mount({ project: { ...project, diagram_env: 'masterplan' } });
+  try {
+    const bubbles = [...container.querySelectorAll('g.bubble')];
+    assert.equal(bubbles.length, 1, 'one unit per building — rooms stay in Building/Concept');
+    assert.equal(bubbles[0].getAttribute('data-space-id'), '1', 'the unit is the container row');
+    // Un-placed building → ghost + the placement tray offers it.
+    assert.ok(bubbles[0].classList.contains('ghost'), 'unplaced envelope renders as a ghost');
+    const tray = container.querySelector('.place-tray');
+    assert.ok(tray, 'placement tray shows');
+    assert.match(tray.textContent, /Main/);
+    assert.match(tray.textContent, /Place all/);
   } finally {
     unmount();
   }

@@ -24,7 +24,8 @@ export const PROJECT_FIELDS = [
   'bubble_opacity', 'view_x', 'view_y',
   'bg_mpp', 'bg_visible', 'bg_x', 'bg_y',
   'sat_image', 'sat_mpp', 'sat_opacity', 'sat_attribution', 'sat_visible', 'sat_x', 'sat_y',
-  'north_deg', 'bg_rot', 'sat_rot', 'category_colors', 'bubble_style',
+  'north_deg', 'bg_rot', 'sat_rot', 'category_colors', 'bubble_style', 'diagram_env',
+  'level_heights',
 ];
 
 const VALID_UNITS = new Set(['m2', 'ft2']);

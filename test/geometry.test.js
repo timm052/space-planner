@@ -1,8 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { convexHull, smoothHullPath, pinsOf, filterCss, IMAGE_FILTERS,
+import { convexHull, concaveHull, hullOfDiscs, clipHalfPlane, voronoiCells, pointInPolygon,
+  closestPointOnPolygon, smoothHullPath, pinsOf, filterCss, IMAGE_FILTERS,
   polygonArea, polygonCentroid, normalizePolygon, parsePoly, polygonPath, polyBounds,
-  regularPolygon, lShape, smoothPolygonPoints, solveAreaLockedVertex } from '../src/geometry.js';
+  regularPolygon, lShape, smoothPolygonPoints, solveAreaLockedVertex,
+  outlinePoints, simplifyOutline } from '../src/geometry.js';
 
 // ---- convexHull ---------------------------------------------------------
 
@@ -202,4 +204,209 @@ test('solveAreaLockedVertex converges even for extreme pulls', () => {
   const { verts: out, f } = solveAreaLockedVertex(verts, 0, { x: 900, y: 0 }, 2000, 14);
   assert.ok(Number.isFinite(f) && f > 0);
   assert.ok(Math.abs(out[0].x * f - 900) < 2, 'still lands near the cursor after a huge pull');
+});
+
+// ---- outlinePoints (corner styles) --------------------------------------
+
+test('outlinePoints without corner styles matches the classic smoothing', () => {
+  const verts = regularPolygon(6);
+  assert.deepEqual(outlinePoints(verts, 12), smoothPolygonPoints(verts, 12));
+});
+
+test('outlinePoints: sharp corners pass through the exact vertices', () => {
+  const square = [
+    { x: -1, y: -1, k: 's' }, { x: 1, y: -1, k: 's' },
+    { x: 1, y: 1, k: 's' }, { x: -1, y: 1, k: 's' },
+  ];
+  const out = outlinePoints(square, 12);
+  assert.equal(out.length, 4, 'one point per sharp corner');
+  assert.deepEqual(out, square.map(({ x, y }) => ({ x, y })));
+  assert.ok(Math.abs(polygonArea(out) - 4) < 1e-9, 'a sharp square keeps its full area');
+});
+
+test('outlinePoints: curve < fillet < sharp in enclosed area', () => {
+  const sq = (k) => [
+    { x: -1, y: -1, k }, { x: 1, y: -1, k }, { x: 1, y: 1, k }, { x: -1, y: 1, k },
+  ];
+  const a = (k) => polygonArea(outlinePoints(sq(k), 16));
+  assert.ok(a('c') < a('f'), 'a fillet hugs the corner tighter than a curve');
+  assert.ok(a('f') < a('s'), 'sharp corners enclose the most area');
+});
+
+test('parsePoly preserves corner styles and drops junk ones', () => {
+  const s = { shape_json: JSON.stringify([
+    { x: 0, y: 0, k: 's' }, { x: 1, y: 0, k: 'f' }, { x: 1, y: 1, k: 'weird' }, { x: 0, y: 1 },
+  ]) };
+  const pts = parsePoly(s);
+  assert.equal(pts[0].k, 's');
+  assert.equal(pts[1].k, 'f');
+  assert.equal(pts[2].k, undefined, 'unknown styles are dropped (default curve)');
+  assert.equal(pts[3].k, undefined);
+});
+
+test('normalizePolygon keeps corner styles riding on the vertices', () => {
+  const verts = [
+    { x: 10, y: 10, k: 's' }, { x: 30, y: 10 }, { x: 30, y: 30, k: 'f' }, { x: 10, y: 30 },
+  ];
+  const norm = normalizePolygon(verts);
+  assert.equal(norm[0].k, 's');
+  assert.equal(norm[2].k, 'f');
+  assert.ok(Math.abs(polygonArea(norm) - 1) < 1e-9, 'still normalized to area 1');
+});
+
+test('solveAreaLockedVertex keeps the dragged vertex corner style', () => {
+  const verts = regularPolygon(5).map((p, i) => (i === 2 ? { ...p, k: 's' } : p));
+  const { verts: out } = solveAreaLockedVertex(verts, 2, { x: 120, y: -35 }, 6000, 14);
+  assert.equal(out[2].k, 's');
+});
+
+// ---- simplifyOutline -----------------------------------------------------
+
+test('simplifyOutline caps the vertex count and keeps the shape', () => {
+  // A dense circle → at most 12 verts, similar area, at least a triangle.
+  const dense = Array.from({ length: 64 }, (_, i) => {
+    const a = (i / 64) * Math.PI * 2;
+    return { x: Math.cos(a) * 100, y: Math.sin(a) * 100 };
+  });
+  const out = simplifyOutline(dense, 12);
+  assert.ok(out.length <= 12 && out.length >= 3, `capped (${out.length})`);
+  const ratio = polygonArea(out) / polygonArea(dense);
+  assert.ok(ratio > 0.9, `area mostly preserved (${ratio.toFixed(3)})`);
+});
+
+test('simplifyOutline drops collinear vertices even under the cap', () => {
+  const withCollinear = [
+    { x: 0, y: 0 }, { x: 5, y: 0 }, { x: 10, y: 0 }, // middle vertex is collinear
+    { x: 10, y: 10 }, { x: 0, y: 10 },
+  ];
+  const out = simplifyOutline(withCollinear, 12);
+  assert.equal(out.length, 4, 'the collinear vertex was removed');
+});
+
+// ---- clipHalfPlane / voronoiCells ----------------------------------------
+
+const unitSquare = [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }, { x: 0, y: 10 }];
+
+test('clipHalfPlane keeps the half of a square closer to p', () => {
+  const left = clipHalfPlane(unitSquare, { x: 2, y: 5 }, { x: 8, y: 5 });
+  assert.ok(Math.abs(polygonArea(left) - 50) < 1e-9, `left half is 50 (${polygonArea(left)})`);
+  assert.ok(left.every((pt) => pt.x <= 5 + 1e-9), 'everything is left of the bisector');
+});
+
+test('voronoiCells tile the boundary exactly', () => {
+  const seeds = [{ x: 2, y: 2 }, { x: 8, y: 2 }, { x: 2, y: 8 }, { x: 8, y: 8 }];
+  const cells = voronoiCells(seeds, unitSquare);
+  assert.equal(cells.length, 4);
+  for (const c of cells) assert.ok(c && polygonArea(c) > 0, 'every cell survives');
+  const total = cells.reduce((t, c) => t + polygonArea(c), 0);
+  assert.ok(Math.abs(total - 100) < 1e-6, `cells partition the square (${total})`);
+  // Symmetric seeds → four equal quarters.
+  for (const c of cells) assert.ok(Math.abs(polygonArea(c) - 25) < 1e-6);
+});
+
+test('voronoiCells: a lone seed owns the whole boundary; co-located seeds do not vanish the space', () => {
+  const [only] = voronoiCells([{ x: 5, y: 5 }], unitSquare);
+  assert.ok(Math.abs(polygonArea(only) - 100) < 1e-9);
+  const twin = voronoiCells([{ x: 3, y: 3 }, { x: 3, y: 3 }, { x: 8, y: 8 }], unitSquare);
+  // The two co-located seeds share the same (identical) cell rather than clipping each other away.
+  assert.ok(twin[0] && twin[1] && polygonArea(twin[0]) > 0);
+});
+
+test('pointInPolygon and closestPointOnPolygon agree about a square', () => {
+  assert.equal(pointInPolygon(unitSquare, { x: 5, y: 5 }), true);
+  assert.equal(pointInPolygon(unitSquare, { x: 15, y: 5 }), false);
+  const c = closestPointOnPolygon(unitSquare, { x: 15, y: 4 });
+  assert.ok(Math.abs(c.x - 10) < 1e-9 && Math.abs(c.y - 4) < 1e-9, `clamps to the right edge (${c.x},${c.y})`);
+});
+
+// ---- concaveHull / hullOfDiscs -------------------------------------------
+
+// A simple-polygon check: no two non-adjacent edges may cross.
+function isSimple(pts) {
+  const cross = (p1, p2, p3, p4) => {
+    const d = (p2.x - p1.x) * (p4.y - p3.y) - (p2.y - p1.y) * (p4.x - p3.x);
+    if (!d) return false;
+    const t = ((p3.x - p1.x) * (p4.y - p3.y) - (p3.y - p1.y) * (p4.x - p3.x)) / d;
+    const u = ((p3.x - p1.x) * (p2.y - p1.y) - (p3.y - p1.y) * (p2.x - p1.x)) / d;
+    return t > 1e-9 && t < 1 - 1e-9 && u > 1e-9 && u < 1 - 1e-9;
+  };
+  const n = pts.length;
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      if (j === i || (j + 1) % n === i || (i + 1) % n === j) continue;
+      if (cross(pts[i], pts[(i + 1) % n], pts[j], pts[(j + 1) % n])) return false;
+    }
+  }
+  return true;
+}
+
+// Two dense clusters of points far apart — a dumbbell.
+function dumbbell(sep = 300) {
+  const pts = [];
+  for (const cx of [0, sep]) {
+    for (let i = 0; i < 24; i++) {
+      const a = (i / 24) * Math.PI * 2;
+      pts.push({ x: cx + Math.cos(a) * 40, y: Math.sin(a) * 40 });
+    }
+  }
+  return pts;
+}
+
+test('concaveHull equals the convex hull when maxEdge is generous or invalid', () => {
+  const pts = dumbbell();
+  assert.deepEqual(concaveHull(pts, 1e9), convexHull(pts));
+  assert.deepEqual(concaveHull(pts, 0), convexHull(pts));
+});
+
+test('concaveHull digs into the waist of a dumbbell', () => {
+  const pts = dumbbell();
+  const convex = convexHull(pts);
+  const concave = concaveHull(pts, 100);
+  assert.ok(polygonArea(concave) < polygonArea(convex) * 0.9,
+    `concave area shrinks (${(polygonArea(concave) / polygonArea(convex)).toFixed(3)})`);
+  assert.ok(isSimple(concave), 'no self-intersection');
+  // Every edge respects the dig threshold or had no acceptable candidate.
+  const long = concave.filter((p, i) => {
+    const q = concave[(i + 1) % concave.length];
+    return Math.hypot(q.x - p.x, q.y - p.y) > 100;
+  });
+  assert.ok(long.length <= 2, `at most the un-diggable bridge edges stay long (${long.length})`);
+});
+
+test('concaveHull leaves a convex cluster alone', () => {
+  const pts = [];
+  for (let i = 0; i < 32; i++) {
+    const a = (i / 32) * Math.PI * 2;
+    pts.push({ x: Math.cos(a) * 50, y: Math.sin(a) * 50 });
+  }
+  const concave = concaveHull(pts, 30);
+  const convex = convexHull(pts);
+  assert.ok(polygonArea(concave) >= polygonArea(convex) * 0.999, 'dense ring stays convex');
+});
+
+test('hullOfDiscs hugs an L-shaped arrangement tighter than the convex wrap', () => {
+  // An L of five rooms: three across, two down — the convex hull bridges the notch.
+  const discs = [
+    { x: 0, y: 0, r: 30 }, { x: 70, y: 0, r: 30 }, { x: 140, y: 0, r: 30 },
+    { x: 0, y: 70, r: 30 }, { x: 0, y: 140, r: 30 },
+  ];
+  const hull = hullOfDiscs(discs);
+  assert.ok(hull.length >= 3);
+  assert.ok(isSimple(hull), 'outline is simple');
+  const convexPts = [];
+  for (const d of discs)
+    for (let a = 0; a < Math.PI * 2; a += Math.PI / 8)
+      convexPts.push({ x: d.x + Math.cos(a) * d.r, y: d.y + Math.sin(a) * d.r });
+  assert.ok(polygonArea(hull) < polygonArea(convexHull(convexPts)) * 0.97,
+    'notch dug out of the L');
+  // Still contains every disc centre — hugging, not slicing through rooms.
+  for (const d of discs) {
+    let inside = false;
+    for (let i = 0, j = hull.length - 1; i < hull.length; j = i++) {
+      const a = hull[i], b = hull[j];
+      if ((a.y > d.y) !== (b.y > d.y) && d.x < ((b.x - a.x) * (d.y - a.y)) / (b.y - a.y) + a.x)
+        inside = !inside;
+    }
+    assert.ok(inside, `disc centre ${d.x},${d.y} inside the outline`);
+  }
 });

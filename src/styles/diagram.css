@@ -46,6 +46,202 @@
 .bubble-svg.linking { cursor: crosshair; }
 .site-contour { fill: none; stroke: var(--contour); stroke-width: 1; pointer-events: none; }
 
+/* Placement grid — a quiet metric reference field (major cells only). The
+   primary snap is edge/corner alignment, so the grid stays subtle. */
+.plan-grid { pointer-events: none; }
+.plan-grid-line { stroke: var(--muted); stroke-width: 1; opacity: 0.1; vector-effect: non-scaling-stroke; }
+
+/* Rotate handle for a placed Master-plan footprint. */
+.rotate-handle { cursor: grab; }
+.rotate-handle:active { cursor: grabbing; }
+.rotate-stem { stroke: var(--accent, #4c8bf5); stroke-width: 1.5; }
+.rotate-knob { fill: var(--panel, #fff); stroke: var(--accent, #4c8bf5); stroke-width: 2; }
+.rotate-knob:hover { fill: var(--accent, #4c8bf5); }
+
+/* Edge/corner-alignment guide shown while a footprint snaps to a neighbour — a
+   crisp 1px "smart guide" (magenta, always hairline regardless of zoom). */
+.align-guide { stroke: #ff2d8b; stroke-width: 1; opacity: 0.85; pointer-events: none; vector-effect: non-scaling-stroke; }
+
+/* Area-lock resize handles + live dimension readout on a Building box. */
+.resize-handle { fill: var(--panel, #fff); stroke: var(--accent, #4c8bf5); stroke-width: 2; cursor: pointer; }
+.resize-handle:hover { fill: var(--accent, #4c8bf5); }
+.dim-badge { fill: var(--accent, #4c8bf5); font-size: 11px; font-family: 'JetBrains Mono', monospace; pointer-events: none; }
+
+/* Vertical-adjacency tab: an interfloor link on a room being edited on one floor.
+   Green = the pair stacks (aligned in plan); red = it doesn't yet. */
+.vlink-badge circle { stroke: var(--panel); stroke-width: 2; }
+.vlink-badge text { fill: #fff; font-size: 11px; font-weight: 700; font-family: system-ui, sans-serif; }
+.vlink-badge.met circle { fill: var(--good, #3fae6b); }
+.vlink-badge.unmet circle { fill: var(--bad, #e5675f); }
+
+/* Building rail — per-floor gross-area stacking readout (a vertical by-level
+   bar chart; click a level to edit that floor). */
+.stack-building { padding: 4px 2px 8px; }
+/* The building header is the FOCUS control: click → the canvas fades every
+   other building. A button, styled like the old header row. */
+.stack-b-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  width: 100%; font-size: 12px; font-weight: 600; color: var(--text); padding: 2px 4px;
+  border: 1px solid transparent; border-radius: 6px; background: transparent;
+  font-family: inherit; text-align: left; cursor: pointer;
+}
+.stack-b-head:hover { background: var(--panel2); border-color: var(--border); }
+.stack-building.focused .stack-b-head { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.stack-b-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stack-b-total { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--muted); }
+/* Envelope fit chip: the master-plan footprint the storeys must fit inside. */
+.stack-env { font-size: 10px; color: var(--muted); flex: none; }
+.stack-env.bad { color: var(--bad, #e5675f); font-weight: 700; }
+.stack-levels { display: flex; flex-direction: column; gap: 2px; margin-top: 4px; }
+/* Storey-height editor (project-wide per level) at the top of the Stacking rail. */
+.stack-heights {
+  display: flex; flex-wrap: wrap; gap: 6px 10px;
+  padding: 6px 6px 8px; margin-bottom: 2px;
+  border-bottom: 1px dashed var(--border);
+}
+.stack-height { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; }
+.stack-height-name { color: var(--muted); max-width: 88px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stack-height input { width: 52px; padding: 3px 6px; font-size: 11.5px; font-family: 'JetBrains Mono', monospace; }
+.stack-height-unit { font-size: 10.5px; }
+.stack-level {
+  display: grid; grid-template-columns: 68px 1fr auto; align-items: center; gap: 8px;
+  width: 100%; padding: 4px 6px; border: 1px solid transparent; border-radius: 6px;
+  background: transparent; color: var(--text); font-size: 12px; text-align: left; cursor: pointer;
+}
+.stack-level:hover { background: var(--panel2); border-color: var(--border); }
+.stack-level.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.stack-level-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.stack-level.active .stack-level-name { color: var(--text); }
+.stack-bar-wrap { height: 10px; background: var(--panel3); border-radius: 3px; overflow: hidden; }
+.stack-bar { display: block; height: 100%; background: var(--accent); border-radius: 3px; min-width: 2px; }
+.stack-level-area { font-size: 10px; color: var(--muted); }
+
+/* Ghost = a Master-plan space seeded from its concept position but not yet
+   placed on the site. Faint + dashed until it's dropped / "Place"-d. */
+.bubble.ghost { opacity: 0.5; }
+.bubble.ghost .poly-shape,
+.bubble.ghost > circle,
+.bubble.ghost > rect { fill-opacity: 0.05; stroke-dasharray: 5 4; }
+
+/* Dim = outside the focused building (Building env). Non-interactive context. */
+.bubble.dim { opacity: 0.12; pointer-events: none; }
+
+/* Master-plan envelope drawn under the Building env — fixed context, the
+   footprint each building's rooms are arranged inside. */
+.envelope-underlay path {
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 1.5;
+  stroke-dasharray: 8 5;
+  opacity: 0.45;
+  vector-effect: non-scaling-stroke;
+}
+.envelope-underlay.focused path { stroke: var(--accent); opacity: 0.8; }
+.envelope-label { fill: var(--muted); font-size: 11px; font-weight: 600; opacity: 0.7; }
+.envelope-underlay.focused .envelope-label { fill: var(--accent); opacity: 1; }
+
+/* Envelope feasibility badge: drawn footprint vs the required one. */
+.env-badge { fill: var(--muted); font-size: 10px; font-family: 'JetBrains Mono', monospace; pointer-events: none; }
+.env-badge.bad { fill: var(--bad, #e5675f); font-weight: 700; }
+
+/* Voronoi interior sketch — room cells inside a placed envelope. The cells and
+   their labels never take the pointer (the envelope beneath stays draggable);
+   only the seed dot is interactive. */
+.voronoi-fill {
+  fill-opacity: 0.34;
+  stroke-width: 1;
+  stroke-opacity: 0.55;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+.voronoi-cell.tight .voronoi-fill {
+  stroke: var(--bad, #e5675f);
+  stroke-dasharray: 4 3;
+  stroke-opacity: 0.9;
+}
+.voronoi-name { font-size: 9.5px; font-weight: 600; pointer-events: none; }
+.voronoi-area { font-size: 8.5px; font-family: 'JetBrains Mono', monospace; opacity: 0.8; pointer-events: none; }
+.voronoi-cell.tight .voronoi-area { fill: var(--bad, #e5675f); opacity: 1; }
+.voronoi-seed {
+  stroke: var(--panel);
+  stroke-width: 2;
+  cursor: grab;
+  transition: r 0.1s ease-out;
+}
+.voronoi-seed:hover { r: 7; }
+.voronoi-seed:active { cursor: grabbing; }
+/* Circulation band inside an envelope — diagonal hatch under the room cells. */
+.circ-hatch-line { stroke: var(--muted); stroke-width: 1; }
+.circ-fill { opacity: 0.3; pointer-events: none; }
+
+/* Per-env empty-state hint (top-centre, dismissible). */
+.env-hint {
+  position: absolute;
+  top: 64px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(560px, calc(100% - 220px));
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  border: 1px solid var(--border);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  z-index: 7;
+  font-size: 12px;
+  color: var(--muted);
+}
+.env-hint-text { line-height: 1.45; }
+.env-hint-close {
+  flex: none;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+.env-hint-close:hover { color: var(--text); }
+
+/* Placement tray — un-placed spaces waiting to be drawn onto the site. */
+.place-tray {
+  position: absolute;
+  top: 64px;
+  left: 12px;
+  width: 190px;
+  max-height: 46%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel) 86%, transparent);
+  border: 1px solid var(--border);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  z-index: 6;
+}
+.place-tray-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.place-tray-title { font-size: 12px; font-weight: 600; color: var(--text); }
+.place-all { font-size: 11px; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel2); color: var(--muted); cursor: pointer; }
+.place-all:hover { color: var(--accent); border-color: var(--accent); }
+.place-tray-list { display: flex; flex-direction: column; gap: 3px; overflow-y: auto; }
+.place-row {
+  display: flex; align-items: center; gap: 7px;
+  padding: 5px 7px; border-radius: 7px;
+  border: 1px solid transparent; background: transparent;
+  font-size: 12px; color: var(--text); text-align: left; cursor: pointer;
+}
+.place-row:hover { background: var(--panel2); border-color: var(--border); }
+.place-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.place-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.place-cta { font-size: 10px; color: var(--muted); opacity: 0; }
+.place-row:hover .place-cta { opacity: 1; color: var(--accent); }
+.place-tray-hint { font-size: 10px; color: var(--muted); text-align: center; }
+
 /* Left tool dock (glass). */
 .tool-dock {
   position: absolute;
@@ -147,6 +343,15 @@
 .action-btn.icon { padding: 7px 10px; color: var(--muted); }
 .action-btn.danger:hover { border-color: var(--bad); color: var(--bad); }
 .action-cat { width: 130px; padding: 7px 10px; font-size: 12.5px; }
+/* Envelope form (a selected building in the master plan): editable drawn
+   footprint + the required footprint it must cover. */
+.action-env-area { width: 84px; padding: 7px 10px; font-size: 12.5px; font-family: 'JetBrains Mono', monospace; }
+.action-env-req { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.action-env-req.bad { color: var(--bad, #e5675f); font-weight: 700; }
+
+/* Per-space clear height (Building action bar). */
+.action-height { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; }
+.action-height input { width: 58px; padding: 7px 8px; font-size: 12.5px; font-family: 'JetBrains Mono', monospace; }
 
 /* Small segmented control (Desired | Required in the link form). */
 .seg-sm { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
@@ -162,6 +367,27 @@
 }
 .seg-sm button:hover { color: var(--text); }
 .seg-sm button.active { background: var(--accent); color: var(--accent-ink); }
+
+/* Environment switcher — the primary mode control leading the top bar. */
+.seg-env { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg-env button {
+  background: var(--panel2);
+  border: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.seg-env button:hover { color: var(--text); }
+.seg-env button.active { background: var(--accent); color: var(--accent-ink); }
+/* Pipeline progress under each env label (rooms · placed · blocked). */
+.seg-env button { display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 4px 11px; }
+.seg-sub { font-size: 9px; font-weight: 500; opacity: 0.72; font-family: 'JetBrains Mono', monospace; line-height: 1; }
+/* Thin divider separating the env switcher from the view controls. */
+.ctrl-sep { width: 1px; align-self: stretch; background: var(--border); margin: 0 1px; }
 
 /* floating overlays on the stage */
 .stage-legend {
@@ -199,6 +425,76 @@
   gap: 10px;
   flex-wrap: wrap;
   pointer-events: none;
+}
+
+/* ---- Stage chrome: one flow column for every top overlay -----------------
+   The topbar (which wraps on narrow stages), the layer/more/scale/error
+   popovers, and the under-bar row (placement tray · env hint · north rose)
+   stack in normal flow, so they can NEVER draw over each other, whatever the
+   viewport width. Scoped under .stage-chrome so the frozen legacy tab (which
+   still uses the absolute positions above) is untouched. */
+.stage-chrome {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  right: 12px;
+  z-index: 9;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  max-height: calc(100% - 24px);
+  pointer-events: none; /* the stage stays draggable between the panels */
+}
+.stage-chrome > * { pointer-events: auto; }
+.stage-chrome > .stage-topbar,
+.stage-chrome > .stage-underbar { pointer-events: none; }
+.stage-chrome .stage-topbar { position: static; width: 100%; }
+.stage-chrome .stage-popover {
+  position: static;
+  width: 100%;
+  flex-shrink: 0; /* keep the panel usable — the column may extend over the canvas instead */
+  max-height: 46vh; /* a tall panel scrolls itself instead of reaching the bottom row */
+  overflow-y: auto;
+  animation: popover-in 0.15s ease-out;
+}
+.stage-chrome .more-popover { width: 280px; }
+.stage-underbar {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  min-height: 0;
+}
+.stage-underbar > * { pointer-events: auto; }
+/* Middle zone: whatever the tray (left) and rose (right) leave, the hint
+   centres inside it. */
+.stage-underbar-mid {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+.stage-underbar-mid > * { pointer-events: auto; }
+.stage-chrome .env-hint {
+  position: static;
+  transform: none;
+  max-width: min(560px, 100%);
+}
+.stage-chrome .place-tray {
+  position: static;
+  max-height: 40vh;
+  flex: 0 0 auto;
+}
+.stage-chrome .north-rose {
+  position: static;
+  flex: 0 0 auto;
+}
+.stage-chrome .tool-dock {
+  position: static;
+  transform: none;
+  flex: 0 0 auto;
 }
 .stage-controls,
 .stage-actions {
@@ -380,6 +676,12 @@
 .scale-point circle:last-child { fill: var(--warn); }
 .scale-line { stroke: var(--warn); stroke-width: 2; stroke-dasharray: 8 5; }
 .pin-ring { fill: none; stroke: #fff; stroke-width: 1.6; stroke-dasharray: 2 5; stroke-linecap: round; opacity: 0.9; pointer-events: none; }
+/* Master plan: overlapping footprints get a dashed danger outline (a warning,
+   not a force — placements are authored, so overlaps are surfaced not resolved).
+   Author CSS overrides the inline stroke presentation attributes. */
+.bubble.overlap circle,
+.bubble.overlap rect,
+.bubble.overlap .poly-shape { stroke: var(--bad); stroke-width: 2.5; stroke-dasharray: 5 3; }
 .scale-bar line { stroke: var(--text); stroke-width: 2; }
 .scale-bar text { fill: var(--text); font-size: 12px; font-family: 'JetBrains Mono', monospace; }
 .scale-bar-bg { fill: rgba(11, 13, 18, 0.7); }
@@ -609,6 +911,7 @@
 
 .help-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 28px; padding: 12px 22px 18px; border-top: 1px solid var(--border-soft); }
 .help-section h3 { color: var(--accent); font-size: 13px; margin: 6px 0 8px; }
+.help-here { color: var(--muted); font-size: 11px; font-weight: 500; }
 .help-item { display: grid; grid-template-columns: 92px 1fr; gap: 10px; margin-bottom: 8px; }
 .help-item dt { font-weight: 600; font-size: 13px; }
 .help-item dd { margin: 0; color: var(--muted); font-size: 13px; }
@@ -645,9 +948,12 @@ kbd {
 @media (prefers-reduced-motion: reduce) { .poly-shape { transition: none; animation: none; } }
 
 .poly-edit { pointer-events: all; }
+/* Vertex handles — the glyph mirrors the corner style: circle = curve,
+   rounded square = fillet, square = sharp. Right-click cycles the style. */
 .poly-handle { fill: var(--accent2); stroke: #fff; stroke-width: 1.5; cursor: grab; transition: r 0.12s ease, fill 0.12s ease; }
 .poly-handle:hover { fill: #fff; stroke: var(--accent2); r: 8; }
 .poly-handle:active { cursor: grabbing; fill: #fff; r: 8; }
+rect.poly-handle:hover, rect.poly-handle:active { transform: scale(1.2); transform-box: fill-box; transform-origin: center; }
 .poly-add { fill: rgba(87, 199, 212, 0.35); stroke: #fff; stroke-width: 1; cursor: copy; transition: r 0.12s ease, fill 0.12s ease; }
 .poly-add:hover { fill: var(--accent2); r: 6; }
 .poly-area-badge {

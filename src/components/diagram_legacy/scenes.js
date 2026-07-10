@@ -183,32 +183,8 @@ export function buildStackScene({ nodes, instances, levels, levelRank, radiusOf,
 export function build3DScene({
   nodes, instances, levels, levelRank, radiusOf, levelOf, palette,
   adjacencies, byId, rankOf, shapeOf, polyVertsOf, colorOf, groundImage,
-  envelopes = null, // [{ x, y, rot, verts, name, focused }] in world units
-  mToU = null, // metres → diagram units (1/effScale); null = no scale
-  levelHeightM = null, // (level label) → storey height in metres
-  roomHeightM = null, // (space) → clear height in metres (own or storey's)
 }) {
   const PAD = 36;
-  // Real storey heights, in DIAGRAM UNITS so they scale exactly like plan
-  // distances. Each level's base = the sum of the storeys below it, so the
-  // massing stacks contiguously; a room's own height can span several storeys.
-  // Without a calibrated scale there is no metre↔unit relation — `metric` is
-  // false and the 3-D view keeps its legacy uniform gap/slab heights.
-  const metric = !!(mToU && levelHeightM);
-  const levelHU = new Map(); // label → storey height (units)
-  const levelBaseU = new Map(); // label → base elevation (units)
-  if (metric) {
-    let base = 0;
-    for (const label of levels) { // ordered ground → up
-      const h = levelHeightM(label) * mToU;
-      levelHU.set(label, h);
-      levelBaseU.set(label, base);
-      base += h;
-    }
-  }
-  const baseOf = (s) => (metric ? levelBaseU.get(levelOf(s)) ?? 0 : 0);
-  const heightOf = (s) =>
-    metric ? (roomHeightM ? roomHeightM(s) : levelHeightM(levelOf(s))) * mToU : 0;
   // Per-floor bounding box + centre (raw node coords).
   const fb = new Map();
   for (const o of instances) {
@@ -237,23 +213,11 @@ export function build3DScene({
       const n = nodes.get(o.key);
       const c = centreOf(levelOf(o.s));
       const kind = shapeOf(o.s);
-      const r = radiusOf(o.s);
-      // Boxes keep their authored plan rectangle: the node's aspect rescaled
-      // to the room's live target area (same lock as the plan view), plus its
-      // 90° orientation — not the old equal-area square/cube.
-      let w = r * Math.sqrt(Math.PI), h = w;
-      if (kind === 'box' && n.w > 0 && n.h > 0) {
-        const aspect = n.w / n.h;
-        h = Math.sqrt((Math.PI * r * r) / aspect);
-        w = aspect * h;
-      }
       return {
         key: o.key,
         x: n.x - c.x, y: n.y - c.y, // re-centred onto the shared footprint
         rank: rankOf(o.s),
-        r,
-        w, h, rot: n.rot || 0,
-        baseU: baseOf(o.s), hU: heightOf(o.s), // real elevation + clear height (units)
+        r: radiusOf(o.s),
         box: kind === 'box',
         poly: kind === 'poly' ? polyVertsOf(o.s) : null, // scaled verts, centred at origin
         color: colorOf(o.s),
@@ -261,22 +225,18 @@ export function build3DScene({
       };
     });
 
-  // Only link rooms that are actually in the scene (instances may be a
-  // focused-building subset).
-  const inScene = new Set(instances.map((o) => o.s.id));
   const links = [];
   for (const l of adjacencies) {
     const sa = byId.get(l.space_a), sb = byId.get(l.space_b);
-    if (!sa || !sb || !inScene.has(sa.id) || !inScene.has(sb.id)) continue;
-    if (!levels.includes(levelOf(sa)) || !levels.includes(levelOf(sb))) continue;
+    if (!sa || !sb || !levels.includes(levelOf(sa)) || !levels.includes(levelOf(sb))) continue;
     const ca = centreOf(levelOf(sa)), cb = centreOf(levelOf(sb));
     const best = closestInstancePair(nodes, sa, sb);
     if (best) {
       const ra = radiusOf(sa), rb = radiusOf(sb);
       const boxA = shapeOf(sa) === 'box', boxB = shapeOf(sb) === 'box';
       links.push({
-        a: [best.a.x - ca.x, best.a.y - ca.y, rankOf(sa), ra, boxA, baseOf(sa), heightOf(sa)],
-        b: [best.b.x - cb.x, best.b.y - cb.y, rankOf(sb), rb, boxB, baseOf(sb), heightOf(sb)],
+        a: [best.a.x - ca.x, best.a.y - ca.y, rankOf(sa), ra, boxA],
+        b: [best.b.x - cb.x, best.b.y - cb.y, rankOf(sb), rb, boxB],
         strength: l.strength,
       });
     }
@@ -298,30 +258,8 @@ export function build3DScene({
     label,
     rank: levelRank.get(label),
     color: palette[levelRank.get(label) % palette.length],
-    baseU: metric ? levelBaseU.get(label) : 0,
-    heightU: metric ? levelHU.get(label) : 0,
     minX: foot.x0, minY: foot.y0, maxX: foot.x1, maxY: foot.y1,
   }));
 
-  // Master-plan building envelopes as ground-plane outlines: each outline's
-  // verts rotated + translated to their site position, then re-centred like
-  // the ground image so they line up with the ground floor's rooms.
-  let envelopeLoops = null;
-  if (envelopes && envelopes.length) {
-    const c0 = centreOf(levels[0]);
-    envelopeLoops = envelopes.map((e) => {
-      const a = ((e.rot || 0) * Math.PI) / 180;
-      const cos = Math.cos(a), sin = Math.sin(a);
-      return {
-        name: e.name,
-        focused: !!e.focused,
-        pts: e.verts.map((p) => ({
-          x: e.x + p.x * cos - p.y * sin - c0.x,
-          y: e.y + p.x * sin + p.y * cos - c0.y,
-        })),
-      };
-    });
-  }
-
-  return { center, foot, floors, rooms, links, image, envelopes: envelopeLoops, floorCount: levels.length, metric };
+  return { center, foot, floors, rooms, links, image, floorCount: levels.length };
 }

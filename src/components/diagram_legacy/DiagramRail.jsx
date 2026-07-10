@@ -15,14 +15,6 @@ export default function DiagramRail({
   groups,
   groupKey,
   areaTree,
-  stackData,
-  stackLevels,
-  levelHeightOf,
-  onLevelHeight,
-  floorMode,
-  onPickFloor,
-  focusBuilding,
-  onFocusBuilding,
   areaMode,
   setAreaMode,
   collapsed,
@@ -131,93 +123,10 @@ export default function DiagramRail({
         </div>
       </section>
 
-      {stackData && stackData.length > 0 && (
-        <section className="rail-section stacking">
-          <div className="rail-head">
-            <div className="sec-head">
-              <span className="sec-tag">A·02</span>
-              <span className="sec-title">Stacking</span>
-            </div>
-            <span className="muted mono rail-head-count">gross / floor</span>
-          </div>
-          {/* Storey heights — project-wide per level label (all buildings).
-              Feeds the 3-D massing; a space's own height overrides its
-              storey's (set it in the Brief). */}
-          {stackLevels && stackLevels.length > 0 && onLevelHeight && (
-            <div className="stack-heights">
-              {stackLevels.map((lv) => (
-                <label key={lv} className="stack-height" title={`Floor-to-floor height of “${lv}” in metres — applies across buildings`}>
-                  <span className="stack-height-name">{lv}</span>
-                  <input
-                    type="number"
-                    min="2"
-                    max="20"
-                    step="0.1"
-                    defaultValue={levelHeightOf(lv)}
-                    onChange={(e) => onLevelHeight(lv, e.target.value)}
-                  />
-                  <span className="stack-height-unit muted">m</span>
-                </label>
-              ))}
-            </div>
-          )}
-          {stackData.map(({ building, rootId, rows, total, envelope }) => {
-            const max = Math.max(...rows.map((r) => r.area), 1);
-            const focused = focusBuilding != null && focusBuilding === rootId;
-            return (
-              <div key={building} className={`stack-building ${focused ? 'focused' : ''}`}>
-                <button
-                  className="stack-b-head"
-                  onClick={() => rootId != null && onFocusBuilding?.(rootId)}
-                  title={focused ? 'Unfocus — show every building' : 'Focus this building on the canvas'}
-                >
-                  <span className="stack-b-name">{focused ? '◉' : '🏢'} {building}</span>
-                  {envelope && (
-                    <span
-                      className={`stack-env mono ${envelope.over ? 'bad' : ''}`}
-                      title={envelope.over
-                        ? 'The biggest storey (plus circulation) exceeds the master-plan envelope — enlarge the envelope or move rooms up/down'
-                        : 'Master-plan envelope footprint'}
-                    >
-                      ▱ {fmtArea(envelope.drawn, units)}
-                    </span>
-                  )}
-                  {envelope && envelope.circ > 0 && (
-                    <span
-                      className="stack-env stack-circ mono"
-                      title={`Circulation — ${Math.round(envelope.circ * 100)}% of gross, ≈ ${fmtArea(envelope.drawn * envelope.circ, units)} of this envelope. Set per building in the Master plan's action bar.`}
-                    >
-                      ⤨ {fmtArea(envelope.drawn * envelope.circ, units)}
-                    </span>
-                  )}
-                  <span className="stack-b-total">{fmtArea(total, units)}</span>
-                </button>
-                <div className="stack-levels">
-                  {rows.map((r) => (
-                    <button
-                      key={r.lvl}
-                      className={`stack-level ${floorMode === r.raw ? 'active' : ''}`}
-                      onClick={() => onPickFloor(r.raw)}
-                      title={`Edit ${r.lvl}`}
-                    >
-                      <span className="stack-level-name" title={r.lvl}>{r.lvl}</span>
-                      <span className="stack-bar-wrap">
-                        <span className="stack-bar" style={{ width: `${(r.area / max) * 100}%` }} />
-                      </span>
-                      <span className="stack-level-area mono">{fmtArea(r.area, units)}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            );
-          })}
-        </section>
-      )}
-
       <section className="rail-section rel">
         <div className="rail-head">
           <div className="sec-head">
-            <span className="sec-tag t-accent2">A·03</span>
+            <span className="sec-tag t-accent2">A·02</span>
             <span className="sec-title">Adjacency</span>
           </div>
           <span className="muted mono rail-head-count">

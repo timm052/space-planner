@@ -2,7 +2,6 @@ import { Suspense, useEffect, useMemo } from 'react';
 import { Canvas, useThree } from '@react-three/fiber';
 import { OrbitControls, PerspectiveCamera, Html, useTexture, Line, Edges } from '@react-three/drei';
 import * as THREE from 'three';
-import { darkHex } from '../../viz.js';
 
 // A real WebGL 3-D view of the stacked floors: each storey is a thin slab at its
 // own height, rooms are shaded spheres (or boxes) sitting on the slab, the site
@@ -20,6 +19,13 @@ import { darkHex } from '../../viz.js';
 // (up). Rooms arrive pre-centred on a shared footprint, so center is the origin.
 
 const BOX_K = Math.sqrt(Math.PI); // box side for a circle of equal area = r·√π
+
+// World-space centre of a room/endpoint sitting on its floor slab.
+function roomCentre(x, y, rank, r, box, S, gapY) {
+  const rW = Math.max(0.06, r * S);
+  const half = box ? (rW * BOX_K) / 2 : rW;
+  return new THREE.Vector3(x * S, rank * gapY + half + 0.06, y * S);
+}
 
 function GroundImage({ href, w, d, opacity }) {
   const texture = useTexture(href);
@@ -39,9 +45,10 @@ function GroundImage({ href, w, d, opacity }) {
   );
 }
 
-function Floor({ floor, S, y, image, showImage }) {
+function Floor({ floor, S, gapY, image, showImage }) {
   const w = Math.max(0.1, (floor.maxX - floor.minX) * S);
   const d = Math.max(0.1, (floor.maxY - floor.minY) * S);
+  const y = floor.rank * gapY;
   const imgW = image ? image.w * S : 0;
   const imgD = image ? image.h * S : 0;
   const imgX = image ? image.cx * S : 0;
@@ -62,19 +69,16 @@ function Floor({ floor, S, y, image, showImage }) {
           </group>
         </Suspense>
       )}
-      {/* The implicit single storey (no level labels in the brief) has no name
-          — don't render an empty pill for it. */}
-      {floor.label && (
-        <Html position={[-w / 2, 0.1, -d / 2]} center={false} distanceFactor={18} occlude={false}>
-          <div className="r3f-floor-label">{floor.label}</div>
-        </Html>
-      )}
+      <Html position={[-w / 2, 0.1, -d / 2]} center={false} distanceFactor={18} occlude={false}>
+        <div className="r3f-floor-label">{floor.label}</div>
+      </Html>
     </group>
   );
 }
 
-function Room({ room, S, y, boxH }) {
+function Room({ room, S, gapY }) {
   const rW = Math.max(0.06, room.r * S);
+  const side = rW * BOX_K;
 
   // Freeform polygon: extrude the (area-locked) outline into a soft, bubble-like
   // cushion standing on the floor slab — a generous bevel rounds the top and
@@ -102,7 +106,7 @@ function Room({ room, S, y, boxH }) {
 
   if (polyGeom) {
     return (
-      <group position={[room.x * S, y + 0.06, room.y * S]}>
+      <group position={[room.x * S, room.rank * gapY + 0.06, room.y * S]}>
         <mesh castShadow geometry={polyGeom} rotation={[-Math.PI / 2, 0, 0]}>
           <meshPhysicalMaterial color={room.color} roughness={0.34} metalness={0.02} clearcoat={0.35} clearcoatRoughness={0.6} />
         </mesh>
@@ -113,33 +117,14 @@ function Room({ room, S, y, boxH }) {
     );
   }
 
-  if (room.box) {
-    // Massing block: the room's authored plan rectangle (aspect + 90° turn)
-    // extruded to its real clear height (its own height_m, else the storey's;
-    // uniform share of the gap when no scale is set) — a double-height hall
-    // rises through the storey above. A crisp poché edge outlines every block.
-    const bw = Math.max(0.08, (room.w || room.r * BOX_K) * S);
-    const bd = Math.max(0.08, (room.h || room.r * BOX_K) * S);
-    return (
-      <group position={[room.x * S, y + boxH / 2 + 0.06, room.y * S]} rotation={[0, (-(room.rot || 0) * Math.PI) / 180, 0]}>
-        <mesh castShadow receiveShadow>
-          <boxGeometry args={[bw, boxH, bd]} />
-          <meshPhysicalMaterial color={room.color} roughness={0.42} metalness={0.02} clearcoat={0.3} clearcoatRoughness={0.65} />
-          <Edges color={darkHex(room.color, 0.45)} threshold={30} />
-        </mesh>
-        <Html position={[0, boxH / 2 + 0.12, 0]} center distanceFactor={16} occlude={false}>
-          <div className="r3f-room-label">{room.name}</div>
-        </Html>
-      </group>
-    );
-  }
+  const p = roomCentre(room.x, room.y, room.rank, room.r, room.box, S, gapY);
   return (
-    <group position={[room.x * S, y + rW + 0.06, room.y * S]}>
+    <group position={p.toArray()}>
       <mesh castShadow>
-        <sphereGeometry args={[rW, 48, 32]} />
+        {room.box ? <boxGeometry args={[side, side, side]} /> : <sphereGeometry args={[rW, 48, 32]} />}
         <meshPhysicalMaterial color={room.color} roughness={0.4} metalness={0.02} clearcoat={0.3} clearcoatRoughness={0.65} />
       </mesh>
-      <Html position={[0, rW + 0.12, 0]} center distanceFactor={16} occlude={false}>
+      <Html position={[0, (room.box ? side / 2 : rW) + 0.12, 0]} center distanceFactor={16} occlude={false}>
         <div className="r3f-room-label">{room.name}</div>
       </Html>
     </group>
@@ -176,32 +161,10 @@ function Scene({ scene, gap, showImage, camMode }) {
   // initial ResizeObserver callback when mounting into a freshly-shown panel,
   // and rendering at 0×0 throws transient NaN geometry warnings.
   const sized = useThree((s) => s.size.width > 1 && s.size.height > 1);
-  const { foot, floors, rooms, links, image, envelopes, floorCount, metric } = scene;
+  const { foot, floors, rooms, links, image, floorCount } = scene;
   const S = 14 / Math.max(foot.w, foot.h, 1);
   const gapY = gap * 9;
-  // Uniform storey height for the massing blocks — the legacy (no-scale)
-  // sizing: a solid share of the floor-to-floor spacing.
-  const roomH = Math.max(0.6, gapY * 0.52);
-  // Metric mode (scene.metric): floors sit at their REAL base elevations and
-  // rooms extrude to their real clear heights (both pre-scaled like plan
-  // distances). The floor-gap slider becomes an "air gap" between storeys —
-  // a fraction of the average storey height — so the exploded view survives.
-  const avgStoreyW = metric && floors.length
-    ? (floors.reduce((t, f) => t + f.heightU, 0) / floors.length) * S
-    : 0;
-  const air = metric ? gap * avgStoreyW : 0;
-  const yOf = (rank, baseU) => (metric ? baseU * S + rank * air : rank * gapY);
-  const boxHOf = (hU) => (metric ? Math.max(0.15, hU * S) : roomH);
-  // World-space centre of a link endpoint sitting on its floor.
-  const endCentre = ([x, y, rank, r, box, baseU = 0, hU = 0]) => {
-    const rW = Math.max(0.06, r * S);
-    const half = box ? boxHOf(hU) / 2 : rW;
-    return new THREE.Vector3(x * S, yOf(rank, baseU) + half + 0.06, y * S);
-  };
-  const topFloor = floors[floors.length - 1];
-  const topY = metric && topFloor
-    ? (topFloor.baseU + topFloor.heightU) * S + (floorCount - 1) * air
-    : (floorCount - 1) * gapY;
+  const topY = (floorCount - 1) * gapY;
   const midY = topY / 2;
   const span = Math.max(foot.w, foot.h) * S;
   const fit = Math.max(span, topY + span * 0.4);
@@ -234,14 +197,14 @@ function Scene({ scene, gap, showImage, camMode }) {
       <OrbitControls key={camMode} target={[0, midY, 0]} makeDefault maxPolarAngle={Math.PI * 0.58} />
 
       {floors.map((f) => (
-        <Floor key={f.label} floor={f} S={S} y={yOf(f.rank, f.baseU)} image={image} showImage={showImage} />
+        <Floor key={f.label} floor={f} S={S} gapY={gapY} image={image} showImage={showImage} />
       ))}
 
       {/* Adjacency lines between the 3-D room centres — fat, anti-aliased
           lines (px-true width); desired links are dashed, required solid. */}
       {links.map((l, i) => {
-        const a = endCentre(l.a);
-        const b = endCentre(l.b);
+        const a = roomCentre(l.a[0], l.a[1], l.a[2], l.a[3], l.a[4], S, gapY);
+        const b = roomCentre(l.b[0], l.b[1], l.b[2], l.b[3], l.b[4], S, gapY);
         const required = l.strength === 'required';
         return (
           <Line
@@ -259,25 +222,8 @@ function Scene({ scene, gap, showImage, camMode }) {
       })}
 
       {rooms.map((room) => (
-        <Room key={room.key} room={room} S={S} y={yOf(room.rank, room.baseU)} boxH={boxHOf(room.hU)} />
+        <Room key={room.key} room={room} S={S} gapY={gapY} />
       ))}
-
-      {/* Master-plan envelope(s) drawn on the ground plane — the footprint the
-          massing must stand inside. Dashed, like the plan-view underlay. */}
-      {envelopes &&
-        envelopes.map((e, i) => (
-          <Line
-            key={`env${i}`}
-            points={[...e.pts, e.pts[0]].map((p) => new THREE.Vector3(p.x * S, 0.05, p.y * S))}
-            color={e.focused ? '#7aa2f7' : '#8a93a8'}
-            lineWidth={e.focused ? 1.6 : 1.1}
-            dashed
-            dashSize={0.34}
-            gapSize={0.2}
-            transparent
-            opacity={e.focused ? 0.9 : 0.6}
-          />
-        ))}
 
       {/* Vertical corner posts tying the stack together. */}
       {floorCount > 1 &&
@@ -308,11 +254,10 @@ function Scene({ scene, gap, showImage, camMode }) {
 
 export default function Stacked3D({ scene, gap, showImage, camMode = 'persp' }) {
   // R3F sizes its canvas from a ResizeObserver whose initial callback can be
-  // missed when the canvas mounts inside a freshly-shown panel. Nudge it a few
-  // times — the first nudge can race the lazy three.js chunk still mounting.
+  // missed when the canvas mounts inside a freshly-shown panel; nudge it once.
   useEffect(() => {
-    const ids = [60, 300, 900].map((ms) => setTimeout(() => window.dispatchEvent(new Event('resize')), ms));
-    return () => ids.forEach(clearTimeout);
+    const id = setTimeout(() => window.dispatchEvent(new Event('resize')), 60);
+    return () => clearTimeout(id);
   }, []);
 
   return (

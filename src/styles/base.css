@@ -242,6 +242,10 @@ input:disabled, select:disabled, textarea:disabled { opacity: 0.55; cursor: not-
 }
 .tab:hover { color: var(--text); background: var(--panel2); }
 .tab.active { color: var(--accent); background: var(--panel2); font-weight: 600; }
+/* Dev-only frozen legacy diagram tab — dashed accent so it never reads as production. */
+.tab.tab-legacy { color: var(--muted); font-style: italic; }
+.tab.tab-legacy::before { content: '🧪 '; font-style: normal; }
+.tab.tab-legacy.active { color: var(--warn, #e0a458); }
 .tab-count {
   background: var(--panel3);
   border-radius: 999px;

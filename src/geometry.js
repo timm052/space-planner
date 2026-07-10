@@ -22,6 +22,148 @@ export function convexHull(points) {
   return lower.concat(upper);
 }
 
+// True when segments p1–p2 and p3–p4 properly cross (shared endpoints don't count).
+function segmentsCross(p1, p2, p3, p4) {
+  const d = (p2.x - p1.x) * (p4.y - p3.y) - (p2.y - p1.y) * (p4.x - p3.x);
+  if (!d) return false;
+  const t = ((p3.x - p1.x) * (p4.y - p3.y) - (p3.y - p1.y) * (p4.x - p3.x)) / d;
+  const u = ((p3.x - p1.x) * (p2.y - p1.y) - (p3.y - p1.y) * (p2.x - p1.x)) / d;
+  return t > 1e-9 && t < 1 - 1e-9 && u > 1e-9 && u < 1 - 1e-9;
+}
+
+// Concave hull by edge digging: start from the convex hull and repeatedly
+// replace any edge longer than `maxEdge` with a detour through the interior
+// point nearest that edge's endpoints — so the outline sinks into empty
+// stretches (between room clusters) but never between adjacent rooms. A
+// candidate is only accepted when both new edges are strictly shorter than
+// the edge it replaces (guarantees termination) and neither crosses the
+// outline. Convex input (or maxEdge ≤ 0) returns the plain convex hull.
+export function concaveHull(points, maxEdge) {
+  const hull = convexHull(points);
+  if (!(maxEdge > 0) || hull.length < 3) return hull;
+  const out = hull.slice();
+  const onHull = new Set(out);
+  let candidates = points.filter((p) => !onHull.has(p));
+  let i = 0;
+  while (i < out.length && candidates.length) {
+    const a = out[i];
+    const b = out[(i + 1) % out.length];
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    if (len <= maxEdge) {
+      i++;
+      continue;
+    }
+    // Rank candidates by how tightly they tuck into this edge; take the best
+    // one that keeps the outline simple.
+    const ranked = candidates
+      .map((p) => ({ p, d: Math.max(Math.hypot(p.x - a.x, p.y - a.y), Math.hypot(p.x - b.x, p.y - b.y)) }))
+      .filter((c) => c.d < len * 0.999)
+      .sort((x, y) => x.d - y.d);
+    let dug = false;
+    for (const { p } of ranked) {
+      let crosses = false;
+      for (let j = 0; j < out.length && !crosses; j++) {
+        const q1 = out[j];
+        const q2 = out[(j + 1) % out.length];
+        if (q1 === a || q2 === a || q1 === b || q2 === b) continue;
+        crosses = segmentsCross(a, p, q1, q2) || segmentsCross(p, b, q1, q2);
+      }
+      if (crosses) continue;
+      out.splice(i + 1, 0, p);
+      candidates = candidates.filter((c) => c !== p);
+      dug = true;
+      break; // re-examine edge a–p from the same index
+    }
+    if (!dug) i++;
+  }
+  return out;
+}
+
+// The outline the diagram draws around a set of padded discs (bubbles + hull
+// padding): 16 samples per disc taken to a concave hull whose dig threshold
+// scales with the discs themselves — `digFactor` × the median padded radius —
+// so the outline hugs the arrangement's real profile without cutting between
+// neighbouring rooms. discs: [{ x, y, r }].
+export function hullOfDiscs(discs, digFactor = 3) {
+  const pts = [];
+  const radii = [];
+  for (const d of discs) {
+    radii.push(d.r);
+    for (let a = 0; a < Math.PI * 2; a += Math.PI / 8) {
+      pts.push({ x: d.x + Math.cos(a) * d.r, y: d.y + Math.sin(a) * d.r });
+    }
+  }
+  if (pts.length < 3) return pts;
+  radii.sort((a, b) => a - b);
+  const med = radii[Math.floor(radii.length / 2)];
+  return concaveHull(pts, med * digFactor);
+}
+
+// ---------- clipped Voronoi (master-plan interior) ----------
+
+// Clip a polygon to the half-plane of points at least as close to `p` as to
+// `q` (Sutherland–Hodgman against the p–q perpendicular bisector).
+export function clipHalfPlane(poly, p, q) {
+  const mx = (p.x + q.x) / 2, my = (p.y + q.y) / 2;
+  const ax = q.x - p.x, ay = q.y - p.y;
+  const side = (pt) => (pt.x - mx) * ax + (pt.y - my) * ay; // > 0 → closer to q
+  const out = [];
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i], b = poly[(i + 1) % poly.length];
+    const da = side(a), db = side(b);
+    if (da <= 0) out.push(a);
+    if ((da < 0 && db > 0) || (da > 0 && db < 0)) {
+      const t = da / (da - db);
+      out.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+    }
+  }
+  return out;
+}
+
+// The Voronoi partition of `boundary` under `seeds` ([{x,y}, …]): one clipped
+// cell polygon per seed (null when the cell degenerates). Each cell is the
+// boundary clipped by the bisector against every other seed — O(n²) clips,
+// trivial for room counts, no dependency. Co-located seeds have no bisector
+// and simply share the space their neighbours leave them.
+export function voronoiCells(seeds, boundary) {
+  return seeds.map((s, i) => {
+    let cell = boundary;
+    for (let j = 0; j < seeds.length && cell.length; j++) {
+      if (j === i) continue;
+      const o = seeds[j];
+      if (Math.hypot(o.x - s.x, o.y - s.y) < 1e-9) continue;
+      cell = clipHalfPlane(cell, s, o);
+    }
+    return cell.length >= 3 ? cell : null;
+  });
+}
+
+// Ray-cast point-in-polygon (boundary points count as outside on some edges —
+// fine for the clamping use below).
+export function pointInPolygon(pts, p) {
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const a = pts[i], b = pts[j];
+    if ((a.y > p.y) !== (b.y > p.y) && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x)
+      inside = !inside;
+  }
+  return inside;
+}
+
+// Nearest point on a polygon's boundary to `p`.
+export function closestPointOnPolygon(pts, p) {
+  let best = null, bestD = Infinity;
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i], b = pts[(i + 1) % pts.length];
+    const vx = b.x - a.x, vy = b.y - a.y;
+    const t = Math.max(0, Math.min(1, ((p.x - a.x) * vx + (p.y - a.y) * vy) / (vx * vx + vy * vy || 1)));
+    const cx = a.x + vx * t, cy = a.y + vy * t;
+    const d = Math.hypot(p.x - cx, p.y - cy);
+    if (d < bestD) { bestD = d; best = { x: cx, y: cy }; }
+  }
+  return best;
+}
+
 // A soft, rounded closed path through a polygon's points (midpoint quadratics).
 export function smoothHullPath(pts) {
   const n = pts.length;
@@ -81,24 +223,35 @@ export function polygonCentroid(pts) {
 
 // Translate centroid → origin and scale so the polygon's area is exactly 1.
 // Returns a fresh array; returns the input unchanged when degenerate.
+// Per-vertex extras (the corner style `k`) ride along untouched.
 export function normalizePolygon(pts) {
   if (!pts || pts.length < 3) return pts;
   const c = polygonCentroid(pts);
-  const centred = pts.map((p) => ({ x: p.x - c.x, y: p.y - c.y }));
+  const centred = pts.map((p) => ({ ...p, x: p.x - c.x, y: p.y - c.y }));
   const area = polygonArea(centred);
   if (!(area > 0)) return centred;
   const f = 1 / Math.sqrt(area);
-  return centred.map((p) => ({ x: p.x * f, y: p.y * f }));
+  return centred.map((p) => ({ ...p, x: p.x * f, y: p.y * f }));
 }
 
-// Tolerant parse of a space's shape_json into an array of {x,y}; returns null
-// when absent/invalid so callers fall back to bubble/box (mirrors pinsOf).
+// Corner styles a polygon vertex can carry (shape_json `k` per vertex):
+// 'c' curve (smooth through the corner — the default), 'f' fillet (tight
+// rounding), 's' sharp (a true corner).
+export const CORNER_STYLES = ['c', 'f', 's'];
+export const cornerOf = (p) => (p.k === 's' || p.k === 'f' ? p.k : 'c');
+
+// Tolerant parse of a space's shape_json into an array of {x,y,k?}; returns
+// null when absent/invalid so callers fall back to bubble/box (mirrors pinsOf).
 export function parsePoly(s) {
   if (!s || !s.shape_json) return null;
   try {
     const v = JSON.parse(s.shape_json);
     if (!Array.isArray(v) || v.length < 3) return null;
-    const pts = v.map((p) => ({ x: Number(p.x), y: Number(p.y) }));
+    const pts = v.map((p) => ({
+      x: Number(p.x),
+      y: Number(p.y),
+      ...(p.k === 's' || p.k === 'f' ? { k: p.k } : {}),
+    }));
     if (pts.some((p) => !Number.isFinite(p.x) || !Number.isFinite(p.y))) return null;
     return pts;
   } catch {
@@ -112,11 +265,81 @@ export function polygonPath(pts) {
   return pts.map((p, i) => `${i ? 'L' : 'M'} ${p.x.toFixed(2)} ${p.y.toFixed(2)}`).join(' ') + ' Z';
 }
 
+// Sample a polygon's RENDERED outline as dense points, honouring each vertex's
+// corner style (`k`): 'c' curve = quadratic Bézier anchored at the adjacent
+// edge midpoints (the classic smooth blob — the default), 'f' fillet = the
+// same Bézier but with anchors pulled toward the corner (a tight rounding),
+// 's' sharp = the exact corner point. Vertices without `k` behave as curves,
+// so outlines saved before corner styles existed render unchanged. The result
+// is a dense point ring that can be drawn/extruded/area-measured like any
+// polygon — every view (plan, stacked, 3-D, PDF) consumes this one sampler.
+const FILLET_T = 0.45; // fillet anchors sit this fraction of the way corner → edge midpoint
+export function outlinePoints(pts, seg = 12) {
+  const n = pts.length;
+  if (n < 3) return pts.slice();
+  const mid = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const cur = pts[i];
+    const k = cornerOf(cur);
+    if (k === 's') {
+      out.push({ x: cur.x, y: cur.y });
+      continue;
+    }
+    const m0 = mid(pts[(i - 1 + n) % n], cur);
+    const m1 = mid(cur, pts[(i + 1) % n]);
+    // Curve anchors at the midpoints exactly (bit-identical to the classic
+    // smoothing); fillet anchors pulled toward the corner for a tight round.
+    const p0 = k === 'f' ? { x: cur.x + (m0.x - cur.x) * FILLET_T, y: cur.y + (m0.y - cur.y) * FILLET_T } : m0;
+    const p2 = k === 'f' ? { x: cur.x + (m1.x - cur.x) * FILLET_T, y: cur.y + (m1.y - cur.y) * FILLET_T } : m1;
+    for (let s = 0; s < seg; s++) {
+      const t = s / seg;
+      const mt = 1 - t;
+      out.push({
+        x: mt * mt * p0.x + 2 * mt * t * cur.x + t * t * p2.x,
+        y: mt * mt * p0.y + 2 * mt * t * cur.y + t * t * p2.y,
+      });
+    }
+  }
+  return out;
+}
+
+// Reduce a dense outline (e.g. a convex hull) to an editable vertex count:
+// repeatedly drop the vertex that deviates least from its neighbours' chord,
+// until under `maxVerts` AND every remaining vertex earns its keep. Keeps at
+// least a triangle.
+export function simplifyOutline(pts, maxVerts = 12) {
+  const out = pts.map((p) => ({ ...p }));
+  if (out.length <= 3) return out;
+  const b = polyBounds(pts);
+  const minDev = Math.hypot(b.maxX - b.minX, b.maxY - b.minY) * 0.008; // "flat enough" threshold
+  const devOf = (arr, i) => {
+    const a = arr[(i - 1 + arr.length) % arr.length];
+    const p = arr[i];
+    const c = arr[(i + 1) % arr.length];
+    const ux = c.x - a.x, uy = c.y - a.y;
+    const len = Math.hypot(ux, uy) || 1;
+    return Math.abs((p.x - a.x) * uy - (p.y - a.y) * ux) / len;
+  };
+  while (out.length > 3) {
+    let minI = 0, min = Infinity;
+    for (let i = 0; i < out.length; i++) {
+      const d = devOf(out, i);
+      if (d < min) { min = d; minI = i; }
+    }
+    if (out.length <= maxVerts && min > minDev) break;
+    out.splice(minI, 1);
+  }
+  return out;
+}
+
 // Sample a smooth closed curve through a polygon as dense points: each corner is
 // rounded with a quadratic Bézier whose anchors are the adjacent edge midpoints
 // and whose control point is the corner itself (same scheme as smoothHullPath).
 // Returns a dense point ring that reads as an organic, bubble-like outline and
 // can be drawn/extruded/area-measured like any polygon.
+// (Kept for the frozen legacy diagram — the live diagram uses outlinePoints,
+// which is identical when no vertex carries a corner style.)
 export function smoothPolygonPoints(pts, seg = 12) {
   const n = pts.length;
   if (n < 3) return pts.slice();
@@ -157,10 +380,11 @@ export function smoothPolygonPoints(pts, seg = 12) {
  */
 export function solveAreaLockedVertex(verts, vi, target, lockedArea, seg = 12) {
   const out = verts.map((p) => ({ ...p }));
-  const areaOf = (v) => polygonArea(smoothPolygonPoints(v, seg)) || polygonArea(v) || 1;
+  const keep = out[vi]; // the dragged vertex's corner style rides along
+  const areaOf = (v) => polygonArea(outlinePoints(v, seg)) || polygonArea(v) || 1;
   let f = Math.sqrt(lockedArea / areaOf(out));
   for (let i = 0; i < 20; i++) {
-    out[vi] = { x: target.x / f, y: target.y / f };
+    out[vi] = { ...keep, x: target.x / f, y: target.y / f };
     const nf = Math.sqrt(lockedArea / areaOf(out));
     if (Math.abs(nf - f) <= f * 1e-4) {
       f = nf;
@@ -168,7 +392,7 @@ export function solveAreaLockedVertex(verts, vi, target, lockedArea, seg = 12) {
     }
     f = (f + nf) / 2; // damped — the plain iteration can overshoot on big moves
   }
-  out[vi] = { x: target.x / f, y: target.y / f };
+  out[vi] = { ...keep, x: target.x / f, y: target.y / f };
   return { verts: out, f };
 }
 

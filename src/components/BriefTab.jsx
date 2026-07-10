@@ -282,6 +282,7 @@ export default function BriefTab({ project, spaces, onChanged, selectedSpaceId =
       parent_id: s.parent_id,
       child_mode: s.child_mode || 'group',
       level: s.level || '',
+      height_m: s.height_m ?? '',
     });
   }
 
@@ -297,6 +298,7 @@ export default function BriefTab({ project, spaces, onChanged, selectedSpaceId =
         parent_id: edit.parent_id ? Number(edit.parent_id) : null,
         child_mode: edit.child_mode || 'group',
         level: edit.level || '',
+        height_m: Number(edit.height_m) > 0 ? Number(edit.height_m) : null,
       });
       setEditingId(null);
       onChanged();
@@ -650,6 +652,12 @@ export default function BriefTab({ project, spaces, onChanged, selectedSpaceId =
                             <label className="fld">
                               <span>Level / storey</span>
                               <input placeholder="e.g. Ground" value={edit.level} onChange={(e) => setEdit({ ...edit, level: e.target.value })} />
+                            </label>
+                          )}
+                          {edit.kind !== 'building' && (
+                            <label className="fld sm" title="Clear height in metres. Leave empty to use the floor's height; taller than the storey = a double-height / multi-floor volume.">
+                              <span>Height (m)</span>
+                              <input type="number" min="1" max="50" step="0.1" placeholder="floor" value={edit.height_m} onChange={(e) => setEdit({ ...edit, height_m: e.target.value })} />
                             </label>
                           )}
                           {edit.kind !== 'building' && hasChildren(s) && (

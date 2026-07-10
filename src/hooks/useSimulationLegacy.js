@@ -39,7 +39,6 @@ import { closestInstancePair, DEFAULT_THRESHOLDS_M } from '../adjacency.js';
  * @param {function}      params.setTick     - Re-render trigger.
  */
 export function useSimulation({
-  enabled = true, // false in authored environments (Master plan) — no drift
   instances,
   leaves,
   adjacencies,
@@ -75,10 +74,6 @@ export function useSimulation({
   nodeForceRef.current = nodeForce;
   const buildingForceRef = useRef(buildingForce);
   buildingForceRef.current = buildingForce;
-  // Whether the sim runs at all — read fresh in the RAF loop so toggling the
-  // active environment doesn't restart the loop.
-  const enabledRef = useRef(enabled);
-  enabledRef.current = enabled;
   // Captured "home" centroid per cluster — buildings are gently restored toward
   // it so they hold their position instead of drifting off-screen.
   const clusterHomeRef = useRef(new Map());
@@ -279,12 +274,6 @@ export function useSimulation({
     let calmFrames = 0; // consecutive near-still frames during an auto pass
 
     const step = () => {
-      // Authored environments (Master plan) never simulate — positions are
-      // fixed until the user moves them, so the loop just idles.
-      if (!enabledRef.current) {
-        raf = requestAnimationFrame(step);
-        return;
-      }
       const dragging = !!dragRef.current;
       // Momentary auto-layout: simulate only while a pass is active and still
       // warm. Dragging during a pass keeps reflowing neighbours (held nodes

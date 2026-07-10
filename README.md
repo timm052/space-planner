@@ -20,17 +20,26 @@ milestone into a recorded snapshot measured against it:
   contain spaces (and spaces within spaces), in addition to departments.
   Containers roll up their descendants' areas; only leaf spaces carry area.
   Add a building, then "+ inside" to nest spaces; re-parent from the edit row.
-- **Bubble Diagram** — the classic programming diagram, live from the brief:
-  one bubble per room, sized by target area and coloured by **department or
-  building**, with draggable force layout. Click two bubbles to link them
-  (desired → required → removed); adjacencies are stored per project.
-  - **Pinning** — hover a bubble and press `P`, or select it and use the
-    floating Pin button, to pin/unpin it (persisted); the force layout flows
-    around pinned bubbles. Counted spaces can pin one room or all at once.
-  - **Shapes** — toggle a bubble to an equal-area box (`B` or the floating
-    button); convert all at once from the toolbar.
-  - **Auto-layout toggle** — turn the simulation off for fully manual
-    arrangement; positions are saved exactly where you drop them.
+- **Diagram — three environments, one per design stage.** The diagram is a
+  pipeline of workspaces, each owning one geometry and its own mechanics, with
+  independent per-environment layouts and a progress readout in the switcher:
+  - **◯ Concept** — bubbles & relationships. One bubble per room, sized
+    *relative* to the largest (scale-free), coloured by department or building,
+    with the force layout, links (desired/required), pinning (`P`), momentary
+    auto-layout (`A`) and a topological adjacency hint.
+  - **▱ Master plan** — building **envelopes** on the scaled site. Each
+    building is one footprint: place it from the tray (seeds a hexagonal
+    outline area-locked to the **required footprint** — the biggest storey),
+    reshape its outline, rotate it, and read the drawn-vs-required badge (red
+    when the envelope is too small for the brief). No simulation — nothing
+    moves by itself; overlaps warn instead of pushing apart. Flat briefs
+    without buildings place rooms directly.
+  - **▤ Building** — floors & massing. **Block up** lays each building's rooms
+    out per floor (linked rooms seeded adjacent) inside its envelope, drawn as
+    a dashed underlay. Rooms are area-locked rectangles (corner-drag resize,
+    90° rotation), edited one floor at a time, with edge/corner + metric grid
+    snapping, vertical-adjacency badges, a per-building stacking readout
+    (click to focus a building) and stacked / 3-D overview modes.
   - **Two independent image layers** — a **satellite** layer (geocode an
     address → Esri World Imagery, auto-calibrated from map zoom) **and** an
     **imported** site-plan/survey layer, each with its own scale calibration,
@@ -43,9 +52,12 @@ milestone into a recorded snapshot measured against it:
     rescale together; **bubble positions stay fixed when the scale changes**.
   - **Project north** — drag the compass rose to set north (double-click resets
     to up); it appears on the diagram and the PDF.
-  - **Scale-accurate PDF export** — `jsPDF` draws the layers, bubbles, links,
-    scale bar, north arrow and a title block onto the smallest ISO page that
-    fits at true scale (e.g. exactly 1:500 on A4).
+  - **PDF sheets & the drawing set** — `↓ PDF` exports the open environment
+    (concept diagram as an NTS sheet; master plan / floor sheets
+    scale-accurate on the smallest ISO page that fits, with title block, scale
+    bar and north). `↓ Set` exports the whole pipeline — concept sheet, master
+    plan sheet and one sheet per floor — as a single multi-page PDF built from
+    each environment's saved layout.
   - **Split view** — a side panel lists rooms grouped by department/building
     with editable areas; bubbles resize live as you type.
   - **Pan** — view locked by default; toggle pan to drag the canvas. Bubbles are

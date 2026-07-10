@@ -70,6 +70,64 @@ test('build3DScene re-centres rooms onto a shared footprint and keeps links', ()
   assert.ok(Math.abs(r1.x + r2.x) < 1e-9);
 });
 
+test('build3DScene stacks real storey heights when a scale exists', () => {
+  const heights = { Ground: 3, First: 4 };
+  const withHeights = spaces.map((s) => (s.id === 3 ? { ...s, height_m: 7 } : s));
+  const scene = build3DScene({
+    ...base,
+    instances: withHeights.map((s) => ({ s, i: 0, key: `${s.id}:0` })),
+    adjacencies: [{ space_a: 1, space_b: 3, strength: 'required' }],
+    byId: new Map(withHeights.map((s) => [s.id, s])),
+    rankOf,
+    shapeOf: () => 'box',
+    polyVertsOf: () => null,
+    colorOf: () => '#abcdef',
+    groundImage: null,
+    mToU: 2, // 1 m = 2 diagram units
+    levelHeightM: (label) => heights[label],
+    roomHeightM: (s) => (s.height_m > 0 ? s.height_m : heights[s.level]),
+  });
+  assert.equal(scene.metric, true);
+  // Level bases are cumulative sums of the storeys below (in units).
+  const ground = scene.floors.find((f) => f.label === 'Ground');
+  const first = scene.floors.find((f) => f.label === 'First');
+  assert.equal(ground.baseU, 0);
+  assert.equal(ground.heightU, 6); // 3 m × 2
+  assert.equal(first.baseU, 6);
+  assert.equal(first.heightU, 8); // 4 m × 2
+  // Rooms inherit their storey's height unless they declare their own.
+  const hall = scene.rooms.find((r) => r.key === '1:0');
+  const studio = scene.rooms.find((r) => r.key === '3:0');
+  assert.equal(hall.baseU, 0);
+  assert.equal(hall.hU, 6);
+  assert.equal(studio.baseU, 6);
+  assert.equal(studio.hU, 14); // its own 7 m × 2
+  // Links carry the same base/height so endpoints sit on their floors.
+  const [link] = scene.links;
+  assert.equal(link.a[5], 0);
+  assert.equal(link.b[5], 6);
+  assert.equal(link.b[6], 14);
+});
+
+test('build3DScene falls back to uniform heights without a scale', () => {
+  const scene = build3DScene({
+    ...base,
+    adjacencies: [],
+    byId: new Map(spaces.map((s) => [s.id, s])),
+    rankOf,
+    shapeOf: () => 'box',
+    polyVertsOf: () => null,
+    colorOf: () => '#abcdef',
+    groundImage: null,
+    mToU: null,
+    levelHeightM: (label) => ({ Ground: 3, First: 4 })[label],
+    roomHeightM: () => 3,
+  });
+  assert.equal(scene.metric, false);
+  for (const f of scene.floors) assert.equal(f.baseU, 0);
+  for (const r of scene.rooms) assert.equal(r.hU, 0);
+});
+
 test('build3DScene positions the ground image relative to the ground-floor centre', () => {
   const scene = build3DScene({
     ...base,

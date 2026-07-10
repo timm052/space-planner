@@ -30,9 +30,12 @@ function imageFormat(dataUrl) {
 //   bounds:{minX,minY,maxX,maxY}, layers:[{dataUrl,x,y,w,h,opacity}],
 //   links:[{x1,y1,x2,y2,strength}], bubbles:[{x,y,r,color,opacity,label,sublabel}],
 //   scale:{ratioLabel, scaleBar:{lenUnits,label}}|null, north:{deg}|null,
-//   title:{name,client,stage,scaleLabel,date}
+//   title:{name,client,stage,sheet,scaleLabel,date}
 // }   — all geometry in diagram units.
-export function exportDiagramPdf(scene) {
+
+// Pick the page + mm-per-unit for one sheet: the smallest ISO page that holds
+// the content at true scale (or, in relative/NTS mode, fit the content to A3).
+function layoutSheet(scene) {
   const { bounds } = scene;
   const contentWUnits = Math.max(1, bounds.maxX - bounds.minX);
   const contentHUnits = Math.max(1, bounds.maxY - bounds.minY);
@@ -40,9 +43,6 @@ export function exportDiagramPdf(scene) {
   const toScale = !!scene.scale;
   let mmPerUnit = MM_PER_UNIT;
   let reduced = null;
-
-  // Choose the smallest page that holds the content at true scale (or, in
-  // relative mode, fit the content to A3).
   let page = null;
   if (toScale) {
     const needW = contentWUnits * mmPerUnit + 2 * MARGIN;
@@ -63,8 +63,35 @@ export function exportDiagramPdf(scene) {
     const availH = page.h - 2 * MARGIN - TITLE_H;
     mmPerUnit = Math.min(availW / contentWUnits, availH / contentHUnits);
   }
+  return { page, mmPerUnit, reduced };
+}
 
-  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: [page.w, page.h] });
+// One environment's drawing as a single sheet.
+export function exportDiagramPdf(scene) {
+  const layout = layoutSheet(scene);
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: [layout.page.w, layout.page.h] });
+  renderSheet(doc, scene, layout);
+  const safe = (scene.title.name || 'diagram').replace(/[^\w-]+/g, '_');
+  doc.save(`${safe}_bubble_diagram.pdf`);
+}
+
+// The drawing set: several sheets (concept · master plan · one per floor) in
+// one PDF, each page sized for its own content and scale.
+export function exportDrawingSet({ sheets, fileName = 'drawing_set.pdf' }) {
+  if (!sheets.length) return;
+  const layouts = sheets.map(layoutSheet);
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: [layouts[0].page.w, layouts[0].page.h] });
+  sheets.forEach((scene, i) => {
+    if (i > 0) doc.addPage([layouts[i].page.w, layouts[i].page.h], 'landscape');
+    renderSheet(doc, scene, layouts[i]);
+  });
+  doc.save(fileName);
+}
+
+function renderSheet(doc, scene, { page, mmPerUnit, reduced }) {
+  const { bounds } = scene;
+  const contentWUnits = Math.max(1, bounds.maxX - bounds.minX);
+  const contentHUnits = Math.max(1, bounds.maxY - bounds.minY);
 
   // Centre the drawing in the area above the title block.
   const drawW = contentWUnits * mmPerUnit;
@@ -202,7 +229,7 @@ export function exportDiagramPdf(scene) {
   doc.text(meta, MARGIN + 4, ty + 14);
   doc.setFontSize(7);
   doc.setTextColor(90, 90, 90);
-  doc.text('Bubble diagram · BriefTrack', MARGIN + 4, ty + 19);
+  doc.text(`${t.sheet || 'Bubble diagram'} · BriefTrack`, MARGIN + 4, ty + 19);
 
   // Right side of title block: scale + date.
   doc.setTextColor(20, 20, 20);
@@ -217,7 +244,4 @@ export function exportDiagramPdf(scene) {
     doc.setTextColor(180, 60, 50);
     doc.text(`reduced ×${(1 / reduced).toFixed(2)} to fit`, MARGIN + availW - 4, ty + 19, { align: 'right' });
   }
-
-  const safe = (t.name || 'diagram').replace(/[^\w-]+/g, '_');
-  doc.save(`${safe}_bubble_diagram.pdf`);
 }

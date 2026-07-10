@@ -17,6 +17,27 @@ const LinkGlyph = () => (
  * selected. Pure chrome: every decision is driven by props.
  */
 export default function SelectionHud({
+  // environment — the freeform-polygon control shows only in Master plan (its
+  // geometry is a drawn footprint); Building shows a 90° rotate instead and hides
+  // Pin (no sim to protect against).
+  showShapeTools,
+  showRotate90,
+  onRotate90,
+  showPin,
+  // Building env — per-space clear height (m); empty inherits the storey's.
+  showHeight,
+  heightOf,
+  onHeight,
+  // envelope master plan — the selected unit is a building: show its drawn
+  // footprint (editable, area-locks the outline) against the required one,
+  // plus "shape it like its concept hull".
+  envelope,
+  onEnvelopeArea,
+  onEnvelopeHull,
+  onEnvelopeCirc,
+  // corner styles while editing a custom shape (curve / fillet / sharp,
+  // applied to every corner — right-click a single handle to change just it).
+  onSetCorners,
   // link selected
   selLink,
   byId,
@@ -31,7 +52,6 @@ export default function SelectionHud({
   // multi selection
   multi,
   onMultiPin,
-  onMultiShape,
   onMultiCustomShape,
   catDraft,
   setCatDraft,
@@ -42,13 +62,11 @@ export default function SelectionHud({
   selectedSpace,
   selectedInst,
   instPin,
-  shapeOf,
   editShape,
   colorOf,
   ea,
   units,
   onPin,
-  onToggleShape,
   onEditShape,
   onSetCategory,
   onRemoveSpace,
@@ -96,9 +114,8 @@ export default function SelectionHud({
         <div className="action-bar" onClick={(e) => e.stopPropagation()}>
           <span className="action-count">{multi.size}</span>
           <span className="action-name">rooms selected</span>
-          <button className="action-btn" onClick={() => onMultiPin(true)} title="Pin all — P">📌 Pin all</button>
-          <button className="action-btn" onClick={() => onMultiShape('box')} title="Box all — B">▢ Box all</button>
-          <button className="action-btn" onClick={onMultiCustomShape} title="Freeform shape all — S">✎ Shape all</button>
+          {showPin && <button className="action-btn" onClick={() => onMultiPin(true)} title="Pin all — P">📌 Pin all</button>}
+          {showShapeTools && <button className="action-btn" onClick={onMultiCustomShape} title="Freeform shape all — S">✎ Shape all</button>}
           <input
             className="action-cat"
             list="diagram-categories"
@@ -116,36 +133,107 @@ export default function SelectionHud({
         </div>
       );
     }
-    // Single room → room form.
+    // Single room (or building envelope) → room form.
     const sel = selectedSpace;
     if (!sel) return null;
     const selCount = Math.max(1, sel.count || 1);
     const selInstPinned = !!instPin(sel, selectedInst);
-    const selBox = shapeOf(sel) === 'box';
     const editingSel = editShape === sel.id;
+    const envDeficit = envelope && envelope.drawn < envelope.required - 0.5;
     return (
       <div className="action-bar" onClick={(e) => e.stopPropagation()}>
         <span className="swatch" style={{ background: colorOf(sel) }} />
-        <span className="action-name">{sel.name}{selCount > 1 ? ` ${selectedInst + 1}` : ''}</span>
-        <span className="action-area mono">{fmtArea(ea(sel), units)}</span>
-        <button className={`action-btn ${selInstPinned ? 'active' : ''}`} onClick={() => onPin(sel, selectedInst, !selInstPinned)} title="Pin — P">📌 {selInstPinned ? 'Unpin' : 'Pin'}</button>
-        <button className={`action-btn ${selBox ? 'active' : ''}`} onClick={() => onToggleShape(sel)} title="Box — B">{selBox ? '○ Bubble' : '▢ Box'}</button>
-        <button className={`action-btn ${editingSel ? 'active' : ''}`} onClick={() => onEditShape(sel)} title="Freeform shape — S">✎ {editingSel ? 'Done' : 'Shape'}</button>
-        <input
-          className="action-cat"
-          list="diagram-categories"
-          placeholder="Category"
-          defaultValue={sel.department || ''}
-          key={sel.id + ':' + (sel.department || '')}
-          onKeyDown={(e) => { if (e.key === 'Enter') { const v = e.target.value.trim(); if (v && v !== sel.department) onSetCategory(sel, v); } }}
-          title="Reassign category (Enter to apply)"
-        />
+        <span className="action-name">{envelope ? '🏢 ' : ''}{sel.name}{selCount > 1 ? ` ${selectedInst + 1}` : ''}</span>
+        {envelope ? (
+          <>
+            <input
+              className="action-env-area"
+              type="number"
+              min="1"
+              step="any"
+              key={sel.id + ':' + Math.round(envelope.drawn)}
+              defaultValue={Math.round(envelope.drawn)}
+              onKeyDown={(e) => { if (e.key === 'Enter') onEnvelopeArea(sel, selectedInst, e.target.value); }}
+              onBlur={(e) => { if (Number(e.target.value) !== Math.round(envelope.drawn)) onEnvelopeArea(sel, selectedInst, e.target.value); }}
+              title="Envelope footprint area (Enter to apply) — the outline stays area-locked to it"
+            />
+            <span className={`action-env-req mono ${envDeficit ? 'bad' : ''}`} title="Required GROSS footprint — the building's biggest storey plus its circulation share">
+              needs ≥ {fmtArea(envelope.required, units)}
+            </span>
+            {onEnvelopeCirc && (
+              <label className="action-height" title="Circulation share of the gross footprint (%). Empty = the project's net:gross default; 0 = off. Grosses up the required footprint and hatches the spare interior in the room sketch.">
+                <span className="muted">⤨</span>
+                <input
+                  type="number"
+                  min="0"
+                  max="60"
+                  step="1"
+                  key={sel.id + ':' + (sel.circ_pct ?? '')}
+                  defaultValue={sel.circ_pct != null ? Math.round(sel.circ_pct * 100) : ''}
+                  placeholder={String(Math.round(envelope.circ * 100))}
+                  onKeyDown={(e) => { if (e.key === 'Enter') onEnvelopeCirc(sel, e.target.value); }}
+                  onBlur={(e) => { const cur = sel.circ_pct != null ? String(Math.round(sel.circ_pct * 100)) : ''; if ((e.target.value || '') !== cur) onEnvelopeCirc(sel, e.target.value); }}
+                />
+                <span className="muted">%</span>
+              </label>
+            )}
+          </>
+        ) : (
+          <span className="action-area mono">{fmtArea(ea(sel), units)}</span>
+        )}
+        {showHeight && !envelope && (
+          <label className="action-height" title="Clear height in metres (Enter to apply). Empty = the floor's height; taller than the storey = a double-height / multi-floor volume.">
+            <span className="muted">↥</span>
+            <input
+              type="number"
+              min="1"
+              max="50"
+              step="0.1"
+              key={sel.id + ':' + (sel.height_m ?? '')}
+              defaultValue={sel.height_m ?? ''}
+              placeholder={String(heightOf(sel))}
+              onKeyDown={(e) => { if (e.key === 'Enter') onHeight(sel, e.target.value); }}
+              onBlur={(e) => { if ((e.target.value || '') !== String(sel.height_m ?? '')) onHeight(sel, e.target.value); }}
+            />
+            <span className="muted">m</span>
+          </label>
+        )}
+        {showPin && <button className={`action-btn ${selInstPinned ? 'active' : ''}`} onClick={() => onPin(sel, selectedInst, !selInstPinned)} title="Pin — P">📌 {selInstPinned ? 'Unpin' : 'Pin'}</button>}
+        {showShapeTools && <button className={`action-btn ${editingSel ? 'active' : ''}`} onClick={() => onEditShape(sel)} title="Freeform shape — S">✎ {editingSel ? 'Done' : 'Shape'}</button>}
+        {envelope && (
+          <button
+            className="action-btn"
+            onClick={() => onEnvelopeHull(sel)}
+            title="Reshape this envelope to match its building's hull in the Concept view (the outline stays area-locked)"
+          >⬡ Hull</button>
+        )}
+        {editingSel && onSetCorners && (
+          <span className="seg seg-sm" title="Corner style for every corner — right-click a single handle to change just that one">
+            <button onClick={() => onSetCorners(sel, 'c')} title="Curves — smooth through every corner">◠ Curve</button>
+            <button onClick={() => onSetCorners(sel, 'f')} title="Fillets — tight rounding at every corner">⌒ Fillet</button>
+            <button onClick={() => onSetCorners(sel, 's')} title="Sharp — true corners everywhere">∟ Sharp</button>
+          </span>
+        )}
+        {showRotate90 && <button className="action-btn" onClick={() => onRotate90(sel, selectedInst)} title="Rotate 90°">⟲ 90°</button>}
+        {!envelope && (
+          <input
+            className="action-cat"
+            list="diagram-categories"
+            placeholder="Category"
+            defaultValue={sel.department || ''}
+            key={sel.id + ':' + (sel.department || '')}
+            onKeyDown={(e) => { if (e.key === 'Enter') { const v = e.target.value.trim(); if (v && v !== sel.department) onSetCategory(sel, v); } }}
+            title="Reassign category (Enter to apply)"
+          />
+        )}
         <datalist id="diagram-categories">
           {departments.map((d) => <option key={d} value={d} />)}
         </datalist>
-        <button className="action-btn icon danger" onClick={() => onRemoveSpace(sel)} title="Remove (Del)" aria-label="Remove">
-          <TrashIcon />
-        </button>
+        {!envelope && (
+          <button className="action-btn icon danger" onClick={() => onRemoveSpace(sel)} title="Remove (Del)" aria-label="Remove">
+            <TrashIcon />
+          </button>
+        )}
       </div>
     );
   })();

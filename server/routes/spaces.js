@@ -98,15 +98,34 @@ router.put('/spaces/:id', (req, res) => {
   let shape_json = 'shape_json' in req.body ? req.body.shape_json : space.shape_json;
   if (shape_json != null && typeof shape_json !== 'string') shape_json = JSON.stringify(shape_json);
 
+  // plan_json (master-plan placement) is nullable — same key-presence + stringify rule.
+  let plan_json = 'plan_json' in req.body ? req.body.plan_json : space.plan_json;
+  if (plan_json != null && typeof plan_json !== 'string') plan_json = JSON.stringify(plan_json);
+
+  // block_json (building placement) is nullable — same key-presence + stringify rule.
+  let block_json = 'block_json' in req.body ? req.body.block_json : space.block_json;
+  if (block_json != null && typeof block_json !== 'string') block_json = JSON.stringify(block_json);
+
+  // Optional per-space clear height (metres; null = inherit the storey's) and
+  // per-building circulation share (0..0.6 of gross; null = project default).
+  const height_m = 'height_m' in req.body
+    ? (req.body.height_m != null && Number(req.body.height_m) > 0 ? clampNum(req.body.height_m, 1, 50, 3.5) : null)
+    : space.height_m;
+  const circ_pct = 'circ_pct' in req.body
+    ? (req.body.circ_pct != null ? clampNum(req.body.circ_pct, 0, 0.6, 0) : null)
+    : space.circ_pct;
+
   const safeCount = clampNum(count, 1, 100, 1);
   db.prepare(
     `UPDATE spaces SET department = ?, name = ?, count = ?, target_area = ?, notes = ?,
      pin_x = ?, pin_y = ?, pin_json = ?, parent_id = ?, kind = ?, shape = ?, shape_json = ?,
-     image = ?, sort_order = ?, child_mode = ?, level = ? WHERE id = ?`
+     plan_json = ?, block_json = ?, image = ?, sort_order = ?, child_mode = ?, level = ?,
+     height_m = ?, circ_pct = ? WHERE id = ?`
   ).run(
     department, name, safeCount, area, notes,
     pin_x, pin_y, pin_json, parent_id, kind, oneOf(shape, VALID_SHAPES, 'bubble'), shape_json,
-    image, sort_order, child_mode, level ?? '', space.id
+    plan_json, block_json, image, sort_order, child_mode, level ?? '',
+    height_m, circ_pct, space.id
   );
   res.json(db.prepare('SELECT * FROM spaces WHERE id = ?').get(space.id));
 });

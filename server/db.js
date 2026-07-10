@@ -151,6 +151,12 @@ ensureColumn('spaces', 'parent_id', 'parent_id INTEGER');
 ensureColumn('spaces', 'kind', "kind TEXT DEFAULT 'space'"); // 'space' | 'building' | 'group'
 ensureColumn('spaces', 'shape', "shape TEXT DEFAULT 'bubble'"); // 'bubble' | 'box' | 'poly'
 ensureColumn('spaces', 'shape_json', 'shape_json TEXT'); // freeform polygon: normalized verts [{x,y},…]
+// Master-plan placement, independent of the concept pin_json: per-instance
+// {"0":{x,y,rot},…}. Presence = "placed on the site". See diagram-environments-plan.md.
+ensureColumn('spaces', 'plan_json', 'plan_json TEXT');
+// Building placement, independent of concept/master-plan: per-instance
+// {"0":{x,y,w,h,rot},…} (level stays in spaces.level). See diagram-environments-plan.md.
+ensureColumn('spaces', 'block_json', 'block_json TEXT');
 ensureColumn('spaces', 'image', 'image TEXT'); // per-space reference image (data URL)
 // How a space relates to its children: 'group' = pure grouping container (sums
 // children, no own area, default/legacy), 'within' = a real space whose children
@@ -164,6 +170,20 @@ ensureColumn('images', 'filter', "filter TEXT DEFAULT ''");
 
 // Bubble rendering style: 'solid' (default) | 'outline' | 'sketch'.
 ensureColumn('projects', 'bubble_style', "bubble_style TEXT DEFAULT 'solid'");
+
+// Diagram environment: which geometry-specific workspace is active.
+// 'concept' (bubbles + relationships) | 'masterplan' (scaled site) | 'building'
+// (massing/floors). See docs/diagram-environments-plan.md.
+ensureColumn('projects', 'diagram_env', "diagram_env TEXT DEFAULT 'concept'");
+
+// Storey heights: JSON map { "<level label>": metres } (absent level → the
+// 3.5 m default). Per-space height_m optionally overrides its storey's clear
+// height (high ceilings / multi-floor volumes); null = inherit the floor's.
+ensureColumn('projects', 'level_heights', 'level_heights TEXT');
+ensureColumn('spaces', 'height_m', 'height_m REAL');
+// Circulation share of a BUILDING's gross footprint (0..0.6), stored on the
+// container row. null = project default (1 − grossing_target); 0 = off.
+ensureColumn('spaces', 'circ_pct', 'circ_pct REAL');
 
 const DEFAULT_SETTINGS = {
   default_units: 'm2',

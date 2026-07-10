@@ -1,22 +1,24 @@
-// Modal overlay explaining the bubble diagram. Kept content-only so it stays
-// easy to extend as features grow.
+// Modal overlay explaining the diagram. Content is organised around the three
+// environments (Concept → Master plan → Building); the section for the
+// environment that's open is listed first and tagged "you are here".
 const SHORTCUTS = {
   Mouse: [
     ['Click', 'Select a room — or a link'],
-    ['Drag a room', 'Move it (pins where you drop it)'],
+    ['Drag a room', 'Move it (position is saved where you drop it)'],
     ['Drag empty canvas', 'Marquee multi-select'],
     ['Shift-click', 'Add / remove from the selection'],
     ['Hold Space + drag', 'Pan the view'],
     ['Click a link', 'Edit it — desired / required / remove'],
+    ['Right-click a corner handle', 'Cycle its corner style (curve → fillet → sharp)'],
     ['Double-click north', 'Reset project north'],
   ],
   Keyboard: [
     ['V', 'Select tool'],
     ['L', 'Link tool — click two rooms'],
-    ['A', 'Auto-layout on / off'],
-    ['P', 'Pin / unpin'],
-    ['B', 'Box / bubble'],
-    ['S', 'Freeform shape'],
+    ['A', 'Auto-layout pass (Concept only)'],
+    ['P', 'Pin / unpin (Concept only)'],
+    ['← ↑ ↓ →', 'Nudge 1 m — Shift = 0.1 m (Master plan / Building)'],
+    ['Alt while dragging', 'Finer grid snap (Master plan / Building)'],
     ['⌫ / Del', 'Remove selection'],
     ['Esc', 'Deselect'],
     ['Ctrl+Z / Ctrl+⇧+Z', 'Undo / redo'],
@@ -25,56 +27,74 @@ const SHORTCUTS = {
 
 const SECTIONS = [
   {
-    title: 'Bubbles',
+    env: null,
+    title: 'The three environments',
     items: [
-      ['Size', 'Each bubble is a room, sized by its target area. Spaces with a count show one bubble per room.'],
-      ['Move', 'Drag a bubble to reposition it. With Auto-layout on, others flow around it.'],
-      ['Pin', 'Hover a bubble and press P (or select it and use the Pin button) to pin/unpin it. Pinned bubbles wear a dashed ring and never move.'],
-      ['Box', 'Hover a bubble and press B to switch it between a circle and an equal-area square. Use “All boxes / All bubbles” to convert every space at once.'],
-      ['Custom shape', 'Select a bubble and use the ✎ Shape button to give it a freeform outline. Drag the corner handles to make odd-shaped rooms, click a “＋” to add a corner, or double-click a corner to remove it. The area stays locked to the brief — only the outline changes — and the shape carries through the stacked, 3D and PDF views.'],
-      ['Multi-select', 'Drag across empty canvas to marquee-select bubbles, or Shift-click to add/remove them. The contextual action bar lets you pin, box, shape or delete the whole selection at once. Esc clears it.'],
-      ['Move together', 'With several bubbles selected, drag any one of them to move the whole group; they pin where you drop them.'],
-      ['Categories', 'Bubbles colour by category. Recolour any category by clicking its legend swatch. Select bubbles and use the Category box to reassign them — typing a new name creates that category.'],
-      ['Style', 'Choose how bubbles are drawn: Solid, Outline, or a hand-drawn Sketch look.'],
-      ['Nesting', 'In the Brief, a space with children can be a grouping (areas sum), keep its children Within its own area, or Attached so they move with it on the diagram.'],
-      ['Edit area', 'The Areas panel edits areas in a list — collapse categories, or switch to Building mode to see them by building and level. Bubbles resize as you type.'],
+      ['Pipeline', 'The diagram is three workspaces, one per design stage: ◯ Concept (what relates to what), ▱ Master plan (what fits where on the site), ▤ Building (what stacks inside each building). The switcher shows each stage’s progress.'],
+      ['Independent layouts', 'Each environment keeps its own positions. Moving a bubble in Concept never moves a placed footprint — entering an environment for the first time seeds it from the previous stage, then it diverges.'],
+      ['Areas flow from the brief', 'Edit a target area anywhere (the Areas panel, the Brief) and every environment’s geometry re-locks to it — bubbles resize, polygons and boxes rescale while keeping their shape.'],
+      ['Geometry per environment', 'Shape is decided by the environment, not per room: Concept draws circles, Master plan draws footprint polygons, Building draws rectangles. There are no manual shape toggles.'],
     ],
   },
   {
-    title: 'Relationships',
+    env: 'concept',
+    title: 'Concept — bubbles & relationships',
     items: [
-      ['Link', 'Switch to the Link tool (L), then click two rooms to connect them (defaults to desired). Click any link to select it, then toggle desired/required or remove it from the action bar.'],
-      ['Matrix', 'Open ▦ Matrix for the classic triangular adjacency grid — click a cell to cycle the same desired → required → none.'],
-      ['Group', 'In the Brief tab, drag a space onto a building to nest it, or onto the top-level zone to ungroup.'],
-      ['Group hulls', 'Toggle ⬡ Groups to draw a soft hull behind each department or building so containment reads at a glance.'],
-      ['Lines', 'Required links are solid hairlines and pull rooms close; desired links are fine dotted and looser. Click a line to select and edit it.'],
-      ['Adjacency score', 'With a scale set, the ◈ Adjacency badge shows what share of your relationships are actually satisfied (bubbles placed adjacent), weighting required links double. Click it to highlight the unmet links in red.'],
+      ['Bubbles', 'Each bubble is a room, sized RELATIVE to the largest room (Concept is scale-free). Spaces with a count show one bubble per room.'],
+      ['Move & pin', 'Drag to move (saved where you drop it, neighbours step aside after the drop). Hover + P (or the Pin button) locks a bubble against the simulation.'],
+      ['Auto-layout', 'A (or the dock button) runs one settling pass of the force layout and stops — opening the tab never rearranges your diagram.'],
+      ['Links', 'L, then click two rooms (desired by default). Click a link to toggle desired/required or remove it. ▦ Matrix shows the classic triangular grid.'],
+      ['Adjacency hint', 'The ◈ badge grades relationships topologically — a link counts when its bubbles actually touch. Click it to flag the unmet links.'],
+      ['Categories & hulls', 'Colour by category or building; recolour via the legend swatches. ⬡ hulls draw soft outlines around each group — the outline hugs the arrangement’s real profile (it digs into empty stretches between clusters; the ⋯ menu’s Hull pad sets how loosely it wraps).'],
+      ['Multi-select', 'Marquee across empty canvas or Shift-click. The action bar pins, recategorises or deletes the whole selection; drag any member to move the group.'],
     ],
   },
   {
-    title: 'Scale & images',
+    env: 'masterplan',
+    title: 'Master plan — envelopes on the site',
     items: [
-      ['Scale', 'Pick a standard scale (1:200…1:2000). Bubbles and images are drawn true-to-size and the PDF matches.'],
-      ['Layers', 'Add a satellite image (by address) and/or import a site plan. Each is calibrated on its own, then both share the diagram scale and line up.'],
-      ['Calibrate', 'Click Calibrate on a layer, mark a known distance on the image, and enter its real length.'],
-      ['Move layer', 'Use Move on a layer to nudge it, or Rotate then drag the canvas to turn it. Add as many images as you like.'],
-      ['Filters', 'Apply a diagrammatic filter to any image (grayscale, blueprint, faded, high-contrast, ink) — it carries through to the PDF.'],
+      ['Buildings, not rooms', 'With buildings in the brief, the master plan places one ENVELOPE per building — the building’s footprint. (A flat brief without buildings places rooms directly.)'],
+      ['Place', 'Un-placed buildings wait in the tray as ghosts at their concept position. Place (or drag) writes them onto the site and seeds a hexagonal outline sized to the required footprint.'],
+      ['Envelope area', 'The badge shows the drawn footprint against the REQUIRED one (the building’s biggest storey) and turns red when the envelope is too small. Select an envelope to set its area by number.'],
+      ['Outline', '✎ Shape edits the envelope’s outline — drag corners, click ＋ to add one, double-click to remove. The outline stays area-locked; only its shape changes.'],
+      ['Corner styles', 'While editing, every corner can be a smooth curve, a tight fillet or a sharp corner: the action-bar buttons set all corners at once, right-clicking a handle cycles just that one (circle = curve, rounded square = fillet, square = sharp). Styles carry through the stacked, 3-D and PDF views.'],
+      ['From the concept hull', 'The ⬡ Hull button reshapes a selected envelope to match its building’s hull in the Concept view; “⬡ Envelopes from concept hulls” in the ⋯ menu does every building at once. Only the shape transfers — the area stays locked to the envelope.'],
+      ['Interior sketch', 'Placed envelopes show their rooms as shaded cells (a Voronoi of the Concept layout — the 👁 dock button toggles it). Each cell reads its area against the room’s target; drag a cell’s dot to re-plan the room — the move saves back to the Concept view and pins the room there.'],
+      ['Circulation', 'The ⤨ % field on a selected envelope reserves a circulation share of the gross footprint (empty = the project’s net:gross default, 0 = off). It grosses up the required footprint and hatches the interior the room cells leave free.'],
+      ['Site & scale', '⧉ Layers imports site plans / satellite images; calibrate one to set the real scale (or pick a preset). North, the scale bar and the metric grid follow.'],
+      ['Authored, always', 'There is no simulation here — nothing ever moves by itself. Overlapping footprints get a red dashed warning outline instead of being pushed apart.'],
+      ['Precision', 'Drags snap to neighbour edges/corners and to the metric grid (two toggles in the dock; Alt = finer). Arrow keys nudge 1 m, Shift-arrows 0.1 m. The ⟲ handle rotates a footprint (Shift = 15°).'],
     ],
   },
   {
-    title: 'View & output',
+    env: 'building',
+    title: 'Building — floors & massing',
     items: [
-      ['Floors', 'When the brief uses levels, the ▤ Floors menu switches between all floors together, one floor at a time, or stacked views. Stacked · offset and · overlaid are flat isometric planes; Stacked · 3D is a real WebGL model you can orbit (drag to rotate, scroll to zoom, right-drag to pan) with rooms as spheres on each floor slab and the site image on the ground. The ⇕ slider sets the floor spacing and ⊞ Image shows/hides the site image. Stacked views are read-only — pick a single floor to edit.'],
-      ['Pan', 'Hold Space and drag the canvas to pan (or toggle the Pan button). Recentre returns to the middle.'],
-      ['North', 'Drag the compass rose (top-right of the canvas) to set project north. Double-click it to reset to up.'],
-      ['PDF', 'Export a scale-accurate PDF with the background images, scale bar, north arrow and a title block.'],
-      ['Auto-layout', 'Turn it off to place every bubble by hand — positions are saved exactly where you drop them.'],
-      ['Undo / redo', 'Pin, move, link, shape and area edits are undoable — use the ↶/↷ buttons or Ctrl+Z / Ctrl+Shift+Z.'],
+      ['Block up', 'Rooms enter this environment via the tray’s Block up: each building’s rooms are laid out per floor as a packed grid at its envelope, with linked rooms seeded next to each other.'],
+      ['Rectangles', 'Every room is an area-locked rectangle: drag a corner handle to change its proportions (the target area holds, the opposite corner stays pinned), ⟲ 90° turns it.'],
+      ['Floors', 'You land on one floor at a time — the Floors menu (or the Stacking rail) switches storeys; “All floors”, stacked and 3-D views are read-only overviews.'],
+      ['Focus', 'Click a building in the Stacking rail to fade everything else; its master-plan envelope shows as a dashed underlay to arrange rooms inside.'],
+      ['Stacking rail', 'Per building: gross area per floor as a bar chart, the envelope footprint it must fit (red when a storey exceeds it), click a row to edit that floor.'],
+      ['Vertical links', 'A room linked to another floor wears an ↑/↓/↕ tab — green when the pair stacks in plan (stairs/lifts line up), red when it doesn’t.'],
+      ['Heights', 'Storey heights live at the top of the Stacking rail (per level, in metres; 3.5 m default). A selected room’s ↥ field sets its own clear height — taller than its storey reads as a double-height / multi-floor volume in 3-D. Heights need the drawing scale to show at true proportion.'],
+      ['3-D', 'Stacked · 3D is a WebGL model — orbit, zoom, switch camera presets, floor spacing via the ⇕ slider, site image on the ground floor. With a scale set, storeys stack at their real heights.'],
+    ],
+  },
+  {
+    env: null,
+    title: 'Output',
+    items: [
+      ['PDF sheet', '↓ PDF exports the open environment: the concept diagram as an NTS sheet, master plan and floor sheets scale-accurate with title block, scale bar and north.'],
+      ['Drawing set', '↓ Set exports everything at once — concept sheet, master plan sheet and one sheet per floor — as a single PDF, built from each environment’s saved layout.'],
+      ['PNG', '↓ PNG captures the current view at 2×, including the 3-D view.'],
+      ['Undo / redo', 'Moves, placements, links, shapes and area edits are undoable — ↶/↷ or Ctrl+Z / Ctrl+Shift+Z. History is per environment session.'],
     ],
   },
 ];
 
-export default function HelpPanel({ onClose }) {
+export default function HelpPanel({ env = 'concept', onClose }) {
+  // The current environment's section floats to the top of the grid.
+  const sections = [...SECTIONS].sort((a, b) => (b.env === env ? 1 : 0) - (a.env === env ? 1 : 0));
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal help-modal" onClick={(e) => e.stopPropagation()}>
@@ -98,9 +118,12 @@ export default function HelpPanel({ onClose }) {
           ))}
         </div>
         <div className="help-grid">
-          {SECTIONS.map((sec) => (
+          {sections.map((sec) => (
             <div key={sec.title} className="help-section">
-              <h3>{sec.title}</h3>
+              <h3>
+                {sec.title}
+                {sec.env === env && <span className="help-here"> · you are here</span>}
+              </h3>
               <dl>
                 {sec.items.map(([term, desc]) => (
                   <div key={term} className="help-item">

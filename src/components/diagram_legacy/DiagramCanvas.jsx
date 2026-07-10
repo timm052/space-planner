@@ -1,7 +1,6 @@
 import { lazy, memo, Suspense } from 'react';
-import { fmtArea, distUnit, rootContainer } from '../../compute.js';
-import { edgeGap, linkSatisfied } from '../../adjacency.js';
-import { hullOfDiscs, smoothHullPath, filterCss, polygonPath, polyBounds, polygonArea } from '../../geometry.js';
+import { fmtArea, rootContainer } from '../../compute.js';
+import { convexHull, smoothHullPath, filterCss, polygonPath, polyBounds, polygonArea } from '../../geometry.js';
 import { darkHex } from '../../viz.js';
 import { fitLabel, measureText } from '../../textfit.js';
 import { TickLayer } from '../../hooks/useTick.js';
@@ -11,7 +10,6 @@ import { TickLayer } from '../../hooks/useTick.js';
 const Stacked3D = lazy(() => import('./Stacked3D.jsx'));
 
 const EMPTY_SET = new Set();
-const EMPTY_MAP = new Map();
 
 /**
  * Renders a bubble's name (and optional area) as word-wrapped SVG text,
@@ -83,20 +81,6 @@ export default function DiagramCanvas({
   hullPad,
   hasBuildings,
   highlightGaps,
-  warnOverlaps,
-  adjActive,
-  verticalAdj,
-  showRotate,
-  showResize,
-  ghostUnplaced,
-  placedKeys,
-  focusCheck,
-  envelopeUnderlays,
-  envelopeBadge,
-  makeInterior,
-  onSeedDown,
-  alignGuides,
-  planGrid,
   effScale,
   floorGap,
   stackImages,
@@ -154,13 +138,10 @@ export default function DiagramCanvas({
   onMove,
   onUp,
   onBubbleDown,
-  onRotateHandleDown,
-  onResizeHandleDown,
   onLinkClick,
   onPolyVertexDown,
   addPolyVertex,
   removePolyVertex,
-  onCycleCorner,
   hoverRef,
 }) {
   return (
@@ -168,63 +149,10 @@ export default function DiagramCanvas({
       {() => {
         const stack = stackMode ? makeStackScene() : null;
         const scene3d = is3D ? make3DScene() : null;
-        // Voronoi interior sketch (envelope master plan) — rebuilt each tick so
-        // the cells track the envelope and its seeds during a drag. Envelopes
-        // with cells render hollow (the cells carry the colour).
-        const interior = makeInterior && !stackMode ? makeInterior() : null;
-        const interiorRoots = interior ? new Set(interior.map((b) => b.rootId)) : EMPTY_SET;
         // Unmet-link highlighting is positional; only pay for it while it's on.
-        const unmetLinkIds = highlightGaps && adjActive
+        const unmetLinkIds = highlightGaps && effScale
           ? new Set(computeAdjacency().unmet.map((l) => l.id))
           : EMPTY_SET;
-        // Master plan flags overlapping footprints (a warning, not a force):
-        // any pair of rooms whose discs interpenetrate past ~5% is marked so
-        // both read with a danger outline. Positional → computed each tick.
-        let overlapKeys = EMPTY_SET;
-        if (warnOverlaps) {
-          overlapKeys = new Set();
-          const arr = instances
-            .map((o) => ({ key: o.key, n: nodes.get(o.key), r: radiusOf(o.s), vis: levelVisible(o.s) }))
-            // Ghost (un-placed) rooms aren't authored yet — don't flag them as overlaps.
-            .filter((o) => o.n && o.vis && (!ghostUnplaced || placedKeys.has(o.key)));
-          for (let i = 0; i < arr.length; i++) {
-            for (let j = i + 1; j < arr.length; j++) {
-              const a = arr[i], b = arr[j];
-              if (Math.hypot(a.n.x - b.n.x, a.n.y - b.n.y) < (a.r + b.r) * 0.95) {
-                overlapKeys.add(a.key);
-                overlapKeys.add(b.key);
-              }
-            }
-          }
-        }
-        // Vertical adjacency: while editing one floor, a room linked to a room on
-        // ANOTHER floor can't show its link line (the other end is hidden), so it
-        // gets a small tab — an ↑ / ↓ / ↕ arrow (partner above / below / both),
-        // green when the pair is aligned in plan (the stair/lift stacks), red when
-        // it isn't. Positional → each tick. Value: { state, dir }.
-        let vBadge = EMPTY_MAP;
-        if (verticalAdj) {
-          vBadge = new Map();
-          for (const l of adjacencies) {
-            const sa = byId.get(l.space_a), sb = byId.get(l.space_b);
-            if (!sa || !sb || (sa.level || '') === (sb.level || '')) continue; // same floor
-            const pair = closestPair(sa, sb);
-            if (!pair) continue;
-            const gap = edgeGap(pair.d, radiusOf(sa), radiusOf(sb)) * (effScale || 1);
-            const met = linkSatisfied(l.strength, gap);
-            const ra = rankOf(sa), rb = rankOf(sb);
-            for (const [sp, ix, delta] of [[sa, pair.ai, rb - ra], [sb, pair.bi, ra - rb]]) {
-              if (!levelVisible(sp)) continue;
-              const key = `${sp.id}:${ix}`;
-              const dir = delta > 0 ? 'up' : 'down';
-              const prev = vBadge.get(key);
-              vBadge.set(key, {
-                state: prev?.state === 'unmet' || !met ? 'unmet' : 'met',
-                dir: prev && prev.dir !== dir ? 'both' : dir,
-              });
-            }
-          }
-        }
         return (<>
           {is3D && scene3d && (
             <div className="stage-3d">
@@ -268,20 +196,6 @@ export default function DiagramCanvas({
                 <stop offset="65%" stopColor="rgba(0,0,0,0.14)" />
                 <stop offset="100%" stopColor="rgba(0,0,0,0)" />
               </radialGradient>
-              {/* Placement grid: one faint cell per metric snap step, anchored to
-                  the world origin so it stays fixed under pan/zoom. Major cells
-                  only — a quiet reference field, not the primary snap (that's
-                  edge/corner alignment). */}
-              {planGrid && (
-                <pattern id="plan-grid" width={planGrid.step} height={planGrid.step} patternUnits="userSpaceOnUse">
-                  <path className="plan-grid-line" d={`M ${planGrid.step} 0 L 0 0 0 ${planGrid.step}`} fill="none" vectorEffect="non-scaling-stroke" />
-                </pattern>
-              )}
-              {/* Diagonal hatch for the circulation band inside an envelope
-                  (the area the room cells leave free). */}
-              <pattern id="circ-hatch" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
-                <line className="circ-hatch-line" x1="0" y1="0" x2="0" y2="7" />
-              </pattern>
             </defs>
             {(() => {
               const imgs = imgLayers.map((im) => {
@@ -313,43 +227,13 @@ export default function DiagramCanvas({
               return <g transform={stack.groundTransform}>{imgs}</g>;
             })()}
 
-            {/* Faint placement-grid overlay: above the site image, below rooms,
-                no pointer capture. Only in Master plan (planGrid is null else). */}
-            {planGrid && !stackMode && (
-              <rect className="plan-grid" x={originX} y={originY} width={vb.w} height={vb.h} fill="url(#plan-grid)" pointerEvents="none" />
-            )}
-
-            {/* Master-plan building envelopes drawn as fixed context under the
-                Building env — the footprint each building's rooms are arranged
-                inside. Non-interactive; the focused building's is emphasised. */}
-            {envelopeUnderlays && !stackMode &&
-              envelopeUnderlays.map((e) => {
-                const top = polyBounds(e.verts).minY;
-                return (
-                  <g
-                    key={`env:${e.id}`}
-                    className={`envelope-underlay ${e.focused ? 'focused' : ''}`}
-                    transform={`translate(${e.x}, ${e.y})${e.rot ? ` rotate(${e.rot})` : ''}`}
-                    pointerEvents="none"
-                  >
-                    <path d={polygonPath(e.verts)} />
-                    <text
-                      className="envelope-label"
-                      y={top - 8}
-                      textAnchor="middle"
-                      transform={e.rot ? `rotate(${-e.rot} 0 ${top - 8})` : undefined}
-                    >▱ {e.name}</text>
-                  </g>
-                );
-              })}
-
             {/* Topographic site contours — concentric rings that echo each
                 building's convex-hull SHAPE (not a generic ellipse), replacing
                 the grid (flat site-plan field). Grouped by clusterKey (building),
                 so each building gets ONE field that matches its hull, independent
                 of the bubble colour mode. */}
             {!stackMode && (() => {
-              // Padded discs per building (same construction the hulls use),
+              // Padded sample points per building (same construction the hulls use),
               // so the contour outline matches the building hull exactly.
               const byG = new Map();
               for (const o of instances) {
@@ -358,11 +242,13 @@ export default function DiagramCanvas({
                 if (!n) continue;
                 const g = clusterKey(o.s);
                 if (!byG.has(g)) byG.set(g, []);
-                byG.get(g).push({ x: n.x, y: n.y, r: radiusOf(o.s) + hullPad });
+                const r = radiusOf(o.s) + hullPad;
+                for (let a = 0; a < Math.PI * 2; a += Math.PI / 4)
+                  byG.get(g).push({ x: n.x + Math.cos(a) * r, y: n.y + Math.sin(a) * r });
               }
               const rings = [];
-              for (const [g, discs] of byG) {
-                const hull = hullOfDiscs(discs);
+              for (const [g, pts] of byG) {
+                const hull = convexHull(pts);
                 if (hull.length < 3) continue;
                 const cx = hull.reduce((s, p) => s + p.x, 0) / hull.length;
                 const cy = hull.reduce((s, p) => s + p.y, 0) / hull.length;
@@ -400,10 +286,12 @@ export default function DiagramCanvas({
                   const g = keyFn(o.s);
                   if (g == null) continue;
                   if (!byG.has(g)) byG.set(g, []);
-                  byG.get(g).push({ x: n.x, y: n.y, r: radiusOf(o.s) + hullPad });
+                  const r = radiusOf(o.s) + hullPad;
+                  for (let a = 0; a < Math.PI * 2; a += Math.PI / 4)
+                    byG.get(g).push({ x: n.x + Math.cos(a) * r, y: n.y + Math.sin(a) * r });
                 }
-                for (const [g, discs] of byG) {
-                  const hull = hullOfDiscs(discs);
+                for (const [g, pts] of byG) {
+                  const hull = convexHull(pts);
                   const d = smoothHullPath(hull);
                   if (!d) continue;
                   const color = colorForLabel(g);
@@ -470,16 +358,6 @@ export default function DiagramCanvas({
                 const poly = kind === 'poly' ? polyVertsOf(o.s) : null;
                 const pbS = poly ? polyBounds(poly) : null;
                 const side = r * Math.sqrt(Math.PI);
-                // Boxes keep their authored plan rectangle (aspect + 90° turns)
-                // in the stacked view too — not the old equal-area square.
-                const nSt = nodes.get(o.key);
-                let bwS = side, bhS = side;
-                const rotS = box ? (nSt?.rot || 0) : 0;
-                if (box && nSt?.w && nSt?.h) {
-                  const aspect = nSt.w / nSt.h;
-                  bhS = Math.sqrt(areaUnits(o.s) / aspect);
-                  bwS = aspect * bhS;
-                }
                 const polyD = poly ? polygonPath(poly) : null;
                 const extrude = r * 0.5; // screen-space "thickness" for the raised blob
                 // Contact shadow: under the sphere bottom, or under the extruded blob's base.
@@ -502,11 +380,11 @@ export default function DiagramCanvas({
                         <path d={polyD} fill="url(#sphere-spec)" />
                       </>
                     ) : box ? (
-                      <g transform={rotS ? `rotate(${rotS})` : undefined}>
-                        <rect x={-bwS / 2} y={-bhS / 2} width={bwS} height={bhS} rx={Math.min(5, Math.min(bwS, bhS) / 8)} fill={colorOf(o.s)} />
-                        <rect x={-bwS / 2} y={-bhS / 2} width={bwS} height={bhS} rx={Math.min(5, Math.min(bwS, bhS) / 8)} fill="url(#sphere3d)" />
-                        <rect x={-bwS / 2} y={-bhS / 2} width={bwS} height={bhS} rx={Math.min(5, Math.min(bwS, bhS) / 8)} fill="url(#sphere-spec)" />
-                      </g>
+                      <>
+                        <rect x={-side / 2} y={-side / 2} width={side} height={side} rx={Math.min(5, side / 8)} fill={colorOf(o.s)} />
+                        <rect x={-side / 2} y={-side / 2} width={side} height={side} rx={Math.min(5, side / 8)} fill="url(#sphere3d)" />
+                        <rect x={-side / 2} y={-side / 2} width={side} height={side} rx={Math.min(5, side / 8)} fill="url(#sphere-spec)" />
+                      </>
                     ) : (
                       <>
                         <circle r={r} fill={colorOf(o.s)} />
@@ -564,10 +442,6 @@ export default function DiagramCanvas({
               const isSel = selected === s.id && (Math.max(1, s.count || 1) === 1 || selectedInst === i);
               const pinned = !!instPin(s, i);
               const inMulti = multi.has(o.key);
-              const overlapping = overlapKeys.has(o.key);
-              const ghost = ghostUnplaced && !placedKeys.has(o.key); // un-placed → faint
-              const dimmed = focusCheck && !focusCheck(s); // outside the focused building
-              const envInfo = envelopeBadge ? envelopeBadge(s) : null;
               const count = Math.max(1, s.count || 1);
               const kind = shapeOf(s);
               const box = kind === 'box';
@@ -575,25 +449,7 @@ export default function DiagramCanvas({
               const polyHandles = kind === 'poly' ? polyHandlesOf(s) : null;
               const pb = poly ? polyBounds(poly) : null;
               const side = r * Math.sqrt(Math.PI); // square of equal area
-              // Building rectangles: a box carries an authored aspect (n.w/n.h),
-              // rescaled each render to hold the room's live target area — so an
-              // area edit re-locks the geometry automatically (like the poly lock).
-              let bw = side, bh = side;
-              if (box && n.w && n.h) {
-                const target = areaUnits(s);      // == side²
-                const aspect = n.w / n.h;
-                bh = Math.sqrt(target / aspect);
-                bw = aspect * bh;
-              }
               const editing = editShape === s.id && i === editAnchorInst(s);
-              // Envelope with a live interior sketch: the cells carry the colour,
-              // so the envelope itself reads as an outline with its name above.
-              const hollow = interiorRoots.has(s.id);
-              // Master-plan placement orientation. Circles look identical rotated,
-              // so the handle only shows for box/poly; the label counter-rotates
-              // to stay upright.
-              const rot = n.rot || 0;
-              const canRotate = showRotate && (box || !!poly);
               // Live area of the rendered outline, recomputed each frame (the area
               // lock keeps it ≈ the brief target — shown so the size reads "live").
               const polyAreaStr = poly ? fmtArea(ea(s) * (polygonArea(poly) / (areaUnits(s) || 1)), units) : null;
@@ -615,21 +471,21 @@ export default function DiagramCanvas({
                   key={o.key}
                   data-space-id={s.id}
                   data-instance={i}
-                  className={`bubble ${isSel ? 'selected' : ''} ${inMulti ? 'multi' : ''} ${overlapping ? 'overlap' : ''} ${ghost ? 'ghost' : ''} ${dimmed ? 'dim' : ''}`}
-                  transform={`translate(${n.x}, ${n.y})${rot ? ` rotate(${rot})` : ''}`}
+                  className={`bubble ${isSel ? 'selected' : ''} ${inMulti ? 'multi' : ''}`}
+                  transform={`translate(${n.x}, ${n.y})`}
                   onPointerDown={(e) => onBubbleDown(e, o)}
                   onPointerEnter={() => (hoverRef.current = { space: s, idx: i })}
                   onPointerLeave={() => (hoverRef.current?.space.id === s.id && hoverRef.current?.idx === i ? (hoverRef.current = null) : null)}
                 >
                   <title>
                     {s.name}
-                    {count > 1 ? ` ${i + 1} of ${count}` : ''} — {fmtArea(ea(s), units)}
+                    {count > 1 ? ` ${i + 1} of ${count}` : ''} — {fmtArea(ea(s), units)} · P pin · B box
                   </title>
                   {pinned &&
                     (poly ? (
                       <path d={polyRingPath(poly, 6)} className="pin-ring" />
                     ) : box ? (
-                      <rect x={-bw / 2 - 5} y={-bh / 2 - 5} width={bw + 10} height={bh + 10} rx="3" className="pin-ring" />
+                      <rect x={-side / 2 - 5} y={-side / 2 - 5} width={side + 10} height={side + 10} rx="3" className="pin-ring" />
                     ) : (
                       <circle r={r + 5} className="pin-ring" />
                     ))}
@@ -637,111 +493,23 @@ export default function DiagramCanvas({
                     (poly ? (
                       <path d={polyRingPath(poly, 9)} className="multi-ring" />
                     ) : box ? (
-                      <rect x={-bw / 2 - 7} y={-bh / 2 - 7} width={bw + 14} height={bh + 14} rx="4" className="multi-ring" />
+                      <rect x={-side / 2 - 7} y={-side / 2 - 7} width={side + 14} height={side + 14} rx="4" className="multi-ring" />
                     ) : (
                       <circle r={r + 7} className="multi-ring" />
                     ))}
                   {poly ? (
-                    <path className={`poly-shape ${editing ? 'editing' : ''}`} d={polygonPath(poly)} fill={baseColor} fillOpacity={hollow ? 0.06 : fillOpEff} stroke={strokeColor} strokeWidth={swEff} strokeLinejoin="round" filter={shapeFilter} />
+                    <path className={`poly-shape ${editing ? 'editing' : ''}`} d={polygonPath(poly)} fill={baseColor} fillOpacity={fillOpEff} stroke={strokeColor} strokeWidth={swEff} strokeLinejoin="round" filter={shapeFilter} />
                   ) : box ? (
-                    <rect x={-bw / 2} y={-bh / 2} width={bw} height={bh} rx={flat ? 0 : Math.min(4, Math.min(bw, bh) / 8)} fill={baseColor} fillOpacity={fillOpEff} stroke={strokeColor} strokeWidth={swEff} filter={shapeFilter} />
+                    <rect x={-side / 2} y={-side / 2} width={side} height={side} rx={flat ? 0 : Math.min(4, side / 8)} fill={baseColor} fillOpacity={fillOpEff} stroke={strokeColor} strokeWidth={swEff} filter={shapeFilter} />
                   ) : (
                     <circle r={r} fill={baseColor} fillOpacity={fillOpEff} stroke={strokeColor} strokeWidth={swEff} filter={shapeFilter} />
                   )}
-                  {hollow ? (
-                    // Interior sketch active: the room cells occupy the centre, so
-                    // the building's name moves above the outline (like underlays).
-                    <text
-                      className="envelope-label"
-                      y={pb.minY - 8}
-                      textAnchor="middle"
-                      transform={rot ? `rotate(${-rot} 0 ${pb.minY - 8})` : undefined}
-                    >▱ {s.name}</text>
-                  ) : rot ? (
-                    <g transform={`rotate(${-rot})`}>
-                      <BubbleLabel label={`${s.name}${count > 1 ? ` ${i + 1}` : ''}`} r={r} areaStr={fmtArea(ea(s), units)} ink={inkColor} />
-                    </g>
-                  ) : (
-                    <BubbleLabel
-                      label={`${s.name}${count > 1 ? ` ${i + 1}` : ''}`}
-                      r={r}
-                      areaStr={fmtArea(ea(s), units)}
-                      ink={inkColor}
-                    />
-                  )}
-                  {/* Envelope feasibility badge: the DRAWN footprint against the
-                      REQUIRED one (the building's biggest storey). Red = the
-                      envelope is too small for the brief. */}
-                  {envInfo && (() => {
-                    const by = (poly ? pb.maxY : r) + 16;
-                    const bad = envInfo.drawn < envInfo.required - 0.5;
-                    return (
-                      <text
-                        className={`env-badge ${bad ? 'bad' : ''}`}
-                        y={by}
-                        textAnchor="middle"
-                        transform={rot ? `rotate(${-rot} 0 ${by})` : undefined}
-                      >
-                        {fmtArea(envInfo.drawn, units)}{bad ? ` · needs ≥ ${fmtArea(envInfo.required, units)}` : ' envelope'}
-                      </text>
-                    );
-                  })()}
-                  {/* Vertical-adjacency tab: this room links to a room on another
-                      floor (↑ above · ↓ below · ↕ both), green when it stacks in
-                      plan, red when not. Pinned just outside the top-right corner;
-                      the glyph counter-rotates to stay upright. */}
-                  {vBadge.has(o.key) && (() => {
-                    const info = vBadge.get(o.key);
-                    const bx = (box ? bw / 2 : r * 0.7) + 1;
-                    const by = (box ? -bh / 2 : -r * 0.7) - 1;
-                    const glyph = info.dir === 'up' ? '↑' : info.dir === 'down' ? '↓' : '↕';
-                    return (
-                      <g className={`vlink-badge ${info.state}`}>
-                        <title>Vertical link — room {info.dir === 'both' ? 'above & below' : info.dir === 'up' ? 'above' : 'below'} · {info.state === 'met' ? 'stacks in plan' : 'not aligned'}</title>
-                        <circle cx={bx} cy={by} r="8" />
-                        <text x={bx} y={by} textAnchor="middle" dominantBaseline="central" transform={rot ? `rotate(${-rot} ${bx} ${by})` : undefined}>{glyph}</text>
-                      </g>
-                    );
-                  })()}
-                  {/* Rotate handle: a stem + knob above the footprint, only for a
-                      selected box/poly in Master plan. It rides the group's
-                      rotation, so it always points to the shape's "up". */}
-                  {canRotate && isSel && !editing && (() => {
-                    const topY = poly ? pb.minY : -side / 2;
-                    const knobY = topY - 20;
-                    return (
-                      <g className="rotate-handle" onPointerDown={(e) => onRotateHandleDown(e, o)}>
-                        <line x1="0" y1={topY} x2="0" y2={knobY} className="rotate-stem" />
-                        <circle cx="0" cy={knobY} r="6" className="rotate-knob" />
-                      </g>
-                    );
-                  })()}
-                  {/* Area-lock resize handles on a selected Building box — one at
-                      each CORNER (like most design software). Dragging a corner
-                      sets the rectangle's aspect while the target area is held; the
-                      opposite corner stays pinned. A live w×h readout shows the
-                      lock. Handles ride the box rotation. */}
-                  {box && showResize && isSel && (
-                    <g className="resize-handles">
-                      {[[-1, -1], [1, -1], [-1, 1], [1, 1]].map(([sx, sy]) => (
-                        <rect
-                          key={`${sx},${sy}`}
-                          className="resize-handle"
-                          x={(sx * bw) / 2 - 4}
-                          y={(sy * bh) / 2 - 4}
-                          width="8"
-                          height="8"
-                          style={{ cursor: sx * sy > 0 ? 'nwse-resize' : 'nesw-resize' }}
-                          onPointerDown={(e) => onResizeHandleDown(e, o, sx, sy)}
-                        />
-                      ))}
-                      {effScale && (
-                        <text className="dim-badge" x="0" y={-bh / 2 - 10} textAnchor="middle" transform={rot ? `rotate(${-rot})` : undefined}>
-                          {(bw * effScale).toFixed(1)} × {(bh * effScale).toFixed(1)} {distUnit(units)}
-                        </text>
-                      )}
-                    </g>
-                  )}
+                  <BubbleLabel
+                    label={`${s.name}${count > 1 ? ` ${i + 1}` : ''}`}
+                    r={r}
+                    areaStr={fmtArea(ea(s), units)}
+                    ink={inkColor}
+                  />
                   {editing && polyHandles && (
                     <g className="poly-edit">
                       {polyHandles.map((p, vi) => {
@@ -760,25 +528,17 @@ export default function DiagramCanvas({
                           />
                         );
                       })}
-                      {polyHandles.map((p, vi) => {
-                        // Handle glyph = the vertex's corner style: circle =
-                        // curve, rounded square = fillet, square = sharp.
-                        // Right-click cycles the style; drag moves; dbl-click
-                        // removes.
-                        const k = p.k === 's' || p.k === 'f' ? p.k : 'c';
-                        const shared = {
-                          className: `poly-handle k-${k}`,
-                          onPointerDown: (e) => onPolyVertexDown(e, s, vi),
-                          onDoubleClick: (e) => (e.stopPropagation(), removePolyVertex(s, vi)),
-                          onContextMenu: (e) => (e.preventDefault(), e.stopPropagation(), onCycleCorner(s, vi)),
-                        };
-                        const title = <title>drag to move · right-click: corner style ({k === 'c' ? 'curve' : k === 'f' ? 'fillet' : 'sharp'}) · double-click to remove</title>;
-                        return k === 'c' ? (
-                          <circle key={`v:${vi}`} cx={p.x} cy={p.y} r="6" {...shared}>{title}</circle>
-                        ) : (
-                          <rect key={`v:${vi}`} x={p.x - 5.5} y={p.y - 5.5} width="11" height="11" rx={k === 'f' ? 4 : 0} {...shared}>{title}</rect>
-                        );
-                      })}
+                      {polyHandles.map((p, vi) => (
+                        <circle
+                          key={`v:${vi}`}
+                          cx={p.x}
+                          cy={p.y}
+                          r="6"
+                          className="poly-handle"
+                          onPointerDown={(e) => onPolyVertexDown(e, s, vi)}
+                          onDoubleClick={(e) => (e.stopPropagation(), removePolyVertex(s, vi))}
+                        />
+                      ))}
                       {pb && (
                         <text className="poly-area-badge" x="0" y={pb.minY - 12} textAnchor="middle">
                           {polyAreaStr}
@@ -789,58 +549,6 @@ export default function DiagramCanvas({
                 </g>
               );
             })}
-
-            {/* Voronoi interior sketch — each placed envelope partitioned into
-                room cells seeded from the Concept layout. Cells are see-through
-                to pointers (the envelope stays draggable); the SEED dot is the
-                handle — dragging it re-plans the room and saves its concept pin. */}
-            {interior &&
-              interior.map((b) => (
-                <g key={`vor:${b.rootId}`} className="voronoi-layer">
-                  {/* Circulation band: the envelope hatched underneath — the
-                      shrunken cells leave it visible between the rooms. */}
-                  {b.circ > 0 && (
-                    <path className="circ-fill" d={polygonPath(b.boundary)} fill="url(#circ-hatch)" />
-                  )}
-                  {b.cells.map((c) => {
-                    const showText = polygonArea(c.poly) > 700; // slivers keep just their seed
-                    return (
-                      <g key={`vc:${c.key}`} className={`voronoi-cell ${c.tight ? 'tight' : ''}`}>
-                        <path
-                          className="voronoi-fill"
-                          d={polygonPath(c.poly)}
-                          fill={c.color}
-                          stroke={darkHex(c.color, 0.45)}
-                        />
-                        {showText && (
-                          <text className="voronoi-name" x={c.centre.x} y={c.centre.y - (c.areaPU != null ? 3 : -3)} textAnchor="middle" fill={darkHex(c.color, 0.62)}>
-                            {c.name}
-                          </text>
-                        )}
-                        {showText && c.areaPU != null && (
-                          <text className="voronoi-area" x={c.centre.x} y={c.centre.y + 10} textAnchor="middle" fill={darkHex(c.color, 0.62)}>
-                            {fmtArea(c.areaPU, units)} / {fmtArea(c.targetPU, units)}
-                          </text>
-                        )}
-                        <circle className="voronoi-seed" cx={c.seed.x} cy={c.seed.y} r="5" fill={c.color} onPointerDown={(e) => onSeedDown(e, c)}>
-                          <title>{c.name} — drag to re-plan (saves its Concept pin)</title>
-                        </circle>
-                      </g>
-                    );
-                  })}
-                </g>
-              ))}
-
-            {/* Edge-alignment guides — the neighbour edge/centre a dragged
-                footprint is snapping to. Read from a ref so they track the live
-                drag (TickLayer re-renders each move). */}
-            {alignGuides?.current?.map((g, i) =>
-              g.x != null ? (
-                <line key={`ag:${i}`} className="align-guide" x1={g.x} y1={g.y0} x2={g.x} y2={g.y1} />
-              ) : (
-                <line key={`ag:${i}`} className="align-guide" x1={g.x0} y1={g.y} x2={g.x1} y2={g.y} />
-              )
-            )}
 
             {scaleBar && (
               <g className="scale-bar" transform={`translate(${originX + 20}, ${originY + vb.h - 24})`}>

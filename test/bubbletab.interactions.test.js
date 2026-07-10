@@ -211,7 +211,9 @@ test('scale calibration walks two clicks to the distance form and cancels cleanl
   // so this covers the interaction flow; the mpp math is unit-tested in
   // layertools.test.js. The panel is driven directly via an image row.
   const image = { id: 9, kind: 'custom', name: 'Site plan', mpp: 0, opacity: 0.6, visible: 1, x: 0, y: 0, rot: 0 };
-  const { container, svg, unmount } = mount({ images: [image] });
+  // Image layers + calibration are a Master-plan feature — the Concept
+  // environment (the default) hides them, so mount in the master-plan env.
+  const { container, svg, unmount } = mount({ images: [image], project: { ...project, diagram_env: 'masterplan' } });
   try {
     // Open Layers and start calibrating.
     await act(async () => {

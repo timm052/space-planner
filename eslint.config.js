@@ -36,9 +36,10 @@ export default [
   },
 
   // react-three-fiber renders three.js props (args, position, intensity, …)
-  // that the react plugin doesn't recognise as DOM attributes.
+  // that the react plugin doesn't recognise as DOM attributes. (diagram_legacy
+  // is the frozen pre-refactor copy — see docs/diagram-environments-plan.md.)
   {
-    files: ['src/components/diagram/Stacked3D.jsx'],
+    files: ['src/components/diagram/Stacked3D.jsx', 'src/components/diagram_legacy/Stacked3D.jsx'],
     rules: { 'react/no-unknown-property': 'off' },
   },
 
