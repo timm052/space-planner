@@ -28,7 +28,6 @@ export function initialDiagramPrefs(store = prefs) {
     collapsed: new Set(), // collapsed Areas groups
     floorView: 'all', // 'all' | <level label> | 'offset' | 'overlaid' | '3d'
     floorGap: 0.6, // floor spacing as a fraction of plate height
-    stackCam: 'iso', // stacked-SVG camera preset (CAMERAS in floors.js)
     stackImages: true, // show warped site images in the stacked view
     cam3d: 'persp', // WebGL 3-D camera preset (Stacked3D)
     nodeForce: store.getNum('nodeforce', 1), // auto-layout force: rooms

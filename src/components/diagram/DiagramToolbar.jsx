@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react';
-import { CAMERAS } from '../../floors.js';
 
 /**
  * The diagram's chrome along the top and left edge: the responsive top bar
@@ -218,7 +217,6 @@ export function MorePopover({
   is3D,
   cam3d,
   stackMode,
-  stackCam,
   stackImages,
   hasImages,
 }) {
@@ -286,14 +284,6 @@ export function MorePopover({
             <option value="top">Top / plan</option>
             <option value="front">Front</option>
             <option value="side">Side</option>
-          </select>
-        </div>
-      )}
-      {stackMode && (
-        <div className="more-row">
-          <span className="more-label">Camera</span>
-          <select className="ctrl-select" value={stackCam} onChange={(e) => setPref('stackCam', e.target.value)}>
-            {Object.entries(CAMERAS).map(([k, c]) => <option key={k} value={k}>{c.label}</option>)}
           </select>
         </div>
       )}

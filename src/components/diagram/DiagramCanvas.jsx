@@ -249,26 +249,6 @@ export default function DiagramCanvas({
                 <feTurbulence type="fractalNoise" baseFrequency="0.018" numOctaves="2" seed="7" result="n" />
                 <feDisplacementMap in="SourceGraphic" in2="n" scale="5" xChannelSelector="R" yChannelSelector="G" />
               </filter>
-              {/* Colour-independent shading overlaid on a coloured circle to make
-                  it read as a lit 3D sphere (highlight top-left, shaded rim). */}
-              {/* Diffuse shading + rim shadow — colour-independent, layered over fill */}
-              <radialGradient id="sphere3d" cx="36%" cy="30%" r="72%">
-                <stop offset="0%" stopColor="rgba(255,255,255,0.52)" />
-                <stop offset="35%" stopColor="rgba(255,255,255,0.10)" />
-                <stop offset="65%" stopColor="rgba(0,0,0,0.02)" />
-                <stop offset="100%" stopColor="rgba(0,0,0,0.52)" />
-              </radialGradient>
-              {/* Tight specular hot-spot */}
-              <radialGradient id="sphere-spec" cx="32%" cy="26%" r="38%">
-                <stop offset="0%" stopColor="rgba(255,255,255,0.82)" />
-                <stop offset="100%" stopColor="rgba(255,255,255,0)" />
-              </radialGradient>
-              {/* Contact shadow — dark centre fading to transparent */}
-              <radialGradient id="sphere-shadow-grad">
-                <stop offset="0%" stopColor="rgba(0,0,0,0.38)" />
-                <stop offset="65%" stopColor="rgba(0,0,0,0.14)" />
-                <stop offset="100%" stopColor="rgba(0,0,0,0)" />
-              </radialGradient>
               {/* Placement grid: one faint cell per metric snap step, anchored to
                   the world origin so it stays fixed under pan/zoom. Major cells
                   only — a quiet reference field, not the primary snap (that's
@@ -431,20 +411,54 @@ export default function DiagramCanvas({
               stack.guides.map((g, i) => (
                 <line key={`guide:${i}`} x1={g.x1} y1={g.y1} x2={g.x2} y2={g.y2} className="floor-guide" />
               ))}
-            {/* Floor plates: projected polygon (screen-space) + slab edge faces.
-                The polygon is computed from the 3-D footprint corners so the
-                shape is correct for every camera angle. */}
+            {/* Floor plates + room footprints. The plate is the projected
+                polygon (screen space, crisp dashes); each floor's rooms render
+                inside its plane-affine group so every footprint foreshortens
+                flat onto the plate — circles land as ellipses, boxes as
+                parallelograms, custom outlines as true plan shapes. A clean
+                axon: flat fills, hairline outlines, no fake lighting. */}
             {stack &&
               stack.floors.map((f) => (
                 <g key={`floor:${f.label}`}>
-                  <polygon points={f.platePts} className={`floor-plate floor-plane ${floorMode}`}
-                    stroke={f.color} fill={`${f.color}${floorMode === 'overlaid' ? '0c' : '1a'}`} />
                   {floorMode === 'offset' && (
                     <>
                       <polygon points={f.slabFront} fill={f.color} className="slab-face slab-front" />
                       <polygon points={f.slabRight} fill={f.color} className="slab-face slab-right" />
                     </>
                   )}
+                  <polygon points={f.platePts} className={`floor-plate floor-plane ${floorMode}`}
+                    stroke={f.color} fill={`${f.color}${floorMode === 'overlaid' ? '0c' : '1a'}`} />
+                  <g transform={`${f.planeTransform} translate(${f.off.x} ${f.off.y})`}>
+                    {f.bubbles.map((o) => {
+                      const n = nodes.get(o.key);
+                      if (!n) return null;
+                      const fill = colorOf(o.s);
+                      const common = {
+                        className: `stack-room ${floorMode}`,
+                        fill,
+                        stroke: darkHex(fill, 0.45),
+                        vectorEffect: 'non-scaling-stroke',
+                      };
+                      const kind = shapeOf(o.s);
+                      if (kind === 'poly') {
+                        const poly = polyVertsOf(o.s);
+                        if (poly) return <path key={o.key} d={polygonPath(poly)} transform={`translate(${n.x} ${n.y})`} {...common} />;
+                      }
+                      if (kind === 'box') {
+                        let bw = radiusOf(o.s) * Math.sqrt(Math.PI), bh = bw;
+                        if (n.w > 0 && n.h > 0) {
+                          const aspect = n.w / n.h;
+                          bh = Math.sqrt(areaUnits(o.s) / aspect);
+                          bw = aspect * bh;
+                        }
+                        return (
+                          <rect key={o.key} x={-bw / 2} y={-bh / 2} width={bw} height={bh}
+                            transform={`translate(${n.x} ${n.y})${n.rot ? ` rotate(${n.rot})` : ''}`} {...common} />
+                        );
+                      }
+                      return <circle key={o.key} cx={n.x} cy={n.y} r={radiusOf(o.s)} {...common} />;
+                    })}
+                  </g>
                   <text x={f.labelPos.x} y={f.labelPos.y} className="floor-plate-label"
                     fill={f.color} textAnchor="middle">{f.label}</text>
                 </g>
@@ -460,62 +474,18 @@ export default function DiagramCanvas({
                 if (!pair) return null;
                 return <line key={`sl:${l.id}`} x1={pair.a.x} y1={pair.a.y} x2={pair.b.x} y2={pair.b.y} className={`link ${l.strength}${inter ? ' interfloor' : ''}`} />;
               })}
-            {/* Rooms as lit 3D spheres sitting on their floor plane. */}
+            {/* Room labels — upright, in screen space (drawing them inside the
+                plane group would shear the text). Haloed via CSS so they stay
+                readable over plates, fills and the site image. */}
             {stack &&
               stack.ordered.map((o) => {
                 const p = stack.screenPos.get(o.key);
                 if (!p) return null;
-                const r = p.r;
-                const kind = shapeOf(o.s);
-                const box = kind === 'box';
-                const poly = kind === 'poly' ? polyVertsOf(o.s) : null;
-                const pbS = poly ? polyBounds(poly) : null;
-                const side = r * Math.sqrt(Math.PI);
-                // Boxes keep their authored plan rectangle (aspect + 90° turns)
-                // in the stacked view too — not the old equal-area square.
-                const nSt = nodes.get(o.key);
-                let bwS = side, bhS = side;
-                const rotS = box ? (nSt?.rot || 0) : 0;
-                if (box && nSt?.w && nSt?.h) {
-                  const aspect = nSt.w / nSt.h;
-                  bhS = Math.sqrt(areaUnits(o.s) / aspect);
-                  bwS = aspect * bhS;
-                }
-                const polyD = poly ? polygonPath(poly) : null;
-                const extrude = r * 0.5; // screen-space "thickness" for the raised blob
-                // Contact shadow: under the sphere bottom, or under the extruded blob's base.
-                const shadow = poly
-                  ? { cy: extrude + pbS.maxY * 0.95, rx: (pbS.maxX - pbS.minX) / 2 * 0.92, ry: (pbS.maxX - pbS.minX) / 2 * 0.22 }
-                  : { cy: r * 0.65, rx: r * 0.9, ry: r * 0.24 };
                 const label = `${o.s.name}${Math.max(1, o.s.count || 1) > 1 ? ` ${o.i + 1}` : ''}`;
                 return (
-                  <g key={`sph:${o.key}`} transform={`translate(${p.x}, ${p.y})`} className="bubble stacked sphere">
+                  <g key={`slbl:${o.key}`} transform={`translate(${p.x}, ${p.y})`} className="bubble stacked">
                     <title>{label} — {fmtArea(ea(o.s), units)}</title>
-                    <ellipse cx="0" cy={shadow.cy} rx={shadow.rx} ry={shadow.ry} fill="url(#sphere-shadow-grad)" />
-                    {poly ? (
-                      <>
-                        {/* Extruded body: a darkened copy dropped below the top face
-                            so the freeform shape reads as a raised 3-D blob. */}
-                        <path d={polyD} transform={`translate(0, ${extrude})`} fill={colorOf(o.s)} />
-                        <path d={polyD} transform={`translate(0, ${extrude})`} fill="rgba(0,0,0,0.32)" />
-                        <path d={polyD} fill={colorOf(o.s)} />
-                        <path d={polyD} fill="url(#sphere3d)" />
-                        <path d={polyD} fill="url(#sphere-spec)" />
-                      </>
-                    ) : box ? (
-                      <g transform={rotS ? `rotate(${rotS})` : undefined}>
-                        <rect x={-bwS / 2} y={-bhS / 2} width={bwS} height={bhS} rx={Math.min(5, Math.min(bwS, bhS) / 8)} fill={colorOf(o.s)} />
-                        <rect x={-bwS / 2} y={-bhS / 2} width={bwS} height={bhS} rx={Math.min(5, Math.min(bwS, bhS) / 8)} fill="url(#sphere3d)" />
-                        <rect x={-bwS / 2} y={-bhS / 2} width={bwS} height={bhS} rx={Math.min(5, Math.min(bwS, bhS) / 8)} fill="url(#sphere-spec)" />
-                      </g>
-                    ) : (
-                      <>
-                        <circle r={r} fill={colorOf(o.s)} />
-                        <circle r={r} fill="url(#sphere3d)" />
-                        <circle r={r} fill="url(#sphere-spec)" />
-                      </>
-                    )}
-                    <BubbleLabel label={label} r={r} areaStr={fmtArea(ea(o.s), units)} />
+                    <BubbleLabel label={label} r={p.r * 0.92} areaStr={fmtArea(ea(o.s), units)} ink={darkHex(colorOf(o.s), 0.62)} />
                   </g>
                 );
               })}

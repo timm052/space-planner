@@ -835,14 +835,29 @@
 /* ---------- floor view modes (per-level / stacked isometric) ---------- */
 .floors-active { color: var(--accent); }
 .bubble.stacked { cursor: default; }
-/* Stacked axonometric: each floor is an iso-tilted plane (the group transform
-   warps its plate, bubbles and images onto it). The plate is a translucent
-   rectangle outlined in the floor's colour; overlaid floors are extra-faint. */
+/* Stacked axonometric: each floor is an iso plane; room footprints render
+   INSIDE the plane's affine group so they foreshorten flat onto the plate.
+   The plate is a translucent polygon outlined in the floor's colour. */
 .floor-plate {
   stroke-width: 1.5;
   stroke-dasharray: 10 7;
 }
-.floor-plane.overlaid .floor-plate { opacity: 0.55; }
+.floor-plane.overlaid { opacity: 0.55; }
+/* Flat foreshortened room footprints — hairline outline, no fake lighting.
+   non-scaling-stroke keeps the outline crisp through the plane shear. */
+.stack-room {
+  fill-opacity: 0.8;
+  stroke-width: 1;
+  stroke-opacity: 0.85;
+}
+.stack-room.overlaid { fill-opacity: 0.3; stroke-opacity: 0.5; }
+/* Upright labels over the axon — haloed so they read on plates and fills. */
+.bubble.stacked .bubble-name {
+  paint-order: stroke;
+  stroke: var(--panel);
+  stroke-width: 2.5px;
+  stroke-linejoin: round;
+}
 /* Dashed vertical guides at the footprint corners, tying the stack together. */
 .floor-guide { stroke: var(--faint); stroke-width: 1; stroke-dasharray: 4 5; opacity: 0.7; }
 /* WebGL 3-D stacked view overlay (three.js / react-three-fiber). */
@@ -873,9 +888,6 @@
 .slab-face { pointer-events: none; }
 .slab-front { opacity: 0.22; }
 .slab-right { opacity: 0.13; }
-/* Soft contact shadow under each 3D-sphere room. */
-.sphere-shadow { } /* fill: url(#sphere-shadow-grad) — set inline */
-.bubble.sphere .bubble-name { fill: #fff; }
 .link.interfloor {
   stroke: var(--accent2);
   stroke-width: 1.5;

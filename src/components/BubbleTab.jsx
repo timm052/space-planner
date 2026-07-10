@@ -124,7 +124,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   // through prefs.js. The destructure keeps every read site unchanged.
   const { view: viewPrefs, setPref } = useDiagramPrefs();
   const { split, colorBy, hulls, hullPad, railW, collapsed,
-    floorView, floorGap, stackCam, stackImages, cam3d, nodeForce, buildingForce, snapEdges, snapGrid, interior, interiorLevel } = viewPrefs;
+    floorView, floorGap, stackImages, cam3d, nodeForce, buildingForce, snapEdges, snapGrid, interior, interiorLevel } = viewPrefs;
 
   // Apply a selection transition: set the next state and run its declared
   // effects. The refs let event handlers (some registered with narrow effect
@@ -2257,7 +2257,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const sceneInstances = focusCheck ? instances.filter((o) => focusCheck(o.s)) : instances;
 
   const makeStackScene = () =>
-    buildStackScene({ nodes, instances: sceneInstances, levels, levelRank, radiusOf, levelOf, floorMode, floorGap, stackCam, palette: PALETTE });
+    buildStackScene({ nodes, instances: sceneInstances, levels, levelRank, radiusOf, levelOf, floorMode, floorGap, palette: PALETTE });
 
   // The 3-D massing view is not tied to multi-floor programs — a single-storey
   // brief extrudes at its real heights too. Multi-level-only modes (per-floor
@@ -2440,7 +2440,6 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
               is3D={is3D}
               cam3d={cam3d}
               stackMode={stackMode}
-              stackCam={stackCam}
               stackImages={stackImages}
               hasImages={imgLayers.length > 0}
             />

@@ -1,20 +1,26 @@
 // Pure scene builders for the stacked (axonometric SVG) and WebGL 3-D floor
 // views. No React, no refs — everything arrives as arguments, so both are
 // unit-testable and rebuild cheaply inside the canvas TickLayer each frame.
-import { ISO, CAMERAS } from '../../floors.js';
+import { ISO } from '../../floors.js';
 import { closestInstancePair } from '../../adjacency.js';
 import { W, H } from '../../hooks/useViewport.js';
 
 /**
- * Build the stacked axonometric scene using an orthographic camera.
+ * Build the stacked axonometric scene — a fixed isometric camera (the WebGL
+ * 3-D view owns free cameras and elevations; this is THE clean axon diagram).
  *
  * World coordinate system: x/y = plan (same as the simulation), z = height
- * (z increases upward; z=0 = ground floor). The camera is parameterised by
- * azimuth (rotation around world-Z) and elevation (tilt above horizontal).
- * At elevation=0 we see a pure side elevation; at elevation=90 a plan view.
+ * (z increases upward; z=0 = ground floor).
  *
- * Camera centering: the mid-floor anchor (W/2, H/2) always maps to screen
- * centre regardless of the chosen camera angle.
+ * Because the camera is orthographic, every constant-z floor plane maps to
+ * the screen by ONE affine transform — each floor exposes it as
+ * `planeTransform` (an SVG matrix string), so plates and room footprints
+ * drawn in PLAN coordinates inside that group foreshorten exactly onto the
+ * plane: circles become ellipses, boxes parallelograms, outlines true plan
+ * shapes. Labels should stay OUTSIDE the group (screen space) — the shear
+ * would distort text.
+ *
+ * Camera centering: the mid-floor anchor (W/2, H/2) maps to screen centre.
  *
  * @param {object} p
  * @param {Map}      p.nodes      instance key → {x, y} (live sim positions)
@@ -25,11 +31,9 @@ import { W, H } from '../../hooks/useViewport.js';
  * @param {function} p.levelOf    (space) → its level label
  * @param {string}   p.floorMode  'offset' | 'overlaid'
  * @param {number}   p.floorGap   spacing as a fraction of plate height
- * @param {string}   p.stackCam   CAMERAS preset key
  * @param {string[]} p.palette    floor plate colours by rank
  */
-export function buildStackScene({ nodes, instances, levels, levelRank, radiusOf, levelOf, floorMode, floorGap, stackCam, palette }) {
-  const cam = CAMERAS[stackCam] ?? CAMERAS.iso;
+export function buildStackScene({ nodes, instances, levels, levelRank, radiusOf, levelOf, floorMode, floorGap, palette }) {
   const anchor = { x: W / 2, y: H / 2 };
 
   // Per-floor content bounding box (raw node coords).
@@ -61,40 +65,29 @@ export function buildStackScene({ nodes, instances, levels, levelRank, radiusOf,
     return { x: anchor.x - (b.minX + b.maxX) / 2, y: anchor.y - (b.minY + b.maxY) / 2 };
   };
 
-  // Projected footprint height in the ISO preset — drives the spacing slider
-  // (we keep it ISO-based so the slider feels the same regardless of camera).
+  // The classic isometric affine (the approved look): plan rotated 45° and
+  // vertically foreshortened, x' = kx·(x − y), y' = ky·(x + y) − z. It keeps
+  // the plan's orientation (larger plan y = nearer/lower on screen) — the
+  // previous azimuth/elevation camera drew the axon with plan-north flipped
+  // and warped the site image with DIFFERENT foreshortening constants, so
+  // images never sat true under the plates.
   const kx = ISO.kx, ky = ISO.ky;
-  const e_iso = anchor.x - kx * anchor.x + kx * anchor.y;
-  const f_iso = anchor.y - ky * anchor.x - ky * anchor.y;
-  const isoXY = (px, py) => ({ x: kx * px - kx * py + e_iso, y: ky * px + ky * py + f_iso });
-  const isoProjH = (() => {
-    const cs = [[foot.x, foot.y], [foot.x + foot.w, foot.y], [foot.x + foot.w, foot.y + foot.h], [foot.x, foot.y + foot.h]]
-      .map(([x, y]) => isoXY(x, y));
-    return Math.max(...cs.map((c) => c.y)) - Math.min(...cs.map((c) => c.y));
-  })();
+  const isoProjH = ky * (foot.w + foot.h); // projected footprint height
   const lift = floorMode === 'offset' ? Math.max(24, isoProjH * floorGap) : 0;
 
-  // World-Z per floor. Using lift directly as world units keeps scale=1 and
-  // makes the slider feel natural across all camera angles.
+  // Screen rise per floor, and the slab's visual thickness (screen px).
   const FLOOR_Z = lift;
   const SLAB_Z  = 14;
   const midZ = ((levels.length - 1) / 2) * FLOOR_Z;
 
-  // Orthographic projection: world (wx,wy,wz) → screen (sx,sy).
-  // Centre is computed so the anchor at mid-floor maps to the screen anchor.
-  const az = (cam.azimuth   * Math.PI) / 180;
-  const el = (cam.elevation * Math.PI) / 180;
-  const cosAz = Math.cos(az), sinAz = Math.sin(az);
-  const sinEl = Math.sin(el), cosEl = Math.cos(el);
-  const rx0 = anchor.x * cosAz - anchor.y * sinAz;
-  const ry0 = anchor.x * sinAz + anchor.y * cosAz;
-  const pcx = anchor.x - rx0;
-  const pcy = anchor.y + (ry0 * sinEl + midZ * cosEl);
-  const proj = (wx, wy, wz) => {
-    const rx = wx * cosAz - wy * sinAz;
-    const ry = wx * sinAz + wy * cosAz;
-    return { x: pcx + rx, y: pcy - (ry * sinEl + wz * cosEl) };
-  };
+  // Anchor at mid-floor maps to itself, keeping the scene centred.
+  const e0 = anchor.x - kx * (anchor.x - anchor.y);
+  const f0 = anchor.y - ky * (anchor.x + anchor.y) + midZ;
+  const proj = (wx, wy, wz) => ({ x: e0 + kx * (wx - wy), y: f0 + ky * (wx + wy) - wz });
+  // The same projection restricted to one floor plane (constant z), as an SVG
+  // affine — identical numbers to proj(), so screen-space overlays (links,
+  // labels, guides) line up exactly with the plane's content.
+  const planeMatrix = (z) => `matrix(${kx} ${ky} ${-kx} ${ky} ${e0} ${f0 - z})`;
 
   // Screen position of every instance.
   const screenPos = new Map();
@@ -131,6 +124,7 @@ export function buildStackScene({ nodes, instances, levels, levelRank, radiusOf,
       color: palette[k % palette.length],
       off: offOf(label),
       bubbles: instances.filter((o) => levelOf(o.s) === label),
+      planeTransform: planeMatrix(z),
       platePts:  ptsStr([TL, TR, BR, BL]),
       slabFront: ptsStr([BL, BR, BR_b, BL_b]),
       slabRight: ptsStr([BR, TR, TR_b, BR_b]),
@@ -151,12 +145,11 @@ export function buildStackScene({ nodes, instances, levels, levelRank, radiusOf,
       })
     : [];
 
-  // Ground image transform — only meaningful in ISO mode (affine in 2-D);
-  // null for elevation views.
+  // Ground image transform — warps the site image onto the ground plane with
+  // the SAME affine as the plates and rooms (the old ISO-constant warp used a
+  // different foreshortening, so the image sat misaligned under the plates).
   const groundOff = offOf(levels[0]);
-  const groundTransform = stackCam === 'iso'
-    ? `translate(0 ${((levels.length - 1) / 2) * lift}) matrix(${kx} ${ky} ${-kx} ${ky} ${e_iso} ${f_iso}) translate(${groundOff.x} ${groundOff.y})`
-    : null;
+  const groundTransform = `${planeMatrix(0)} translate(${groundOff.x} ${groundOff.y})`;
 
   const ordered = instances
     .filter((o) => levels.includes(levelOf(o.s)))
