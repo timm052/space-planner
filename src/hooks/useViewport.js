@@ -18,16 +18,25 @@ export const H = 620;
 export function useViewport(project, stageRef) {
   const [view, setViewState] = useState({ x: project.view_x || 0, y: project.view_y || 0 });
   const viewRef = useRef(view);
+  // View zoom (session-only): 1 = 1 diagram unit per CSS px. The visible
+  // world is vb/zoom; drawing-scale (the Scale control) is a separate concept.
+  const [zoom, setZoomState] = useState(1);
+  const zoomRef = useRef(zoom);
 
   const setView = (v) => {
     viewRef.current = v;
     setViewState(v);
   };
+  const setZoom = (z) => {
+    zoomRef.current = z;
+    setZoomState(z);
+  };
 
-  // Reset pan when switching projects.
+  // Reset pan + zoom when switching projects.
   useEffect(() => {
     const v = { x: project.view_x || 0, y: project.view_y || 0 };
     setView(v);
+    setZoom(1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.id]);
 
@@ -50,5 +59,5 @@ export function useViewport(project, stageRef) {
     return () => ro.disconnect();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  return { vb, view, viewRef, setView };
+  return { vb, view, viewRef, setView, zoom, zoomRef, setZoom };
 }

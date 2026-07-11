@@ -23,6 +23,11 @@ export default function SelectionHud({
   showShapeTools,
   showRotate90,
   onRotate90,
+  // Master plan — numeric rotation for a drawn footprint (the ⟲ drag handle
+  // stays for freehand; this is the precise way in).
+  showRotateInput,
+  rotOf,
+  onRotateTo,
   showPin,
   // Building env — per-space clear height (m); empty inherits the storey's.
   showHeight,
@@ -215,6 +220,22 @@ export default function SelectionHud({
           </span>
         )}
         {showRotate90 && <button className="action-btn" onClick={() => onRotate90(sel, selectedInst)} title="Rotate 90°">⟲ 90°</button>}
+        {showRotateInput && (
+          <label className="action-rot" title="Rotation in degrees (Enter to apply) — drag the ⟲ handle for freehand">
+            <span className="muted">⟲</span>
+            <input
+              type="number"
+              min="-360"
+              max="360"
+              step="1"
+              key={sel.id + ':' + selectedInst + ':' + Math.round(rotOf(sel, selectedInst))}
+              defaultValue={Math.round(rotOf(sel, selectedInst))}
+              onKeyDown={(e) => { if (e.key === 'Enter') onRotateTo(sel, selectedInst, e.target.value); }}
+              onBlur={(e) => { if (Number(e.target.value) !== Math.round(rotOf(sel, selectedInst))) onRotateTo(sel, selectedInst, e.target.value); }}
+            />
+            <span className="muted">°</span>
+          </label>
+        )}
         {!envelope && (
           <input
             className="action-cat"

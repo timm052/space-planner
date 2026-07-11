@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { convexHull, concaveHull, hullOfDiscs, clipHalfPlane, voronoiCells, powerCells, balanceCellWeights, pointInPolygon,
+import { convexHull, concaveHull, hullOfDiscs, clipHalfPlane, voronoiCells, powerCells, balanceCellWeights, pointInPolygon, polygonSpansAtY,
   closestPointOnPolygon, smoothHullPath, pinsOf, filterCss, IMAGE_FILTERS,
   polygonArea, polygonCentroid, normalizePolygon, parsePoly, polygonPath, polyBounds,
   regularPolygon, lShape, smoothPolygonPoints, solveAreaLockedVertex,
@@ -354,6 +354,21 @@ test('balanceCellWeights handles degenerate inputs without blowing up', () => {
   const lone = balanceCellWeights([{ x: 5, y: 5 }], unitSquare, [42]);
   assert.equal(lone.length, 1);
   assert.ok(Number.isFinite(lone[0]));
+});
+
+test('polygonSpansAtY slices a polygon into inside intervals', () => {
+  // U-shape: two prongs at the top, solid base.
+  const u = [
+    { x: 0, y: 0 }, { x: 3, y: 0 }, { x: 3, y: 6 }, { x: 5, y: 6 },
+    { x: 5, y: 0 }, { x: 8, y: 0 }, { x: 8, y: 10 }, { x: 0, y: 10 },
+  ];
+  const top = polygonSpansAtY(u, 3); // through both prongs
+  assert.equal(top.length, 2);
+  assert.deepEqual(top.map(([a, b]) => [a, b]), [[0, 3], [5, 8]]);
+  const base = polygonSpansAtY(u, 8); // through the solid base
+  assert.equal(base.length, 1);
+  assert.deepEqual(base[0], [0, 8]);
+  assert.equal(polygonSpansAtY(u, 12).length, 0, 'outside → no spans');
 });
 
 test('pointInPolygon and closestPointOnPolygon agree about a square', () => {

@@ -99,6 +99,8 @@ export default function DiagramCanvas({
   makeInterior,
   onSeedDown,
   onCellDown,
+  onJumpVertical,
+  linkDrag, // ref: in-flight rubber-band link drag ({fx,fy,x,y,moved} | null)
   alignGuides,
   planGrid,
   effScale,
@@ -217,7 +219,7 @@ export default function DiagramCanvas({
             const gap = edgeGap(pair.d, radiusOf(sa), radiusOf(sb)) * (effScale || 1);
             const met = linkSatisfied(l.strength, gap);
             const ra = rankOf(sa), rb = rankOf(sb);
-            for (const [sp, ix, delta] of [[sa, pair.ai, rb - ra], [sb, pair.bi, ra - rb]]) {
+            for (const [sp, ix, delta, other] of [[sa, pair.ai, rb - ra, sb], [sb, pair.bi, ra - rb, sa]]) {
               if (!levelVisible(sp)) continue;
               const key = `${sp.id}:${ix}`;
               const dir = delta > 0 ? 'up' : 'down';
@@ -225,6 +227,11 @@ export default function DiagramCanvas({
               vBadge.set(key, {
                 state: prev?.state === 'unmet' || !met ? 'unmet' : 'met',
                 dir: prev && prev.dir !== dir ? 'both' : dir,
+                // First partner wins as the jump target (clicking the badge
+                // switches to that floor with the partner selected).
+                partnerId: prev?.partnerId ?? other.id,
+                partnerLevel: prev?.partnerLevel ?? (other.level || '').trim(),
+                partnerName: prev?.partnerName ?? other.name,
               });
             }
           }
@@ -442,10 +449,13 @@ export default function DiagramCanvas({
                         stroke: darkHex(fill, 0.45),
                         vectorEffect: 'non-scaling-stroke',
                       };
+                      const tip = (
+                        <title>{`${o.s.name}${Math.max(1, o.s.count || 1) > 1 ? ` ${o.i + 1}` : ''} — ${f.label} · ${fmtArea(ea(o.s), units)}`}</title>
+                      );
                       const kind = shapeOf(o.s);
                       if (kind === 'poly') {
                         const poly = polyVertsOf(o.s);
-                        if (poly) return <path key={o.key} d={polygonPath(poly)} transform={`translate(${n.x} ${n.y})`} {...common} />;
+                        if (poly) return <path key={o.key} d={polygonPath(poly)} transform={`translate(${n.x} ${n.y})`} {...common}>{tip}</path>;
                       }
                       if (kind === 'box') {
                         let bw = radiusOf(o.s) * Math.sqrt(Math.PI), bh = bw;
@@ -456,10 +466,10 @@ export default function DiagramCanvas({
                         }
                         return (
                           <rect key={o.key} x={-bw / 2} y={-bh / 2} width={bw} height={bh}
-                            transform={`translate(${n.x} ${n.y})${n.rot ? ` rotate(${n.rot})` : ''}`} {...common} />
+                            transform={`translate(${n.x} ${n.y})${n.rot ? ` rotate(${n.rot})` : ''}`} {...common}>{tip}</rect>
                         );
                       }
-                      return <circle key={o.key} cx={n.x} cy={n.y} r={radiusOf(o.s)} {...common} />;
+                      return <circle key={o.key} cx={n.x} cy={n.y} r={radiusOf(o.s)} {...common}>{tip}</circle>;
                     })}
                   </g>
                   <text x={f.labelPos.x} y={f.labelPos.y} className="floor-plate-label"
@@ -479,8 +489,11 @@ export default function DiagramCanvas({
               })}
             {/* Room labels — upright, in screen space (drawing them inside the
                 plane group would shear the text). Haloed via CSS so they stay
-                readable over plates, fills and the site image. */}
-            {stack &&
+                readable over plates, fills and the site image. Overlaid mode
+                superimposes every storey on one plane, so text labels are
+                dropped there (they stacked unreadably) — the room tooltips
+                and the palette-coloured fills carry identification. */}
+            {stack && floorMode !== 'overlaid' &&
               stack.ordered.map((o) => {
                 const p = stack.screenPos.get(o.key);
                 if (!p) return null;
@@ -675,8 +688,15 @@ export default function DiagramCanvas({
                     const by = (box ? -bh / 2 : -r * 0.7) - 1;
                     const glyph = info.dir === 'up' ? '↑' : info.dir === 'down' ? '↓' : '↕';
                     return (
-                      <g className={`vlink-badge ${info.state}`}>
-                        <title>Vertical link — room {info.dir === 'both' ? 'above & below' : info.dir === 'up' ? 'above' : 'below'} · {info.state === 'met' ? 'stacks in plan' : 'not aligned'}</title>
+                      <g
+                        className={`vlink-badge ${info.state}`}
+                        onPointerDown={(e) => e.stopPropagation() /* don't start a room drag */}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onJumpVertical?.(info.partnerId, info.partnerLevel);
+                        }}
+                      >
+                        <title>{`Vertical link — ${info.partnerName} is ${info.dir === 'both' ? 'above & below' : info.dir === 'up' ? 'above' : 'below'} · ${info.state === 'met' ? 'stacks in plan' : 'not aligned'} — click to jump to it`}</title>
                         <circle cx={bx} cy={by} r="8" />
                         <text x={bx} y={by} textAnchor="middle" dominantBaseline="central" transform={rot ? `rotate(${-rot} ${bx} ${by})` : undefined}>{glyph}</text>
                       </g>
@@ -845,6 +865,16 @@ click to select · drag to move the building · drag the dot to re-plan the room
                   })}
                 </g>
               ))}
+
+            {/* Rubber-band link preview — from the grabbed room to the cursor
+                while dragging with the Link tool. Read from a ref so it tracks
+                every move. */}
+            {linkDrag?.current?.moved && (
+              <g className="link-preview" pointerEvents="none">
+                <line x1={linkDrag.current.fx} y1={linkDrag.current.fy} x2={linkDrag.current.x} y2={linkDrag.current.y} />
+                <circle cx={linkDrag.current.x} cy={linkDrag.current.y} r="4" />
+              </g>
+            )}
 
             {/* Edge-alignment guides — the neighbour edge/centre a dragged
                 footprint is snapping to. Read from a ref so they track the live

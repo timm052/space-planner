@@ -242,6 +242,24 @@ function renderSheet(doc, scene, { page, mmPerUnit, reduced }) {
     doc.text(sb.label, bx + lenMm + 3, by + 1);
   }
 
+  // Colour legend (bottom-right inside the frame) — decodes the category
+  // colours on paper. Right-aligned so it never collides with the scale bar.
+  if (scene.legend?.length) {
+    const sw = 2.6; // swatch square (mm)
+    doc.setFontSize(6.5);
+    const entryW = (label) => sw + 1.4 + doc.getTextWidth(label) + 5;
+    let lx = MARGIN + availW - 5;
+    const ly = MARGIN + availH - 7.5;
+    for (const item of [...scene.legend].reverse()) {
+      lx -= entryW(item.label);
+      const [r, g, b] = hexToRgb(item.color);
+      doc.setFillColor(r, g, b);
+      doc.rect(lx, ly - sw + 0.6, sw, sw, 'F');
+      doc.setTextColor(50, 50, 50);
+      doc.text(item.label, lx + sw + 1.4, ly);
+    }
+  }
+
   // North arrow (top-right inside the frame).
   if (scene.north) {
     const nx = MARGIN + availW - 12;

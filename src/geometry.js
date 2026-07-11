@@ -208,6 +208,22 @@ export function balanceCellWeights(seeds, boundary, targets, { iters = 80, damp 
   return best.w;
 }
 
+// Horizontal spans of a polygon at height y: sorted [x0, x1] intervals where
+// the scanline lies inside. Even-odd pairing of the edge crossings — enough
+// for the block-up packer to lay rooms INSIDE an envelope outline.
+export function polygonSpansAtY(pts, y) {
+  const xs = [];
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i], b = pts[(i + 1) % pts.length];
+    if ((a.y > y) === (b.y > y)) continue;
+    xs.push(a.x + ((y - a.y) / (b.y - a.y)) * (b.x - a.x));
+  }
+  xs.sort((p, q) => p - q);
+  const spans = [];
+  for (let i = 0; i + 1 < xs.length; i += 2) spans.push([xs[i], xs[i + 1]]);
+  return spans;
+}
+
 // Ray-cast point-in-polygon (boundary points count as outside on some edges —
 // fine for the clamping use below).
 export function pointInPolygon(pts, p) {

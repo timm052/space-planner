@@ -4,9 +4,9 @@ import { fmtArea, areaToM2, distToMeters, distUnit, leafSpaces, rootContainer, i
 // pdfExport is lazy-loaded on demand — keeps jsPDF out of the initial bundle.
 import { useHistory } from '../useHistory.js';
 import { SCALE_PRESETS, ratioToScale, scaleToRatio, zoomAbout } from '../scale.js';
-import { pinsOf, filterCss, parsePoly, regularPolygon, outlinePoints, polygonArea, polygonCentroid, hullOfDiscs, simplifyOutline, normalizePolygon, powerCells, balanceCellWeights, pointInPolygon, closestPointOnPolygon } from '../geometry.js';
+import { pinsOf, filterCss, parsePoly, regularPolygon, outlinePoints, polygonArea, polygonCentroid, hullOfDiscs, simplifyOutline, normalizePolygon, powerCells, balanceCellWeights, pointInPolygon, closestPointOnPolygon, polygonSpansAtY } from '../geometry.js';
 import { pinPatch } from '../pins.js';
-import { edgeGap, adjacencyScore, closestInstancePair, aggregateByRoot, CONCEPT_THRESHOLDS_U } from '../adjacency.js';
+import { edgeGap, adjacencyScore, linkSatisfied, closestInstancePair, aggregateByRoot, CONCEPT_THRESHOLDS_U } from '../adjacency.js';
 import { orderedLevels, levelRankMap } from '../floors.js';
 import { buildStackScene, build3DScene } from './diagram/scenes.js';
 import * as selection from './diagram/selection.js';
@@ -121,7 +121,15 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const [showMatrix, setShowMatrix] = useState(false);
   const [highlightGaps, setHighlightGaps] = useState(false); // flag unmet adjacencies on the diagram
   const [spaceHeld, setSpaceHeld] = useState(false); // transient pan while Space is held
-  const [hintDismissed, setHintDismissed] = useState({}); // per project+env empty-state hints closed this session
+  // Per project+env hints the user closed — persisted, so a dismissed hint
+  // stays dismissed across sessions.
+  const [hintDismissed, setHintDismissed] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('brieftrack.hintsDismissed') || '{}') || {};
+    } catch {
+      return {};
+    }
+  });
   // View preferences (split rail, colour mode, hulls, floor view, cameras,
   // auto-layout forces, …) live in one hook; persisted keys round-trip
   // through prefs.js. The destructure keeps every read site unchanged.
@@ -160,6 +168,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   // tab return); otherwise energise so the first layout settles.
   const alphaRef = useRef(layoutCache.has(project.id) ? 0 : 1);
   const dragRef = useRef(null);
+  const linkDragRef = useRef(null); // { fromId, fx, fy, x, y, moved } while dragging a link out of a room
   const panRef = useRef(null);
   const pinOverride = useRef(new Map());
   const fileRef = useRef(null);
@@ -176,8 +185,10 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const svgRef = useRef(null);
   const stageRef = useRef(null);
 
-  // Viewport: vb tracks the SVG container size; view is the pan offset.
-  const { vb, view, viewRef, setView } = useViewport(project, stageRef);
+  // Viewport: vb tracks the SVG container size; view is the pan offset;
+  // zoom magnifies the view (vbz below is the zoomed visible world size).
+  const { vb, view, viewRef, setView, zoom, zoomRef, setZoom } = useViewport(project, stageRef);
+  const vbz = { w: vb.w / zoom, h: vb.h / zoom };
 
   // Image natural dimensions — measured lazily as images load.
   // ---------- image layers (multiple, ordered bottom→top) ----------
@@ -222,10 +233,13 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   function switchEnv(next) {
     if (next === env) return;
     stashLayout(env); // remember where the current env's rooms are before re-seeding
-    // Each env keeps its own framing: stash this env's pan, restore the next's.
-    viewCache.set(cacheKeyFor(env), { ...viewRef.current });
+    // Each env keeps its own framing: stash this env's pan+zoom, restore the next's.
+    viewCache.set(cacheKeyFor(env), { ...viewRef.current, z: zoomRef.current });
     const v = viewCache.get(cacheKeyFor(next));
-    if (v) setView(v);
+    if (v) {
+      setView({ x: v.x, y: v.y });
+      setZoom(v.z ?? 1);
+    }
     setEnv(next);
     setPanel(null); // close any layer/more popover that doesn't belong to the new env
     saveProject({ diagram_env: next }, { silent: true });
@@ -548,6 +562,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       } else if (mod && e.key.toLowerCase() === 'y') {
         e.preventDefault();
         history.redo();
+      } else if (mod && e.key.toLowerCase() === 'a') {
+        // Select every visible room (same semantics as a full marquee).
+        e.preventDefault();
+        const keys = instances.filter((o) => levelVisible(o.s)).map((o) => o.key);
+        applySel((s) => selection.marqueeEnd(s, keys, false));
       } else if (e.key.toLowerCase() === 'v' && !mod) {
         applySel((s) => linking.setTool(s, 'select'));
       } else if (e.key.toLowerCase() === 'l' && !mod) {
@@ -555,7 +574,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       } else if (e.key.toLowerCase() === 'a' && !mod && caps.autoLayout) {
         runAutoLayout(); // authored Master plan / Building have no auto-layout
       } else if (e.key === 'Escape') {
-        applySel(selection.escape);
+        // Dismiss the topmost transient UI first; only then clear the selection.
+        if (showHelp) setShowHelp(false);
+        else if (showMatrix) setShowMatrix(false);
+        else if (panel) setPanel(null);
+        else applySel(selection.escape);
       } else if ((e.key === 'Delete' || e.key === 'Backspace') && multi.size) {
         e.preventDefault();
         multiDelete();
@@ -571,7 +594,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       window.removeEventListener('keyup', onKeyUp);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [multi, env]);
+  }, [multi, env, panel, showMatrix, showHelp, spaces, floorView]);
 
   // Arrow-key nudge — precision placement in the authored Master-plan / Building
   // envs. The selection (single room or multi) steps by 1 m (Shift = 0.1 m) once a
@@ -1156,7 +1179,10 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       }
       return out;
     };
-    // Shelf-packed grid per level, centred on the anchor.
+    // Shelf-packed per level. With a drawn envelope the rows are clipped to
+    // its OUTLINE (scanline spans), so the blocked-up floor lands inside the
+    // footprint instead of spilling past it; without one (or for overflow
+    // that genuinely doesn't fit) a free rectangle centred on the anchor.
     const gap = planGrid ? Math.min(planGrid.minorStep, 14) : 10;
     const byLevel = new Map();
     for (const o of targets) {
@@ -1165,8 +1191,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       byLevel.get(k).push(o);
     }
     const moved = [];
-    for (const list of byLevel.values()) {
-      const ordered = orderRooms(list);
+    const shelfPack = (ordered, at) => {
       const sides = ordered.map((o) => Math.sqrt(areaUnits(o.s)));
       const rowW = Math.max(Math.sqrt(sides.reduce((t, s) => t + s * s, 0)) * 1.35, ...sides);
       const rows = [];
@@ -1188,11 +1213,77 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
         for (const it of r.row) {
           const n = nodesRef.current.get(it.o.key);
           if (!n) continue;
-          n.x = anchor.x - r.w / 2 + it.x + it.side / 2;
-          n.y = anchor.y - totalH / 2 + it.y + it.side / 2;
+          n.x = at.x - r.w / 2 + it.x + it.side / 2;
+          n.y = at.y - totalH / 2 + it.y + it.side / 2;
           moved.push(it.o.key);
         }
       }
+    };
+    // The envelope's outline in world coordinates, when one is drawn.
+    let boundary = null;
+    if (root && slot && root.shape === 'poly' && parsePoly(root)) {
+      const verts = polyVertsOf(root);
+      if (verts && verts.length >= 3) {
+        const a = ((slot.rot || 0) * Math.PI) / 180;
+        const cos = Math.cos(a), sin = Math.sin(a);
+        boundary = verts.map((p) => ({ x: slot.x + p.x * cos - p.y * sin, y: slot.y + p.x * sin + p.y * cos }));
+      }
+    }
+    for (const list of byLevel.values()) {
+      const ordered = orderRooms(list);
+      if (!boundary) {
+        shelfPack(ordered, anchor);
+        continue;
+      }
+      const bMinY = Math.min(...boundary.map((p) => p.y));
+      const bMaxY = Math.max(...boundary.map((p) => p.y));
+      const leftovers = [];
+      let yTop = bMinY;
+      let rowH = 0;
+      let spans = [];
+      let spanIdx = 0;
+      let xCur = null;
+      const startRow = (s) => {
+        yTop += rowH ? rowH + gap : gap;
+        rowH = s;
+        spans = polygonSpansAtY(boundary, yTop + s / 2)
+          .map(([a, b]) => [a + gap, b - gap])
+          .filter(([a, b]) => b - a > 4);
+        spanIdx = 0;
+        xCur = spans[0]?.[0] ?? null;
+      };
+      for (const o of ordered) {
+        const side = Math.sqrt(areaUnits(o.s));
+        if (rowH === 0) startRow(side);
+        rowH = Math.max(rowH, side);
+        let placed = false;
+        for (let guard = 0; guard < 120; guard++) {
+          if (xCur != null && spanIdx < spans.length && xCur + side <= spans[spanIdx][1] + 1e-6) {
+            placed = true;
+            break;
+          }
+          if (xCur != null && spanIdx < spans.length - 1) {
+            spanIdx++;
+            xCur = spans[spanIdx][0];
+            continue;
+          }
+          if (yTop + rowH >= bMaxY) break; // outline exhausted
+          startRow(side);
+        }
+        if (!placed) {
+          leftovers.push(o);
+          continue;
+        }
+        const n = nodesRef.current.get(o.key);
+        if (!n) continue;
+        n.x = xCur + side / 2;
+        n.y = yTop + rowH / 2;
+        xCur += side + gap;
+        moved.push(o.key);
+      }
+      // Whatever genuinely doesn't fit parks just below the envelope —
+      // visible overflow is honest overflow.
+      if (leftovers.length) shelfPack(orderRooms(leftovers), { x: slot.x, y: bMaxY + 70 });
     }
     setTick((t) => t + 1);
     await savePlanKeys(moved); // Building env → writes block_json, one undo step
@@ -1317,25 +1408,89 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   // to be listed in the effect deps.
   // Master plan is authored, not simulated — the force sim is off there so
   // nothing drifts. Concept (and Building's fallback) keep the sim.
-  useSimulation({ enabled: caps.sim, instances, leaves, adjacencies, byId, autoRunRef, setAutoRunning, nodesRef, alphaRef, dragRef, relaxRef, radiusOf, instPin, groupKey, clusterKey, nodeForce, buildingForce, setTick });
+  // Concept layouts survive reload: whenever the sim settles (an auto-layout
+  // pass ends, or neighbours finish yielding after a drop), every room's
+  // resting position is silently saved to pin_json — UNLOCKED, so pinning
+  // stays a deliberate act. Previously only dragged rooms persisted and the
+  // rest re-scattered each session.
+  async function persistConceptLayout() {
+    if (!isConcept) return;
+    let changed = false;
+    for (const s of leaves) {
+      const pins = pinsOf(s);
+      const count = Math.max(1, s.count || 1);
+      const next = { ...pins };
+      let dirty = false;
+      for (let i = 0; i < count; i++) {
+        const n = nodesRef.current.get(`${s.id}:${i}`);
+        if (!n) continue;
+        const p = pins[i];
+        if (p?.locked) continue; // pinned instances already persist exactly
+        if (!p || Math.hypot(p.x - n.x, p.y - n.y) > 0.75) {
+          next[i] = { x: n.x, y: n.y };
+          dirty = true;
+        }
+      }
+      if (dirty) {
+        changed = true;
+        try {
+          await api.updateSpace(s.id, { pin_json: JSON.stringify(next) });
+        } catch {
+          /* layout persistence is best-effort */
+        }
+      }
+    }
+    if (changed) onChanged();
+  }
+
+  useSimulation({ enabled: caps.sim, instances, leaves, adjacencies, byId, autoRunRef, setAutoRunning, nodesRef, alphaRef, dragRef, relaxRef, radiusOf, instPin, groupKey, clusterKey, nodeForce, buildingForce, setTick, onSettle: persistConceptLayout });
 
   // Closest instance pair between two spaces — used by PDF export, adjacency
   // rendering, and the scale bar. Reads nodesRef so it is always current.
   const closestPair = (sa, sb) => closestInstancePair(nodesRef.current, sa, sb);
 
   // ---------- viewBox geometry ----------
-  // Visible viewBox is sized to the container; its origin keeps the logical
-  // canvas centred (and is backward-compatible when vb == W×H).
-  const originX = W / 2 - vb.w / 2 + view.x;
-  const originY = H / 2 - vb.h / 2 + view.y;
+  // Visible viewBox is the container size divided by the view zoom; its origin
+  // keeps the logical canvas centred (backward-compatible at zoom 1, vb==W×H).
+  const originX = W / 2 - vbz.w / 2 + view.x;
+  const originY = H / 2 - vbz.h / 2 + view.y;
 
   function toSvgCoords(e) {
     const rect = svgRef.current.getBoundingClientRect();
     return {
-      x: originX + ((e.clientX - rect.left) * vb.w) / rect.width,
-      y: originY + ((e.clientY - rect.top) * vb.h) / rect.height,
+      x: originX + ((e.clientX - rect.left) * vbz.w) / rect.width,
+      y: originY + ((e.clientY - rect.top) * vbz.h) / rect.height,
     };
   }
+
+  // Wheel = zoom about the cursor (trackpad pinch arrives as ctrl+wheel).
+  // Native non-passive listener — React's onWheel can't preventDefault.
+  useEffect(() => {
+    const el = stageRef.current;
+    if (!el) return undefined;
+    const onWheel = (e) => {
+      if (!svgRef.current) return;
+      e.preventDefault();
+      const rect = svgRef.current.getBoundingClientRect();
+      const z = zoomRef.current;
+      const nz = Math.min(6, Math.max(0.2, z * Math.exp(-e.deltaY * (e.ctrlKey ? 0.006 : 0.0014))));
+      if (nz === z) return;
+      // Keep the world point under the cursor fixed while the scale changes.
+      const fx = (e.clientX - rect.left) / rect.width;
+      const fy = (e.clientY - rect.top) / rect.height;
+      const v = viewRef.current;
+      const next = {
+        x: v.x + (fx - 0.5) * vb.w * (1 / z - 1 / nz),
+        y: v.y + (fy - 0.5) * vb.h * (1 / z - 1 / nz),
+      };
+      setZoom(nz);
+      setView(next);
+      commitView(next);
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vb.w, vb.h]);
 
   // ---------- pointer handling ----------
   function onSvgPointerDown(e) {
@@ -1358,11 +1513,21 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     if (rotPointerMove(e)) return; // rotating a placed footprint
     if (resizePointerMove(e)) return; // area-lock resizing a building box
     if (seedPointerMove(e)) return; // dragging an interior room seed
+    if (linkDragRef.current) {
+      // Rubber-band link drag: track the pointer; the canvas draws the preview.
+      const p = toSvgCoords(e);
+      const ld = linkDragRef.current;
+      ld.x = p.x;
+      ld.y = p.y;
+      if (Math.hypot(p.x - ld.fx, p.y - ld.fy) > 6) ld.moved = true;
+      setTick((t) => t + 1);
+      return;
+    }
     if (layerPointerMove(e)) return; // move / rotate a layer — handled by useImageLayers
     if (panRef.current) {
       setView({
-        x: panRef.current.vx - ((e.clientX - panRef.current.sx) * vb.w) / rect.width,
-        y: panRef.current.vy - ((e.clientY - panRef.current.sy) * vb.h) / rect.height,
+        x: panRef.current.vx - ((e.clientX - panRef.current.sx) * vbz.w) / rect.width,
+        y: panRef.current.vy - ((e.clientY - panRef.current.sy) * vbz.h) / rect.height,
       });
       return;
     }
@@ -1418,11 +1583,38 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     setTick((t) => t + 1);
   }
 
-  async function onUp() {
+  async function onUp(e) {
     if (polyPointerUp()) return; // vertex drag release — handled by usePolyEditing
     if (await rotPointerUp()) return; // rotate release — persist plan_json rot
     if (await resizePointerUp()) return; // box resize release — persist w/h to block_json
     if (await seedPointerUp()) return; // seed drop — save the room's concept pin
+    if (linkDragRef.current) {
+      // Rubber-band release: over another room → create the link; a plain
+      // click falls back to the classic click-then-click flow. The drop point
+      // comes from the RELEASE event itself (the last move may lag it).
+      const ld = linkDragRef.current;
+      linkDragRef.current = null;
+      setTick((t) => t + 1); // clear the preview
+      if (!ld.moved) {
+        await handleBubbleClick(ld.fromId);
+        return;
+      }
+      const drop = e && Number.isFinite(e.clientX) ? toSvgCoords(e) : { x: ld.x, y: ld.y };
+      let target = null;
+      let best = Infinity;
+      for (const o of instances) {
+        if (!levelVisible(o.s) || o.s.id === ld.fromId) continue;
+        const n = nodesRef.current.get(o.key);
+        if (!n) continue;
+        const d = Math.hypot(n.x - drop.x, n.y - drop.y);
+        if (d <= radiusOf(o.s) + 6 && d < best) {
+          best = d;
+          target = o.s;
+        }
+      }
+      if (target && !findPair(ld.fromId, target.id)) await createLink(ld.fromId, target.id, selRef.current.linkKind);
+      return;
+    }
     if (marqueeRef.current) {
       finishMarquee();
       return;
@@ -1479,6 +1671,21 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       applySel((s) => selection.shiftToggle(s, o.key));
       return;
     }
+    // Link tool: dragging out of a room draws a rubber band — release over
+    // another room to create the relationship. A plain click keeps the
+    // classic click-then-click flow. Rooms never MOVE in link mode.
+    if (selRef.current.tool === 'link') {
+      e.stopPropagation();
+      try {
+        e.target.setPointerCapture?.(e.pointerId);
+      } catch {
+        /* synthetic pointer */
+      }
+      const n = nodesRef.current.get(o.key);
+      const p = toSvgCoords(e);
+      linkDragRef.current = { fromId: o.s.id, fx: n?.x ?? p.x, fy: n?.y ?? p.y, x: p.x, y: p.y, moved: false };
+      return;
+    }
     try {
       e.target.setPointerCapture?.(e.pointerId);
     } catch {
@@ -1518,28 +1725,52 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     debouncers.current.view = setTimeout(() => saveProject({ view_x: v.x, view_y: v.y }, { silent: true }), 500);
   }
 
-  // Glide the view to a target pan (Recentre) instead of jumping. Honours
-  // prefers-reduced-motion by snapping straight to the target.
+  // Glide the view to a target pan (and optionally zoom) instead of jumping.
+  // Honours prefers-reduced-motion by snapping straight to the target.
   const viewTweenRef = useRef(null);
   useEffect(() => () => cancelAnimationFrame(viewTweenRef.current), []);
-  function animateViewTo(target) {
+  function animateViewTo(target, targetZoom = null) {
     cancelAnimationFrame(viewTweenRef.current);
+    const zt = targetZoom ?? zoomRef.current;
     if (typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
       setView(target);
+      setZoom(zt);
       commitView(target);
       return;
     }
     const from = { ...viewRef.current };
+    const z0 = zoomRef.current;
     const dur = 260;
     const t0 = performance.now();
     const stepTween = (now) => {
       const p = Math.min(1, (now - t0) / dur);
       const e = 1 - (1 - p) ** 3; // ease-out cubic
       setView({ x: from.x + (target.x - from.x) * e, y: from.y + (target.y - from.y) * e });
+      if (zt !== z0) setZoom(z0 + (zt - z0) * e);
       if (p < 1) viewTweenRef.current = requestAnimationFrame(stepTween);
       else commitView(target);
     };
     viewTweenRef.current = requestAnimationFrame(stepTween);
+  }
+
+  // Fit the visible program in the viewport (the Recentre dock button): frame
+  // the placed rooms/envelopes with some breathing room. Site imagery is
+  // deliberately excluded — the program is the content, the site is context.
+  function fitView() {
+    if (stackMode || is3D || instances.length === 0) return animateViewTo({ x: 0, y: 0 }, 1);
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const o of instances) {
+      if (!levelVisible(o.s)) continue;
+      const n = nodesRef.current.get(o.key);
+      if (!n) continue;
+      const r = radiusOf(o.s);
+      minX = Math.min(minX, n.x - r); maxX = Math.max(maxX, n.x + r);
+      minY = Math.min(minY, n.y - r); maxY = Math.max(maxY, n.y + r);
+    }
+    if (!Number.isFinite(minX)) return animateViewTo({ x: 0, y: 0 }, 1);
+    const w = maxX - minX + 120, h = maxY - minY + 120;
+    const z = Math.min(2.5, Math.max(0.2, Math.min(vb.w / w, vb.h / h)));
+    animateViewTo({ x: (minX + maxX) / 2 - W / 2, y: (minY + maxY) / 2 - H / 2 }, z);
   }
 
   // ---------- multi-select (marquee + shift-click) ----------
@@ -1997,6 +2228,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       links,
       bubbles,
       cells,
+      // Category swatches so the sheet's colours decode on paper.
+      legend: groups.map((g) => ({ label: g, color: colorForLabel(g) })),
       bubbleStyle,
       scale: metric ? { ratioLabel, scaleBar: scaleBar ? { lenUnits: scaleBar.len, label: scaleBar.label } : null } : null,
       north: metric ? { deg: project.north_deg || 0 } : null,
@@ -2199,6 +2432,29 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const mpUnitIdOf = (s) => rootContainer(s, byId)?.id ?? s.id;
   const displayAdjacencies = isEnvelope ? aggregateByRoot(adjacencies, byId, mpUnitIdOf) : adjacencies;
 
+  // Per-pair satisfaction snapshot for the adjacency matrix (room-level, keyed
+  // "loId:hiId") — the matrix audits the current layout, not just the
+  // declarations. Null when this environment can't grade room geometry.
+  function matrixLinkStates() {
+    const metric = !isConcept && effScale;
+    if (!isConcept && !effScale) return null;
+    const m = new Map();
+    for (const l of adjacencies) {
+      const sa = byId.get(l.space_a);
+      const sb = byId.get(l.space_b);
+      if (!sa || !sb) continue;
+      const pair = closestPair(sa, sb);
+      if (!pair) continue;
+      const gapU = edgeGap(pair.d, radiusOf(sa), radiusOf(sb));
+      const met = metric
+        ? linkSatisfied(l.strength, gapU * effScale)
+        : linkSatisfied(l.strength, gapU, CONCEPT_THRESHOLDS_U);
+      const key = l.space_a < l.space_b ? `${l.space_a}:${l.space_b}` : `${l.space_b}:${l.space_a}`;
+      m.set(key, met ? 'met' : 'unmet');
+    }
+    return m.size ? m : null;
+  }
+
   const computeAdjacency = () => {
     const metric = !isConcept && effScale;
     if (!isConcept && !effScale) return adjacencyScore([]); // metric needs a scale
@@ -2210,7 +2466,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
         const pair = closestPair(sa, sb);
         if (!pair) return null;
         const gapU = edgeGap(pair.d, radiusOf(sa), radiusOf(sb));
-        return { id: l.id, strength: l.strength, gap: metric ? gapU * effScale : gapU };
+        // space_a/space_b ride along so the unmet list can name and locate pairs.
+        return { id: l.id, strength: l.strength, space_a: l.space_a, space_b: l.space_b, gap: metric ? gapU * effScale : gapU };
       })
       .filter(Boolean);
     // Scale-free: judge against the Concept sim's rest gaps (see adjacency.js).
@@ -2297,9 +2554,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   let scaleBar = null;
   if (effScale) {
     const nice = [1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000];
+    // Pick the bar by its ON-SCREEN size (len × view zoom ≈ CSS px) so it
+    // stays a sensible width while zooming.
     const cand = nice
       .map((v) => ({ label: `${v} ${distUnit(units)}`, len: distToMeters(v, units) / effScale }))
-      .filter((c) => c.len >= 90 && c.len <= 220);
+      .filter((c) => c.len * zoom >= 90 && c.len * zoom <= 260);
     if (cand.length) scaleBar = cand[0];
   }
 
@@ -2372,7 +2631,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     >
       {showHelp && <HelpPanel env={env} onClose={() => setShowHelp(false)} />}
       {showMatrix && (
-        <MatrixPanel leaves={leaves} adjacencies={adjacencies} colorOf={colorOf} onCycle={cyclePair} onClose={() => setShowMatrix(false)} />
+        <MatrixPanel leaves={leaves} adjacencies={adjacencies} colorOf={colorOf} onCycle={cyclePair} onClose={() => setShowMatrix(false)} linkStates={matrixLinkStates()} />
       )}
 
       <div className="diagram-main">
@@ -2453,6 +2712,45 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
             </StagePopover>
           )}
 
+          {/* Unmet relationships — the actionable side of the adjacency badge:
+              each row pans to the pair (and selects the link where it's a real,
+              editable one). Open while gap highlighting is on. */}
+          {highlightGaps && showScore && (() => {
+            const res = computeAdjacency();
+            const metric = !isConcept && !!effScale;
+            return (
+              <StagePopover className="gaps-popover" onClose={() => setHighlightGaps(false)}>
+                <div className="gaps-head">
+                  {res.unmet.length
+                    ? `${res.unmet.length} unmet relationship${res.unmet.length === 1 ? '' : 's'} — click one to go there`
+                    : 'Every declared relationship is satisfied.'}
+                </div>
+                <div className="gaps-list">
+                  {res.unmet.map((l) => {
+                    const sa = byId.get(l.space_a);
+                    const sb = byId.get(l.space_b);
+                    if (!sa || !sb) return null;
+                    return (
+                      <button
+                        key={l.id}
+                        className="gaps-row"
+                        onClick={() => {
+                          const pair = closestPair(sa, sb);
+                          if (pair) animateViewTo({ x: (pair.a.x + pair.b.x) / 2 - W / 2, y: (pair.a.y + pair.b.y) / 2 - H / 2 });
+                          if (!String(l.id).startsWith('agg:')) applySel((s) => linking.selectLink(s, l));
+                        }}
+                      >
+                        <span className={`gaps-strength ${l.strength}`}>{l.strength === 'required' ? '●' : '○'}</span>
+                        <span className="gaps-pair">{sa.name} ↔ {sb.name}</span>
+                        <span className="gaps-gap mono">{metric ? `${l.gap.toFixed(0)} m` : `+${Math.round(l.gap)}`}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </StagePopover>
+            );
+          })()}
+
           {caps.layers === 'edit' && panel === 'layers' && (
             <LayersPopover
               imgLayers={imgLayers}
@@ -2493,6 +2791,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
               layerName={imgById.get(calibrateLayer)?.name}
               scaleDistance={scaleDistance}
               units={units}
+              currentMeasure={
+                scalePoints?.length === 2 && effScale
+                  ? `${(Math.hypot(scalePoints[1].x - scalePoints[0].x, scalePoints[1].y - scalePoints[0].y) * effScale).toFixed(1)} m`
+                  : null
+              }
               onDistance={(v) => applyLt((l) => layerTools.setScaleDistance(l, v))}
               onApply={applyScale}
               onCancel={() => applyLt(layerTools.endCalibrate)}
@@ -2517,7 +2820,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
               showInterior={isEnvelope}
               interior={interior}
               onToggleInterior={() => setPref('interior', !interior)}
-              onRecentre={() => animateViewTo({ x: 0, y: 0 })}
+              onRecentre={fitView}
             />
 
             {/* Placement tray — units not yet drawn on the site (building
@@ -2589,7 +2892,15 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
                   )}
                   <button
                     className="env-hint-close"
-                    onClick={() => setHintDismissed((m) => ({ ...m, [hintKey]: true }))}
+                    onClick={() => {
+                      const next = { ...hintDismissed, [hintKey]: true };
+                      setHintDismissed(next);
+                      try {
+                        localStorage.setItem('brieftrack.hintsDismissed', JSON.stringify(next));
+                      } catch {
+                        /* storage unavailable — session-only then */
+                      }
+                    }}
                     title="Dismiss"
                     aria-label="Dismiss hint"
                   >✕</button>
@@ -2638,7 +2949,13 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
             makeInterior={makeInterior}
             onSeedDown={seedHandleDown}
             onCellDown={cellPointerDown}
+            onJumpVertical={(spaceId, level) => {
+              // Jump to the vertical partner: open its floor, select it.
+              if (level && levels.includes(level)) setPref('floorView', level);
+              pickSpace(spaceId);
+            }}
             alignGuides={alignRef}
+            linkDrag={linkDragRef}
             planGrid={snapGrid ? planGrid : null}
             effScale={effScale}
             floorGap={floorGap}
@@ -2651,7 +2968,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
             svgRef={svgRef}
             originX={originX}
             originY={originY}
-            vb={vb}
+            vb={vbz}
             units={units}
             nodes={nodes}
             instances={instances}
@@ -2718,6 +3035,15 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
               nothing is selected. */}
           <SelectionHud
             showShapeTools={caps.shapeTools && selIsDrawn}
+            showRotateInput={caps.rotate === 'free' && selIsDrawn && selectedSpace != null && shapeOf(selectedSpace) !== 'bubble'}
+            rotOf={(s, i) => nodesRef.current.get(`${s.id}:${i}`)?.rot || 0}
+            onRotateTo={async (space, idx, v) => {
+              const n = nodesRef.current.get(`${space.id}:${idx}`);
+              if (!n) return;
+              n.rot = (((Number(v) || 0) % 360) + 360) % 360;
+              setTick((t) => t + 1);
+              await savePlanRot(space, idx);
+            }}
             showRotate90={caps.rotate === '90'}
             onRotate90={rotate90}
             showPin={caps.pin}

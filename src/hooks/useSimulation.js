@@ -56,6 +56,7 @@ export function useSimulation({
   nodeForce = 1,
   buildingForce = 0.5,
   setTick,
+  onSettle = null, // fired when an auto pass or post-drop relaxation completes
 }) {
   // Wrap the render-frequency callbacks in refs so the RAF loop always reads
   // fresh values without those functions being in the effect dep array.
@@ -77,6 +78,8 @@ export function useSimulation({
   // active environment doesn't restart the loop.
   const enabledRef = useRef(enabled);
   enabledRef.current = enabled;
+  const onSettleRef = useRef(onSettle);
+  onSettleRef.current = onSettle;
   // Captured "home" centroid per cluster — buildings are gently restored toward
   // it so they hold their position instead of drifting off-screen.
   const clusterHomeRef = useRef(new Map());
@@ -295,6 +298,7 @@ export function useSimulation({
           autoRunRef.current = false;
           setAutoRunning(false);
           calmFrames = 0;
+          onSettleRef.current?.();
         }
       } else if (relaxRef.current && relaxRef.current.frames > 0 && !dragging) {
         // Post-drop relaxation (primed by onUp): resolve hard overlaps only,
@@ -305,6 +309,10 @@ export function useSimulation({
         const maxMove = simulate(1, true, relax.hold);
         relax.frames = maxMove < 0.05 ? 0 : relax.frames - 1;
         if (maxMove > 0) setTick((t) => t + 1);
+        if (relax.frames <= 0) {
+          relaxRef.current = null;
+          onSettleRef.current?.();
+        }
       }
       raf = requestAnimationFrame(step);
     };
