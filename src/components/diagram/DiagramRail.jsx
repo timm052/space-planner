@@ -39,6 +39,9 @@ export default function DiagramRail({
   relList,
   reqCount,
   desCount,
+  linkStates, // Map "loId:hiId" → 'met' | 'unmet' (null when ungradable)
+  onJumpLink, // pan the canvas to the pair + select the link
+  isContainerId, // container spaces get the 🏢 prefix so they read as buildings
   onChanged,
   toggleSplit,
   startRailResize,
@@ -198,7 +201,14 @@ export default function DiagramRail({
                     >
                       <span className="stack-level-name" title={r.lvl}>{r.lvl}</span>
                       <span className="stack-bar-wrap">
-                        <span className="stack-bar" style={{ width: `${(r.area / max) * 100}%` }} />
+                        {(r.segs ?? [{ area: r.area, color: undefined, label: null }]).map((sg, si) => (
+                          <span
+                            key={si}
+                            className="stack-bar"
+                            style={{ width: `${(sg.area / max) * 100}%`, background: sg.color }}
+                            title={sg.label ? `${sg.label} — ${fmtArea(sg.area, units)}` : undefined}
+                          />
+                        ))}
                       </span>
                       <span className="stack-level-area mono">{fmtArea(r.area, units)}</span>
                     </button>
@@ -232,35 +242,53 @@ export default function DiagramRail({
         ) : (
           <table className="rail-rel">
             <tbody>
-              {relList.map((l) => {
-                const a = byId.get(l.space_a);
-                const b = byId.get(l.space_b);
-                if (!a || !b) return null;
-                return (
-                  <tr key={l.id}>
-                    <td className="rel-glyph">
-                      <svg width="22" height="10" viewBox="0 0 22 10" aria-hidden="true">
-                        <line x1="2" y1="5" x2="20" y2="5" stroke="var(--text)" strokeWidth={l.strength === 'required' ? 1.6 : 1.2} strokeDasharray={l.strength === 'required' ? undefined : '1 3'} strokeLinecap="round" />
-                        {l.strength === 'required' && <><circle cx="2" cy="5" r="1.8" fill="var(--text)" /><circle cx="20" cy="5" r="1.8" fill="var(--text)" /></>}
-                      </svg>
-                    </td>
-                    <td className="rel-pair">
-                      <b>{a.name}</b> ↔ <b>{b.name}</b>
-                    </td>
-                    <td className="rel-strength">
-                      <select value={l.strength} onChange={async (e) => ((await api.updateAdjacency(l.id, { strength: e.target.value })), onChanged())} className="strength-select">
-                        <option value="required">Required</option>
-                        <option value="desired">Desired</option>
-                      </select>
-                    </td>
-                    <td className="row-actions rel-remove">
-                      <button className="btn small ghost danger" onClick={async () => ((await api.deleteAdjacency(l.id)), onChanged())}>
-                        ✕
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
+              {(() => {
+                const stateOf = (l) => {
+                  if (!linkStates) return null;
+                  const key = l.space_a < l.space_b ? `${l.space_a}:${l.space_b}` : `${l.space_b}:${l.space_a}`;
+                  return linkStates.get(key) ?? null;
+                };
+                // Unmet first — the schedule doubles as the fix-it list.
+                const rank = (l) => (stateOf(l) === 'unmet' ? 0 : stateOf(l) === 'met' ? 1 : 2);
+                const rows = [...relList].sort((a, b) => rank(a) - rank(b));
+                return rows.map((l) => {
+                  const a = byId.get(l.space_a);
+                  const b = byId.get(l.space_b);
+                  if (!a || !b) return null;
+                  const state = stateOf(l);
+                  const nameOf = (s) => `${isContainerId?.(s.id) ? '🏢 ' : ''}${s.name}`;
+                  return (
+                    <tr key={l.id} className={state ? `rel-${state}` : ''}>
+                      <td className="rel-glyph">
+                        <span
+                          className={`rel-dot ${state ?? 'ungraded'}`}
+                          title={state === 'met' ? 'Satisfied in the current layout' : state === 'unmet' ? 'Not satisfied in the current layout' : 'Not graded — set a scale (or arrange the Concept view)'}
+                        />
+                        <svg width="22" height="10" viewBox="0 0 22 10" aria-hidden="true">
+                          <line x1="2" y1="5" x2="20" y2="5" stroke="var(--text)" strokeWidth={l.strength === 'required' ? 1.6 : 1.2} strokeDasharray={l.strength === 'required' ? undefined : '1 3'} strokeLinecap="round" />
+                          {l.strength === 'required' && <><circle cx="2" cy="5" r="1.8" fill="var(--text)" /><circle cx="20" cy="5" r="1.8" fill="var(--text)" /></>}
+                        </svg>
+                      </td>
+                      <td className="rel-pair">
+                        <button className="rel-jump" onClick={() => onJumpLink?.(l)} title="Go to this pair on the diagram">
+                          <b>{nameOf(a)}</b> ↔ <b>{nameOf(b)}</b>
+                        </button>
+                      </td>
+                      <td className="rel-strength">
+                        <select value={l.strength} onChange={async (e) => ((await api.updateAdjacency(l.id, { strength: e.target.value })), onChanged())} className="strength-select">
+                          <option value="required">Required</option>
+                          <option value="desired">Desired</option>
+                        </select>
+                      </td>
+                      <td className="row-actions rel-remove">
+                        <button className="btn small ghost danger" onClick={async () => ((await api.deleteAdjacency(l.id)), onChanged())}>
+                          ✕
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                });
+              })()}
             </tbody>
           </table>
         )}

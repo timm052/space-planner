@@ -151,8 +151,9 @@ The near-term core is now in place:
   the tabs and tables.
 - **i18n & imperial polish** — the unit system exists; complete imperial
   formatting (feet-and-inches) and translatable strings.
-- **Light theme** — the palette is fully tokenised in `:root`; add a light theme
-  and a toggle (respect `prefers-color-scheme`) for bright-office / print use.
+- **Light theme** — DONE: a warm drafting-paper light theme lives in
+  `tokens.css`, the header has a Dark / Light / Auto toggle, and Auto follows
+  `prefers-color-scheme` live.
 
 ## Known limitations to address
 

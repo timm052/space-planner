@@ -75,8 +75,7 @@ test('BubbleTab mounts with toolbar, canvas, bubbles and rail', () => {
     // Building, so it is NOT shown here (default env is Concept).
     assert.ok(!container.querySelector('.stage-controls select.ctrl-select'), 'no scale select in Concept');
     const actions = [...container.querySelectorAll('.stage-actions button')].map((b) => b.textContent);
-    assert.ok(actions.some((t) => t.includes('PNG')), 'PNG export button present');
-    assert.ok(actions.some((t) => t.includes('PDF')), 'PDF export button present');
+    assert.ok(actions.some((t) => t.includes('Export')), 'Export menu button present');
 
     // Canvas: the [spaces] seeding effect placed one bubble per leaf instance.
     // (.bubble-svg specifically — the stage also contains small icon SVGs.)

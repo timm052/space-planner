@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api.js';
-import { fmtArea, areaToM2, distToMeters, distUnit, leafSpaces, rootContainer, isContainerKind } from '../compute.js';
+import { fmtArea, areaToM2, distToMeters, distUnit, leafSpaces, rootContainer, isContainerKind, spaceStatus } from '../compute.js';
 // pdfExport is lazy-loaded on demand — keeps jsPDF out of the initial bundle.
 import { useHistory } from '../useHistory.js';
 import { SCALE_PRESETS, ratioToScale, scaleToRatio, zoomAbout } from '../scale.js';
@@ -32,7 +32,8 @@ import MatrixPanel from './diagram/MatrixPanel.jsx';
 import DiagramRail from './diagram/DiagramRail.jsx';
 import DiagramCanvas from './diagram/DiagramCanvas.jsx';
 import SelectionHud from './diagram/SelectionHud.jsx';
-import { StageTopbar, MorePopover, ToolDock } from './diagram/DiagramToolbar.jsx';
+import { StageTopbar, MorePopover, ToolDock, ZoomControls } from './diagram/DiagramToolbar.jsx';
+import CommandPalette from './diagram/CommandPalette.jsx';
 import { LayersPopover, SatellitePanel, ScalePanel } from './diagram/LayersPanel.jsx';
 import StagePopover from './diagram/StagePopover.jsx';
 import { Empty } from './ui.jsx';
@@ -69,9 +70,35 @@ const ENV_CAPS = {
 const layoutCache = new Map(); // projectId → Map(instanceKey → {x,y})
 // Each environment also keeps its own pan framing for the session — the site
 // framing that suits the Master plan rarely suits the scale-free Concept.
-const viewCache = new Map(); // `projectId:env` → {x,y}
+const viewCache = new Map(); // `projectId:env` → {x,y,z}
+// …and across sessions: the same framing persists to localStorage so reopening
+// a project restores where you were looking, per environment.
+const VIEW_STORE_KEY = 'brieftrack.viewByEnv';
+function loadViewStore() {
+  try {
+    return JSON.parse(localStorage.getItem(VIEW_STORE_KEY) || '{}') || {};
+  } catch {
+    return {};
+  }
+}
+function persistViewSlot(key, v) {
+  try {
+    const store = loadViewStore();
+    store[key] = v;
+    localStorage.setItem(VIEW_STORE_KEY, JSON.stringify(store));
+  } catch {
+    /* storage unavailable — session-only then */
+  }
+}
 
-export default function BubbleTab({ project, spaces, adjacencies, images = [], onChanged, selectedSpaceId = null, onSelectSpace }) {
+// View-zoom bounds shared by the wheel handler, the zoom buttons and fitView.
+const ZOOM_MIN = 0.2;
+const ZOOM_MAX = 6;
+
+// Colour-by-status legend labels (vs the latest milestone, ± project tolerance).
+const STATUS_LABELS = { over: 'Over target', on: 'On target', under: 'Under target', missing: 'No milestone data' };
+
+export default function BubbleTab({ project, spaces, adjacencies, images = [], snapshots = [], onChanged, selectedSpaceId = null, onSelectSpace }) {
   // Selection + link-tool state lives in one pure state machine (see
   // diagram/selection.js and diagram/linking.js). Transitions are applied via
   // applySel() below; the destructure keeps every read site unchanged.
@@ -119,6 +146,29 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const [catDraft, setCatDraft] = useState(''); // batch category/department assignment input
   const [marquee, setMarquee] = useState(null); // { x0,y0,x1,y1 } in svg coords while selecting
   const [showMatrix, setShowMatrix] = useState(false);
+  const [showPalette, setShowPalette] = useState(false); // Ctrl+K quick-select palette
+  // Right-click context menu on a room / envelope — quick actions without a
+  // trip to the action bar. Closed by any pointerdown outside, Esc, or a pick.
+  const [ctxMenu, setCtxMenu] = useState(null); // { x, y, space, idx } | null
+  useEffect(() => setCtxMenu(null), [project.id, env]);
+  useEffect(() => {
+    if (!ctxMenu) return undefined;
+    const close = () => setCtxMenu(null);
+    window.addEventListener('pointerdown', close);
+    return () => window.removeEventListener('pointerdown', close);
+  }, [ctxMenu]);
+
+  // Transient confirmation after a bulk mutation (Place all, Block up, hull
+  // match, rescale) — with a one-click Undo while that mutation is still the
+  // top of the history stack.
+  const [toast, setToast] = useState(null); // { msg, undoLabel } | null
+  const toastTimer = useRef(null);
+  useEffect(() => () => clearTimeout(toastTimer.current), []);
+  function showToast(msg, undoLabel = null) {
+    clearTimeout(toastTimer.current);
+    setToast({ msg, undoLabel });
+    toastTimer.current = setTimeout(() => setToast(null), 6000);
+  }
   const [highlightGaps, setHighlightGaps] = useState(false); // flag unmet adjacencies on the diagram
   const [spaceHeld, setSpaceHeld] = useState(false); // transient pan while Space is held
   // Per project+env hints the user closed — persisted, so a dismissed hint
@@ -135,7 +185,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   // through prefs.js. The destructure keeps every read site unchanged.
   const { view: viewPrefs, setPref } = useDiagramPrefs();
   const { split, colorBy, hulls, hullPad, railW, collapsed,
-    floorView, floorGap, stackImages, cam3d, nodeForce, buildingForce, snapEdges, snapGrid, interior, interiorLevel } = viewPrefs;
+    floorView, floorGap, stackImages, cam3d, nodeForce, buildingForce, snapEdges, snapGrid, interior, interiorLevel, onion } = viewPrefs;
 
   // Apply a selection transition: set the next state and run its declared
   // effects. The refs let event handlers (some registered with narrow effect
@@ -170,6 +220,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const dragRef = useRef(null);
   const linkDragRef = useRef(null); // { fromId, fx, fy, x, y, moved } while dragging a link out of a room
   const panRef = useRef(null);
+  const suppressCtxRef = useRef(false); // a right-drag pan just ended — swallow its contextmenu
   const pinOverride = useRef(new Map());
   const fileRef = useRef(null);
   const debouncers = useRef({});
@@ -233,9 +284,14 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   function switchEnv(next) {
     if (next === env) return;
     stashLayout(env); // remember where the current env's rooms are before re-seeding
-    // Each env keeps its own framing: stash this env's pan+zoom, restore the next's.
-    viewCache.set(cacheKeyFor(env), { ...viewRef.current, z: zoomRef.current });
-    const v = viewCache.get(cacheKeyFor(next));
+    // Each env keeps its own framing: stash this env's pan+zoom, restore the
+    // next's (session cache first, then the cross-session store). A pending
+    // view debounce would otherwise write the NEW env's framing to the old key.
+    clearTimeout(debouncers.current.view);
+    const slot = { ...viewRef.current, z: zoomRef.current };
+    viewCache.set(cacheKeyFor(env), slot);
+    persistViewSlot(cacheKeyFor(env), slot);
+    const v = viewCache.get(cacheKeyFor(next)) ?? loadViewStore()[cacheKeyFor(next)];
     if (v) {
       setView({ x: v.x, y: v.y });
       setZoom(v.z ?? 1);
@@ -250,6 +306,26 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   // floors can be arranged without the neighbours' noise.
   const [focusBuilding, setFocusBuilding] = useState(null); // root container id | null
   useEffect(() => setFocusBuilding(null), [project.id, env]);
+
+  // Legend spotlight: click a legend label to highlight that colour group and
+  // fade everything else. Cleared whenever the groups change meaning.
+  const [spotlight, setSpotlight] = useState(null); // group label | null
+  useEffect(() => setSpotlight(null), [project.id, env, colorBy]);
+
+  // Restore this project's per-env framing on mount / project switch (the
+  // richer localStorage slot wins over the legacy project-level view_x/y that
+  // useViewport seeds). Keyed by the PERSISTED env — the env state itself is
+  // still the previous project's during this commit.
+  useEffect(() => {
+    const e = project.diagram_env || 'concept';
+    const key = `${project.id}:${e}`;
+    const v = viewCache.get(key) ?? loadViewStore()[key];
+    if (v) {
+      setView({ x: v.x, y: v.y });
+      setZoom(v.z ?? 1);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project.id]);
 
   // Changing environment drops the selection — carried across envs it would
   // offer the wrong actions (a room selected in Concept isn't drawable in the
@@ -430,10 +506,20 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   const { findPair, cyclePair, setLinkStrength, createLink } =
     useLinks({ project, adjRef, history, onChanged, setError });
 
+  // Compliance status vs the LATEST milestone — the third colour mode. Falls
+  // back to category colouring when no milestone has been recorded yet.
+  const latestSnapshot = useMemo(() => {
+    if (!snapshots.length) return null;
+    return [...snapshots].sort((a, b) => String(a.taken_at).localeCompare(String(b.taken_at)))[snapshots.length - 1];
+  }, [snapshots]);
+  const statusOf = (s) =>
+    latestSnapshot ? STATUS_LABELS[spaceStatus(s, latestSnapshot, project.tolerance ?? 0.05).status] : STATUS_LABELS.missing;
+  const effColorBy = colorBy === 'status' && !latestSnapshot ? 'department' : colorBy;
+
   // Colour groups, spatial clustering key, and custom per-label colours — see
   // useCategoryColors. Destructured names match the original call sites.
   const { groupKey, clusterKey, groups, departments, colorForLabel, colorOf, setCategoryColor } =
-    useCategoryColors({ project, leaves, byId, colorBy, hasBuildings, saveProject, debouncers, palette: PALETTE });
+    useCategoryColors({ project, leaves, byId, colorBy: effColorBy, statusOf, hasBuildings, saveProject, debouncers, palette: PALETTE });
 
   const instances = useMemo(
     () =>
@@ -545,11 +631,19 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [spaces, env]);
 
-  // Global shortcuts: tools (V/L/A), undo/redo, clear selection, delete, Space-pan.
+  // Global shortcuts: tools (V/L/A), undo/redo, palette, zoom, clear selection,
+  // delete, Space-pan.
   useEffect(() => {
     function onKey(e) {
-      if (e.target.matches?.('input, select, textarea')) return;
       const mod = e.ctrlKey || e.metaKey;
+      // Ctrl/Cmd+K opens the quick-select palette even while an input has
+      // focus — that's the convention the shortcut carries everywhere else.
+      if (mod && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setShowPalette((v) => !v);
+        return;
+      }
+      if (e.target.matches?.('input, select, textarea')) return;
       // Hold Space → transient pan gesture (so empty-canvas drag stays marquee).
       if (e.code === 'Space' && !mod) {
         e.preventDefault();
@@ -573,11 +667,31 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
         applySel((s) => linking.setTool(s, 'link'));
       } else if (e.key.toLowerCase() === 'a' && !mod && caps.autoLayout) {
         runAutoLayout(); // authored Master plan / Building have no auto-layout
+      } else if (e.key === 'Tab' && !mod) {
+        // With a room selected, Tab walks the visible rooms (Shift = back).
+        // Without one, the browser's normal tab order is untouched.
+        const cur = selRef.current;
+        if (cur.selected == null) return;
+        e.preventDefault();
+        const vis = instances.filter((o) => levelVisible(o.s));
+        if (!vis.length) return;
+        const at = vis.findIndex((o) => o.s.id === cur.selected && o.i === cur.selectedInst);
+        const next = vis[(at + (e.shiftKey ? -1 : 1) + vis.length) % vis.length];
+        pickSpace(next.s.id, next.i);
+      } else if ((e.key === '+' || e.key === '=') && !mod) {
+        zoomStep(1.25);
+      } else if ((e.key === '-' || e.key === '_') && !mod) {
+        zoomStep(1 / 1.25);
+      } else if (e.key === '0' && !mod) {
+        fitView();
       } else if (e.key === 'Escape') {
         // Dismiss the topmost transient UI first; only then clear the selection.
-        if (showHelp) setShowHelp(false);
+        if (ctxMenu) setCtxMenu(null);
+        else if (showPalette) setShowPalette(false);
+        else if (showHelp) setShowHelp(false);
         else if (showMatrix) setShowMatrix(false);
         else if (panel) setPanel(null);
+        else if (spotlight) setSpotlight(null);
         else applySel(selection.escape);
       } else if ((e.key === 'Delete' || e.key === 'Backspace') && multi.size) {
         e.preventDefault();
@@ -594,13 +708,13 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       window.removeEventListener('keyup', onKeyUp);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [multi, env, panel, showMatrix, showHelp, spaces, floorView]);
+  }, [multi, env, panel, showMatrix, showHelp, showPalette, spotlight, ctxMenu, spaces, floorView]);
 
-  // Arrow-key nudge — precision placement in the authored Master-plan / Building
-  // envs. The selection (single room or multi) steps by 1 m (Shift = 0.1 m) once a
-  // scale is set, else a small pixel step; persists to the layout col (debounced).
+  // Arrow-key nudge — precision placement in every environment. The selection
+  // (single room or multi) steps by 1 m (Shift = 0.1 m) once a scale is set,
+  // else a small pixel step. Authored envs persist to their layout column;
+  // Concept persists like a drag-drop (position saved, lock state untouched).
   useEffect(() => {
-    if (!isStatic) return undefined;
     function onKey(e) {
       if (e.target.matches?.('input, select, textarea')) return;
       if (!e.key.startsWith('Arrow')) return;
@@ -616,12 +730,22 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       }
       setTick((t) => t + 1);
       clearTimeout(debouncers.current.nudge);
-      debouncers.current.nudge = setTimeout(() => savePlanKeys(keys), 350);
+      debouncers.current.nudge = setTimeout(() => {
+        if (isStatic) {
+          savePlanKeys(keys);
+        } else {
+          for (const k of keys) {
+            const [id, i] = k.split(':');
+            const sp = byId.get(Number(id));
+            if (sp) saveDragPos(sp, Number(i));
+          }
+        }
+      }, 350);
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isStatic, selected, selectedInst, multi, effScale]);
+  }, [isStatic, selected, selectedInst, multi, effScale, spaces]);
 
   // Effective pan state: panning while the Space key is held.
   const panActive = spaceHeld;
@@ -794,9 +918,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     const p0 = toSvgCoords(e);
     resizeRef.current = {
       space: o.s, idx: o.i, key: o.key, rot: n.rot || 0, target, scx, scy,
-      gx: n.x + scx * h.x, gy: n.y + scy * h.y, // grabbed corner — the pivot, stays put
-      ox: n.x - scx * h.x, oy: n.y - scy * h.y, // opposite corner at grab
-      px: p0.x, py: p0.y, moved: false,
+      ax: n.x - scx * h.x, ay: n.y - scy * h.y, // OPPOSITE corner — the anchor, stays put
+      // pointer→grabbed-corner offset at grab, so the corner tracks the
+      // pointer without the initial jump of a not-quite-on-the-handle press
+      offX: n.x + scx * h.x - p0.x, offY: n.y + scy * h.y - p0.y,
+      moved: false,
     };
   }
   function resizePointerMove(e) {
@@ -805,11 +931,12 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     const n = nodesRef.current.get(rd.key);
     if (!n) return true;
     const p = toSvgCoords(e);
-    // The opposite corner tracks the pointer's movement; the grabbed corner stays
-    // pinned. The grabbed→opposite rectangle's aspect is held while area locks.
-    const ox = rd.ox + (p.x - rd.px), oy = rd.oy + (p.y - rd.py);
+    // The corner you GRAB follows the pointer (like every drawing tool); the
+    // opposite corner is the anchor. The anchor→corner rectangle's aspect is
+    // held while the area locks to the room's target.
+    const cx = p.x + rd.offX, cy = p.y + rd.offY;
     const a = (-rd.rot * Math.PI) / 180;
-    const vx = ox - rd.gx, vy = oy - rd.gy;
+    const vx = cx - rd.ax, vy = cy - rd.ay;
     const lx = vx * Math.cos(a) - vy * Math.sin(a);
     const ly = vx * Math.sin(a) + vy * Math.cos(a);
     const aspect = Math.max(Math.abs(lx), MIN_SIDE) / Math.max(Math.abs(ly), MIN_SIDE);
@@ -818,11 +945,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     const hi = rd.target / MIN_SIDE; // cap so neither side collapses below MIN_SIDE
     if (n.w > hi) { n.w = hi; n.h = rd.target / n.w; }
     if (n.h > hi) { n.h = hi; n.w = rd.target / n.h; }
-    // Reposition so the SELECTED corner stays put (footHalf gives the new world
-    // half-extents, so this works at any orientation).
+    // Reposition so the ANCHOR (opposite corner) stays put (footHalf gives the
+    // new world half-extents, so this works at any orientation).
     const h = footHalf(rd.space, n);
-    n.x = rd.gx - rd.scx * h.x;
-    n.y = rd.gy - rd.scy * h.y;
+    n.x = rd.ax + rd.scx * h.x;
+    n.y = rd.ay + rd.scy * h.y;
     rd.moved = true;
     setTick((t) => t + 1);
     return true;
@@ -948,6 +1075,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       return;
     }
     await commitMany(changes, 'envelopes from concept hulls');
+    showToast(`Reshaped ${changes.length} envelope${changes.length === 1 ? '' : 's'} from the concept hulls`, history.undoLabel);
   }
 
   // ---------- Voronoi interior (envelope master plan) ----------
@@ -1287,6 +1415,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     }
     setTick((t) => t + 1);
     await savePlanKeys(moved); // Building env → writes block_json, one undo step
+    showToast(`Blocked up ${moved.length} room${moved.length === 1 ? '' : 's'}`, history.undoLabel);
   }
 
   // Keep simulation nodes in sync with the leaves (per instance). Existing nodes
@@ -1473,7 +1602,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       e.preventDefault();
       const rect = svgRef.current.getBoundingClientRect();
       const z = zoomRef.current;
-      const nz = Math.min(6, Math.max(0.2, z * Math.exp(-e.deltaY * (e.ctrlKey ? 0.006 : 0.0014))));
+      const nz = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z * Math.exp(-e.deltaY * (e.ctrlKey ? 0.006 : 0.0014))));
       if (nz === z) return;
       // Keep the world point under the cursor fixed while the scale changes.
       const fx = (e.clientX - rect.left) / rect.width;
@@ -1493,7 +1622,16 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   }, [vb.w, vb.h]);
 
   // ---------- pointer handling ----------
+  // Right button held = pan, in every environment (a stationary right-click on
+  // a room still opens its context menu — see onBubbleContext).
+  function startRightPan(e) {
+    panRef.current = { sx: e.clientX, sy: e.clientY, vx: viewRef.current.x, vy: viewRef.current.y, right: true, moved: false };
+  }
   function onSvgPointerDown(e) {
+    if (e.button === 2) {
+      if (!dragRef.current) startRightPan(e);
+      return;
+    }
     if (layerPointerDown(e)) return; // scale-click / move / rotate a layer — useImageLayers
     if (panActive) {
       if (!dragRef.current) panRef.current = { sx: e.clientX, sy: e.clientY, vx: view.x, vy: view.y };
@@ -1525,6 +1663,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     }
     if (layerPointerMove(e)) return; // move / rotate a layer — handled by useImageLayers
     if (panRef.current) {
+      if (Math.abs(e.clientX - panRef.current.sx) + Math.abs(e.clientY - panRef.current.sy) > 4) panRef.current.moved = true;
       setView({
         x: panRef.current.vx - ((e.clientX - panRef.current.sx) * vbz.w) / rect.width,
         y: panRef.current.vy - ((e.clientY - panRef.current.sy) * vbz.h) / rect.height,
@@ -1621,6 +1760,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     }
     if (await layerPointerUp()) return; // move / rotate layer release — useImageLayers
     if (panRef.current) {
+      // A right-drag that actually panned must not pop the context menu on release.
+      if (panRef.current.right && panRef.current.moved) suppressCtxRef.current = true;
       commitView(viewRef.current);
       panRef.current = null;
       return;
@@ -1664,6 +1805,13 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   // drag still moves `o` — a Voronoi cell drags its building's envelope, but a
   // plain click on it selects the ROOM the cell stands for.
   function onBubbleDown(e, o, clickAs = null) {
+    if (e.button === 2) {
+      // Right press on a room: pan like anywhere else — a stationary
+      // right-CLICK still opens the context menu (contextmenu fires on up).
+      e.stopPropagation();
+      startRightPan(e);
+      return;
+    }
     if (scalePoints || panActive || moveLayer || rotateLayer) return;
     if (e.shiftKey) {
       // Shift-click toggles a bubble in the multi-selection (no drag, no marquee).
@@ -1722,7 +1870,25 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
 
   function commitView(v) {
     clearTimeout(debouncers.current.view);
-    debouncers.current.view = setTimeout(() => saveProject({ view_x: v.x, view_y: v.y }, { silent: true }), 500);
+    const key = cacheKeyFor(env);
+    debouncers.current.view = setTimeout(() => {
+      saveProject({ view_x: v.x, view_y: v.y }, { silent: true });
+      // Per-env framing (pan + zoom) survives the session — switchEnv and the
+      // mount effect restore from these slots.
+      const slot = { x: v.x, y: v.y, z: zoomRef.current };
+      viewCache.set(key, slot);
+      persistViewSlot(key, slot);
+    }, 500);
+  }
+
+  // Step the view zoom about the viewport centre (the origin math keeps the
+  // centre fixed when only zoom changes, so the pan needs no compensation).
+  function zoomStep(f) {
+    const z = zoomRef.current;
+    const nz = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z * f));
+    if (nz === z) return;
+    setZoom(nz);
+    commitView(viewRef.current);
   }
 
   // Glide the view to a target pan (and optionally zoom) instead of jumping.
@@ -1769,8 +1935,67 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
     }
     if (!Number.isFinite(minX)) return animateViewTo({ x: 0, y: 0 }, 1);
     const w = maxX - minX + 120, h = maxY - minY + 120;
-    const z = Math.min(2.5, Math.max(0.2, Math.min(vb.w / w, vb.h / h)));
+    const z = Math.min(2.5, Math.max(ZOOM_MIN, Math.min(vb.w / w, vb.h / h)));
     animateViewTo({ x: (minX + maxX) / 2 - W / 2, y: (minY + maxY) / 2 - H / 2 }, z);
+  }
+
+  // Quick-select (Ctrl+K palette): select the room, surface its floor in the
+  // Building env, and glide the view to it — mirrors the vertical-badge jump.
+  function gotoRoom(space) {
+    if (
+      isBuilding &&
+      levels.includes(floorMode) &&
+      (space.level || '').trim() &&
+      space.level !== floorMode &&
+      levels.includes(space.level)
+    ) {
+      setPref('floorView', space.level);
+    }
+    pickSpace(space.id);
+    if (stackMode || is3D) return; // stacked/3-D re-project — the selection alone is the jump
+    const n = nodesRef.current.get(`${space.id}:0`);
+    if (n) animateViewTo({ x: n.x - W / 2, y: n.y - H / 2 });
+  }
+
+  // Move a room (or the multi-selection) to another storey — the plan position
+  // carries over; only the level changes. One undo step, confirmed by a toast.
+  async function moveToFloor(space, lvl) {
+    await commitSpace(space, { level: lvl }, 'move to floor');
+    showToast(`${space.name} → ${lvl || 'Unassigned'}`, history.undoLabel);
+  }
+  async function multiSetLevel(lvl) {
+    const seen = new Set();
+    const changes = [];
+    for (const { space } of multiList()) {
+      if (!space || seen.has(space.id) || (space.level || '').trim() === lvl) continue;
+      seen.add(space.id);
+      changes.push({ id: space.id, before: { level: space.level ?? null }, after: { level: lvl } });
+    }
+    if (!changes.length) return;
+    await commitMany(changes, 'move to floor');
+    showToast(`Moved ${changes.length} room${changes.length === 1 ? '' : 's'} to ${lvl}`, history.undoLabel);
+  }
+
+  // Right-click a room: select it and open the quick-action menu at the cursor.
+  function onBubbleContext(e, o) {
+    if (suppressCtxRef.current) {
+      // The right button was a pan drag, not a click.
+      suppressCtxRef.current = false;
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+    if (editShape) return; // vertex handles own right-click while editing (corner styles)
+    e.preventDefault();
+    e.stopPropagation();
+    pickSpace(o.s.id, o.i);
+    const rect = stageRef.current.getBoundingClientRect();
+    setCtxMenu({
+      x: Math.max(4, Math.min(e.clientX - rect.left, rect.width - 200)),
+      y: Math.max(4, Math.min(e.clientY - rect.top, rect.height - 210)),
+      space: o.s,
+      idx: o.i,
+    });
   }
 
   // ---------- multi-select (marquee + shift-click) ----------
@@ -1969,6 +2194,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       }
     }
     await saveProject(fields);
+    // Not one undo step (direct API writes) — the toast is confirmation only.
+    if (Math.abs(f - 1) > 1e-9) showToast('Rescaled — every layout and image followed about the view centre');
   }
   const toggleSplit = () => setPref('split', !split);
   function onAreaDraft(space, value) {
@@ -2314,7 +2541,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   // Placing writes plan_json at the room's current (seeded) position — the same
   // authored write a drag makes, so a ghost becomes a solid placed footprint.
   const placeRooms = (keys) => savePlanKeys(keys);
-  const placeAll = () => savePlanKeys(unplacedRooms.flatMap((r) => r.keys));
+  const placeAll = async () => {
+    const keys = unplacedRooms.flatMap((r) => r.keys);
+    await savePlanKeys(keys);
+    showToast(`Placed ${keys.length} room${keys.length === 1 ? '' : 's'} on the site`, history.undoLabel);
+  };
 
   // Building promotion tray: rooms without a block_json slot, grouped by
   // building — each group offers "Block up" (the per-floor grid seeder above).
@@ -2353,21 +2584,58 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   };
 
   // Focus fade: with a building focused (stacking rail), everything else dims.
-  const focusCheck = isBuilding && focusBuilding != null ? (s) => rootIdOf(s) === focusBuilding : null;
+  const buildingCheck = isBuilding && focusBuilding != null ? (s) => rootIdOf(s) === focusBuilding : null;
+  // Legend spotlight: only the clicked colour group stays lit. A container
+  // counts as lit when any room in its subtree is in the group, so envelopes
+  // stay interactive while their rooms are spotlit.
+  const inSubtree = (leaf, containerId) => {
+    for (let p = leaf; p; p = p.parent_id != null ? byId.get(p.parent_id) : null) if (p.id === containerId) return true;
+    return false;
+  };
+  const spotCheck =
+    spotlight == null
+      ? null
+      : (s) =>
+          groupKey(s) === spotlight ||
+          (isContainerKind(s) && leaves.some((l) => groupKey(l) === spotlight && inSubtree(l, s.id)));
+  const focusCheck =
+    buildingCheck && spotCheck ? (s) => buildingCheck(s) && spotCheck(s) : buildingCheck || spotCheck;
 
   // The master plan's envelopes drawn under the Building env as fixed context
   // — rooms are arranged inside their building's footprint. Only meaningful at
   // a real scale (the relative bubble sizing has no shared unit with them).
+  const editingFloor = isBuilding && levels.includes(floorMode) ? floorMode : null;
+  // Onion-skin: while editing one floor, ghost the storey above and below so
+  // stairs, cores and stacked rooms can be lined up by eye.
+  const onionLevels = onion && editingFloor
+    ? (() => {
+        const i = levels.indexOf(editingFloor);
+        const above = levels[i + 1] ?? null;
+        const below = levels[i - 1] ?? null;
+        return above || below ? { above, below } : null;
+      })()
+    : null;
   const envelopeUnderlays = isBuilding && effScale
     ? buildingRoots
         .map((c) => {
           const slot = planPinsOf(c)[0];
           if (!slot || !(c.shape === 'poly' && parsePoly(c))) return null;
+          // Fit readout for the floor being edited: this storey's net rooms
+          // (plus the building's circulation share) against the drawn envelope.
+          let fit = null;
+          if (editingFloor != null) {
+            const used = leaves
+              .filter((s) => rootIdOf(s) === c.id && (s.level || '').trim() === editingFloor)
+              .reduce((t, s) => t + (s.count || 1) * ea(s), 0);
+            const drawn = ea(c);
+            fit = used > 0 ? { floor: editingFloor, used, drawn, over: used / (1 - circOf(c)) > drawn + 0.5 } : null;
+          }
           return {
             id: c.id, name: c.name,
             x: slot.x, y: slot.y, rot: slot.rot || 0,
             verts: polyVertsOf(c),
             focused: focusBuilding === c.id,
+            fit,
           };
         })
         .filter(Boolean)
@@ -2537,7 +2805,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       nodes, instances: sceneInstances, levels: levels3d, levelRank: levelRank3d, radiusOf, levelOf, palette: PALETTE,
       adjacencies, byId, rankOf: rankOf3d, shapeOf, polyVertsOf, colorOf, groundImage,
       // Envelope outlines ground the massing on its master-plan footprint(s).
-      envelopes: envelopeUnderlays?.filter((e) => !focusCheck || e.focused) ?? null,
+      envelopes: envelopeUnderlays?.filter((e) => !buildingCheck || e.focused) ?? null,
       // Real storey heights: metres → diagram units (needs the drawing scale).
       mToU: effScale ? 1 / effScale : null,
       levelHeightM: heightOfLevel,
@@ -2553,9 +2821,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
 
   let scaleBar = null;
   if (effScale) {
-    const nice = [1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000];
-    // Pick the bar by its ON-SCREEN size (len × view zoom ≈ CSS px) so it
-    // stays a sensible width while zooming.
+    // Nice 1-2-5 distances across decades (0.01 → 500 000) so a bar of
+    // sensible ON-SCREEN size (len × view zoom ≈ CSS px) exists at ANY zoom —
+    // the bar swaps to the next distance instead of growing with the view.
+    const nice = [];
+    for (let exp = -2; exp <= 5; exp++) for (const m of [1, 2, 5]) nice.push(m * 10 ** exp);
     const cand = nice
       .map((v) => ({ label: `${v} ${distUnit(units)}`, len: distToMeters(v, units) / effScale }))
       .filter((c) => c.len * zoom >= 90 && c.len * zoom <= 260);
@@ -2598,11 +2868,21 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   );
   const stackData = hasLevels
     ? [...areaTree.entries()].map(([building, lvlMap]) => {
-        const rows = [...lvlMap.entries()].map(([lvl, list]) => ({
-          lvl: lvl || 'Unassigned',
-          raw: lvl,
-          area: list.reduce((t, s) => t + (s.count || 1) * ea(s), 0),
-        }));
+        const rows = [...lvlMap.entries()].map(([lvl, list]) => {
+          // Colour segments per floor — the bar doubles as a zoning diagram,
+          // following whatever the Colour control groups by.
+          const segMap = new Map();
+          for (const s of list) {
+            const g = groupKey(s);
+            segMap.set(g, (segMap.get(g) || 0) + (s.count || 1) * ea(s));
+          }
+          return {
+            lvl: lvl || 'Unassigned',
+            raw: lvl,
+            area: list.reduce((t, s) => t + (s.count || 1) * ea(s), 0),
+            segs: [...segMap.entries()].map(([g, a]) => ({ label: g, area: a, color: colorForLabel(g) })),
+          };
+        });
         rows.sort((a, b) => (levelRank.get(b.raw) ?? -1) - (levelRank.get(a.raw) ?? -1));
         const rootId = rootIdByName.get(building) ?? null;
         const root = rootId != null ? byId.get(rootId) : null;
@@ -2623,6 +2903,47 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
   // Adjacency strength tallies for the rail header (e.g. "6 req · 10 des").
   const reqCount = adjacencies.filter((l) => l.strength === 'required').length;
   const desCount = adjacencies.length - reqCount;
+  // Anything that isn't a leaf reads as a building/zone in the rail schedule
+  // (a link can target a container even when its kind says 'space').
+  const leafIds = new Set(leaves.map((l) => l.id));
+
+  // Quick-select palette entries — only built while the palette is open.
+  const ENV_LABELS = { concept: '◯ Concept', masterplan: '▱ Master plan', building: '▤ Building' };
+  const paletteRooms = showPalette
+    ? [
+        ...buildingRoots.map((c) => ({ space: c, name: c.name, icon: '🏢', sub: 'building', color: colorOf(c) })),
+        ...leaves.map((s) => ({ space: s, name: s.name, sub: fmtArea(ea(s), units), color: colorOf(s) })),
+      ]
+    : [];
+  const paletteCommands = showPalette
+    ? [
+        ...['concept', 'masterplan', 'building']
+          .filter((v) => v !== env)
+          .map((v) => ({ id: `env:${v}`, label: `Switch to ${ENV_LABELS[v]}`, hint: envStatus[v], run: () => switchEnv(v) })),
+        { id: 'fit', label: 'Fit view to the program', hint: '0', run: fitView },
+        ...(isBuilding && hasLevels
+          ? [
+              ...levels.map((l) => ({ id: `floor:${l}`, label: `Go to floor — ${l}`, run: () => setPref('floorView', l) })),
+              { id: 'floor:all', label: 'Show all floors', run: () => setPref('floorView', 'all') },
+            ]
+          : []),
+        ...(isMasterplan && unplacedRooms.length
+          ? [{
+              id: 'placeall',
+              label: `Place all unplaced (${unplacedRooms.reduce((t, r) => t + r.keys.length, 0)})`,
+              run: placeAll,
+            }]
+          : []),
+        ...(isBuilding && unblockedGroups.length
+          ? [{
+              id: 'blockall',
+              label: 'Block up all buildings',
+              run: async () => { for (const g of unblockedGroups) await blockUp(g.rootId); },
+            }]
+          : []),
+        { id: 'help', label: 'Shortcuts & help', hint: '?', run: () => setShowHelp(true) },
+      ]
+    : [];
 
   return (
     <div
@@ -2633,6 +2954,13 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
       {showMatrix && (
         <MatrixPanel leaves={leaves} adjacencies={adjacencies} colorOf={colorOf} onCycle={cyclePair} onClose={() => setShowMatrix(false)} linkStates={matrixLinkStates()} />
       )}
+      <CommandPalette
+        open={showPalette}
+        onClose={() => setShowPalette(false)}
+        rooms={paletteRooms}
+        commands={paletteCommands}
+        onPickRoom={gotoRoom}
+      />
 
       <div className="diagram-main">
         <div className="bubble-stage" ref={stageRef}>
@@ -2646,6 +2974,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
             envStatus={envStatus}
             showLayers={caps.layers === 'edit'}
             hasBuildings={hasBuildings}
+            showStatusColor={!!latestSnapshot}
             colorBy={colorBy}
             setPref={setPref}
             hasLevels={hasLevels}
@@ -2671,11 +3000,27 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
             adjDataKey={`${env}:${adjacencies.length}:${spaces.length}:${effScale ?? 0}`}
             highlightGaps={highlightGaps}
             onToggleGaps={() => setHighlightGaps((v) => !v)}
-            onExportPng={exportPng}
-            onExportPdf={exportPdf}
-            onExportSet={exportSet}
+            onFind={() => setShowPalette(true)}
             onHelp={() => setShowHelp(true)}
           />
+
+          {/* ⤓ Export menu — one entry point for every output. */}
+          {panel === 'export' && (
+            <StagePopover className="export-popover" onClose={() => setPanel(null)}>
+              <button className="export-row" onClick={() => { setPanel(null); exportPng(); }}>
+                <span className="export-name">↓ PNG image</span>
+                <span className="export-sub">the current view at 2× — 3-D included</span>
+              </button>
+              <button className="export-row" onClick={() => { setPanel(null); exportPdf(); }}>
+                <span className="export-name">↓ PDF sheet</span>
+                <span className="export-sub">{isConcept ? 'NTS concept diagram with title block' : 'this environment, scale-accurate with title block'}</span>
+              </button>
+              <button className="export-row" onClick={() => { setPanel(null); exportSet(); }}>
+                <span className="export-name">↓ Drawing set</span>
+                <span className="export-sub">concept + master plan + every floor, one PDF</span>
+              </button>
+            </StagePopover>
+          )}
 
           {panel === 'more' && (
             <MorePopover
@@ -2820,6 +3165,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
               showInterior={isEnvelope}
               interior={interior}
               onToggleInterior={() => setPref('interior', !interior)}
+              showOnion={isBuilding && hasLevels && editingFloor != null}
+              onion={onion}
+              onToggleOnion={() => setPref('onion', !onion)}
               onRecentre={fitView}
             />
 
@@ -2915,14 +3263,36 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
 
           <div className="stage-legend">
             {groups.map((g) => (
-              <span key={g} className="legend-item">
+              <span key={g} className={`legend-item${spotlight ? (spotlight === g ? ' active' : ' faded') : ''}`}>
                 <label className="legend-swatch" style={{ background: colorForLabel(g) }} title={`Recolour “${g}”`}>
                   <input type="color" value={colorForLabel(g)} onChange={(e) => setCategoryColor(g, e.target.value)} />
                 </label>
-                {g}
+                <button
+                  className="legend-label"
+                  onClick={() => setSpotlight((cur) => (cur === g ? null : g))}
+                  aria-pressed={spotlight === g}
+                  title={spotlight === g ? 'Show every group again' : `Spotlight “${g}” — fade everything else`}
+                >{g}</button>
               </span>
             ))}
+            {spotlight && (
+              <button className="legend-clear" onClick={() => setSpotlight(null)} title="Show every group (Esc)">✕</button>
+            )}
           </div>
+
+          {/* View navigation — the visible face of wheel/pinch zoom. Hidden in
+              3-D, where OrbitControls owns the camera. */}
+          {!is3D && (
+            <ZoomControls
+              zoom={zoom}
+              min={ZOOM_MIN}
+              max={ZOOM_MAX}
+              onZoomIn={() => zoomStep(1.25)}
+              onZoomOut={() => zoomStep(1 / 1.25)}
+              onZoomReset={() => animateViewTo({ ...viewRef.current }, 1)}
+              onFit={fitView}
+            />
+          )}
 
           {/* Everything inside DiagramCanvas re-renders on animation ticks (sim
               frames, drags) without touching the chrome above — see useTick.js. */}
@@ -2945,6 +3315,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
             placedKeys={placedKeys}
             focusCheck={focusCheck}
             envelopeUnderlays={envelopeUnderlays}
+            onionLevels={onionLevels}
             envelopeBadge={envelopeBadge}
             makeInterior={makeInterior}
             onSeedDown={seedHandleDown}
@@ -3008,9 +3379,15 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
             ea={ea}
             scaleLabelFor={scaleLabelFor}
             onSvgPointerDown={onSvgPointerDown}
+            onSvgContextMenu={(e) => {
+              // The canvas owns right-click (pan / room menu) — never the browser menu.
+              e.preventDefault();
+              suppressCtxRef.current = false;
+            }}
             onMove={onMove}
             onUp={onUp}
             onBubbleDown={onBubbleDown}
+            onBubbleContext={onBubbleContext}
             onRotateHandleDown={rotHandleDown}
             onResizeHandleDown={resizeHandleDown}
             onLinkClick={onLinkClick}
@@ -3050,6 +3427,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
             showHeight={isBuilding}
             heightOf={roomHeightM}
             onHeight={(space, v) => commitSpace(space, { height_m: Number(v) > 0 ? Number(v) : null }, 'set height')}
+            levelsFor={isBuilding && hasLevels ? levels : null}
+            onLevel={moveToFloor}
+            onMultiLevel={multiSetLevel}
             envelope={selEnvelope}
             onEnvelopeArea={saveEnvelopeArea}
             onEnvelopeHull={matchEnvelopeToHull}
@@ -3091,9 +3471,77 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
             rotateLayer={rotateLayer}
             moveLayer={moveLayer}
             panActive={panActive}
-            effScale={effScale}
-            scaleLabelFor={scaleLabelFor}
+            idleHint={
+              isConcept
+                ? 'Click a room to select · drag to move · Shift-click for several · hold Space to pan · press ? for shortcuts'
+                : isMasterplan
+                ? `Drag ${isEnvelope ? 'an envelope' : 'a room'} to place it — it snaps to edges & the grid · arrows nudge 1 m · Space pans · ? shortcuts`
+                : 'Drag rooms to arrange the floor · corner handles resize (area stays locked) · arrows nudge 1 m · Space pans · ? shortcuts'
+            }
           />
+
+          {/* Bulk-mutation confirmation. Undo shows only while that mutation
+              is still the top of the history stack. */}
+          {toast && (
+            <div className="stage-toast" role="status">
+              <span className="stage-toast-msg">{toast.msg}</span>
+              {toast.undoLabel && history.canUndo && history.undoLabel === toast.undoLabel && (
+                <button
+                  className="stage-toast-undo"
+                  onClick={() => {
+                    history.undo();
+                    setToast(null);
+                  }}
+                >Undo</button>
+              )}
+              <button className="stage-toast-close" onClick={() => setToast(null)} title="Dismiss" aria-label="Dismiss">✕</button>
+            </div>
+          )}
+
+          {/* Right-click quick actions — the same handlers the action bar uses,
+              gated by the same environment capabilities. */}
+          {ctxMenu && (() => {
+            const { space, idx } = ctxMenu;
+            const isEnvUnit = isEnvelope && isContainerKind(space);
+            const drawn = !isEnvelope || isContainerKind(space) || !rootContainer(space, byId);
+            const run = (fn) => () => {
+              setCtxMenu(null);
+              fn();
+            };
+            return (
+              <div
+                className="ctx-menu"
+                style={{ left: ctxMenu.x, top: ctxMenu.y }}
+                onPointerDown={(e) => e.stopPropagation()}
+                onContextMenu={(e) => e.preventDefault()}
+              >
+                <div className="ctx-title">{space.name}</div>
+                {caps.pin && (
+                  <button className="ctx-item" onClick={run(() => savePin(space, idx, !instPin(space, idx)))}>
+                    {instPin(space, idx) ? 'Unpin' : 'Pin'} <kbd>P</kbd>
+                  </button>
+                )}
+                {caps.shapeTools && drawn && (
+                  <button className="ctx-item" onClick={run(() => editCustomShape(space))}>✎ Edit outline</button>
+                )}
+                {isEnvUnit && (
+                  <button className="ctx-item" onClick={run(() => matchEnvelopeToHull(space))}>⬡ Shape from concept hull</button>
+                )}
+                {caps.rotate === '90' && (
+                  <button className="ctx-item" onClick={run(() => rotate90(space, idx))}>⟲ Rotate 90°</button>
+                )}
+                {isBuilding && hasLevels &&
+                  levels
+                    .filter((l) => l !== (space.level || '').trim())
+                    .map((l) => (
+                      <button key={l} className="ctx-item" onClick={run(() => moveToFloor(space, l))}>▤ Move to {l}</button>
+                    ))}
+                {!isEnvUnit && (
+                  <button className="ctx-item danger" onClick={run(() => removeSpace(space))}>Remove from brief <kbd>Del</kbd></button>
+                )}
+              </div>
+            );
+          })()}
         </div>
       </div>
 
@@ -3130,6 +3578,16 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], o
           relList={relList}
           reqCount={reqCount}
           desCount={desCount}
+          linkStates={showScore ? matrixLinkStates() : null}
+          onJumpLink={(l) => {
+            const sa = byId.get(l.space_a);
+            const sb = byId.get(l.space_b);
+            if (!sa || !sb) return;
+            const pair = closestPair(sa, sb);
+            if (pair) animateViewTo({ x: (pair.a.x + pair.b.x) / 2 - W / 2, y: (pair.a.y + pair.b.y) / 2 - H / 2 });
+            applySel((s) => linking.selectLink(s, l));
+          }}
+          isContainerId={(id) => !leafIds.has(id)}
           onChanged={onChanged}
           toggleSplit={toggleSplit}
           startRailResize={startRailResize}

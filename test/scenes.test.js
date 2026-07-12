@@ -24,7 +24,7 @@ const palette = ['#111111', '#222222'];
 const base = { nodes, instances, levels, levelRank, radiusOf, levelOf, palette };
 
 test('buildStackScene projects every placed instance and builds one plate per level', () => {
-  const scene = buildStackScene({ ...base, floorMode: 'offset', floorGap: 0.6, stackCam: 'iso' });
+  const scene = buildStackScene({ ...base, floorMode: 'offset', floorGap: 0.6 });
   assert.equal(scene.floors.length, 2);
   assert.equal(scene.screenPos.size, 3);
   assert.equal(scene.guides.length, 4); // offset mode → corner guides
@@ -35,7 +35,7 @@ test('buildStackScene projects every placed instance and builds one plate per le
 });
 
 test('buildStackScene overlaid mode has no lift (no guides, shared plane)', () => {
-  const scene = buildStackScene({ ...base, floorMode: 'overlaid', floorGap: 0.6, stackCam: 'iso' });
+  const scene = buildStackScene({ ...base, floorMode: 'overlaid', floorGap: 0.6 });
   assert.equal(scene.guides.length, 0);
   // With zero lift, the two rooms on the same spot of different floors project
   // to the same screen point.
@@ -44,7 +44,7 @@ test('buildStackScene overlaid mode has no lift (no guides, shared plane)', () =
 });
 
 test('buildStackScene closestPairScreen works in projected space', () => {
-  const scene = buildStackScene({ ...base, floorMode: 'offset', floorGap: 0.6, stackCam: 'iso' });
+  const scene = buildStackScene({ ...base, floorMode: 'offset', floorGap: 0.6 });
   const pair = scene.closestPairScreen(spaces[0], spaces[1]);
   assert.ok(pair && pair.d > 0);
 });

@@ -1,6 +1,17 @@
 import { useEffect, useMemo, useState } from 'react';
 import { rootContainer, isContainerKind } from '../compute.js';
 
+// Fixed default colours for the compliance-status colour mode (recolourable
+// via the legend like any label). Hexes, not CSS vars — the canvas label-ink
+// math needs literal colours.
+const STATUS_COLORS = {
+  'Over target': '#e5675f',
+  'On target': '#4cc38a',
+  'Under target': '#57c7d4',
+  'No milestone data': '#8d96a8',
+};
+const STATUS_ORDER = Object.keys(STATUS_COLORS);
+
 /**
  * Colour + grouping logic for the diagram: how a room maps to a colour group
  * (by category or building), the spatial clustering key the force layout uses,
@@ -17,7 +28,7 @@ import { rootContainer, isContainerKind } from '../compute.js';
  * @param {React.MutableRefObject} params.debouncers - Shared debounce-timer bag.
  * @param {string[]} params.palette     - Fallback colour palette.
  */
-export function useCategoryColors({ project, leaves, byId, colorBy, hasBuildings, saveProject, debouncers, palette }) {
+export function useCategoryColors({ project, leaves, byId, colorBy, statusOf = null, hasBuildings, saveProject, debouncers, palette }) {
   const [localColors, setLocalColors] = useState({}); // optimistic category colour overrides
   // Reset optimistic colours when switching projects (matches BubbleTab's
   // project-change reset for history + poly overrides).
@@ -27,6 +38,7 @@ export function useCategoryColors({ project, leaves, byId, colorBy, hasBuildings
     // A building envelope (a container drawn in the master plan) is its own
     // group — it IS the building, whichever colour mode is active.
     if (isContainerKind(s)) return s.name;
+    if (colorBy === 'status' && statusOf) return statusOf(s);
     if (colorBy === 'building') {
       const root = rootContainer(s, byId);
       return root ? root.name : 'Unassigned';
@@ -44,6 +56,8 @@ export function useCategoryColors({ project, leaves, byId, colorBy, hasBuildings
     return root ? root.name : 'Unassigned';
   };
   const groups = [...new Set(leaves.map(groupKey))];
+  // Status groups read as a fixed scale, not encounter order.
+  if (colorBy === 'status') groups.sort((a, b) => STATUS_ORDER.indexOf(a) - STATUS_ORDER.indexOf(b));
   // All department names (the categories), regardless of the current colour mode.
   const departments = [...new Set(leaves.map((s) => s.department || 'General'))];
 
@@ -58,6 +72,7 @@ export function useCategoryColors({ project, leaves, byId, colorBy, hasBuildings
   const effColors = { ...savedColors, ...localColors };
   const colorForLabel = (label) => {
     if (effColors[label]) return effColors[label];
+    if (STATUS_COLORS[label]) return STATUS_COLORS[label];
     const i = groups.indexOf(label);
     if (i >= 0) return palette[i % palette.length];
     // Stable fallback for labels outside the current colour grouping (e.g. a

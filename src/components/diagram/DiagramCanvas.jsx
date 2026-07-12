@@ -95,6 +95,7 @@ export default function DiagramCanvas({
   placedKeys,
   focusCheck,
   envelopeUnderlays,
+  onionLevels, // { above, below } storey labels to ghost while editing a floor
   envelopeBadge,
   makeInterior,
   onSeedDown,
@@ -157,9 +158,11 @@ export default function DiagramCanvas({
   scaleLabelFor,
   // handlers
   onSvgPointerDown,
+  onSvgContextMenu,
   onMove,
   onUp,
   onBubbleDown,
+  onBubbleContext,
   onRotateHandleDown,
   onResizeHandleDown,
   onLinkClick,
@@ -248,11 +251,14 @@ export default function DiagramCanvas({
           <svg
             ref={svgRef}
             viewBox={`${originX} ${originY} ${vb.w} ${vb.h}`}
+            role="application"
+            aria-label="Space planning diagram — Tab cycles rooms once one is selected, arrows nudge, ? lists shortcuts"
             className={`bubble-svg ${scalePoints ? 'scaling' : ''} ${panActive || moveLayer || rotateLayer ? 'panning' : ''} ${tool === 'link' ? 'linking' : ''}`}
             onPointerDown={onSvgPointerDown}
             onPointerMove={onMove}
             onPointerUp={onUp}
             onPointerLeave={onUp}
+            onContextMenu={onSvgContextMenu}
           >
             <defs>
               <filter id="sketchy" x="-20%" y="-20%" width="140%" height="140%">
@@ -315,7 +321,9 @@ export default function DiagramCanvas({
                 inside. Non-interactive; the focused building's is emphasised. */}
             {envelopeUnderlays && !stackMode &&
               envelopeUnderlays.map((e) => {
-                const top = polyBounds(e.verts).minY;
+                const eb = polyBounds(e.verts);
+                const top = eb.minY;
+                const bot = eb.maxY + 14;
                 return (
                   <g
                     key={`env:${e.id}`}
@@ -330,6 +338,43 @@ export default function DiagramCanvas({
                       textAnchor="middle"
                       transform={e.rot ? `rotate(${-e.rot} 0 ${top - 8})` : undefined}
                     >▱ {e.name}</text>
+                    {/* Fit readout for the floor being edited — net rooms on
+                        this storey against the drawn envelope footprint. */}
+                    {e.fit && (
+                      <text
+                        className={`env-fit-chip${e.fit.over ? ' bad' : ''}`}
+                        y={bot}
+                        textAnchor="middle"
+                        transform={e.rot ? `rotate(${-e.rot} 0 ${bot})` : undefined}
+                      >
+                        {e.fit.floor} · {fmtArea(e.fit.used, units)} / {fmtArea(e.fit.drawn, units)} · {e.fit.over ? 'over' : 'fits'}
+                      </text>
+                    )}
+                  </g>
+                );
+              })}
+
+            {/* Onion skin — the storeys above/below ghost under the edited
+                floor so stairs, cores and stacked rooms line up by eye. */}
+            {onionLevels && !stackMode &&
+              instances.map((o) => {
+                const lvl = (o.s.level || '').trim();
+                const dir = lvl && lvl === onionLevels.above ? 'above' : lvl && lvl === onionLevels.below ? 'below' : null;
+                if (!dir) return null;
+                const n = nodes.get(o.key);
+                if (!n) return null;
+                const target = areaUnits(o.s);
+                const aspect = n.w && n.h ? n.w / n.h : 1;
+                const bh = Math.sqrt(target / aspect);
+                const bw = aspect * bh;
+                return (
+                  <g
+                    key={`onion:${o.key}`}
+                    className={`onion ${dir}`}
+                    transform={`translate(${n.x}, ${n.y})${n.rot ? ` rotate(${n.rot})` : ''}`}
+                    pointerEvents="none"
+                  >
+                    <rect x={-bw / 2} y={-bh / 2} width={bw} height={bh} rx="2" />
                   </g>
                 );
               })}
@@ -384,6 +429,7 @@ export default function DiagramCanvas({
               const out = [];
               const addHulls = (keyFn, cls, withLabel) => {
                 const byG = new Map();
+                const litG = new Map(); // group → any member in focus/spotlight
                 for (const o of instances) {
                   if (!levelVisible(o.s)) continue;
                   const n = nodes.get(o.key);
@@ -392,17 +438,19 @@ export default function DiagramCanvas({
                   if (g == null) continue;
                   if (!byG.has(g)) byG.set(g, []);
                   byG.get(g).push({ x: n.x, y: n.y, r: radiusOf(o.s) + hullPad });
+                  litG.set(g, litG.get(g) || !focusCheck || focusCheck(o.s));
                 }
                 for (const [g, discs] of byG) {
                   const hull = hullOfDiscs(discs);
                   const d = smoothHullPath(hull);
                   if (!d) continue;
                   const color = colorForLabel(g);
-                  out.push(<path key={`${cls}:${g}`} d={d} className={`group-hull ${cls}`} fill={color} stroke={color} />);
+                  const dim = focusCheck && !litG.get(g) ? ' dim' : '';
+                  out.push(<path key={`${cls}:${g}`} d={d} className={`group-hull ${cls}${dim}`} fill={color} stroke={color} />);
                   if (withLabel) {
                     const top = hull.reduce((m, p) => (p.y < m.y ? p : m), hull[0]);
                     out.push(
-                      <text key={`lbl:${g}`} x={top.x} y={top.y - 4} textAnchor="middle" className="hull-label" fill={labelInk(color, theme)}>
+                      <text key={`lbl:${g}`} x={top.x} y={top.y - 4} textAnchor="middle" className={`hull-label${dim}`} fill={labelInk(color, theme)}>
                         {g}
                       </text>
                     );
@@ -527,8 +575,10 @@ export default function DiagramCanvas({
                 if (!pair) return null;
                 const isSelLink = selLink && ((selLink.space_a === l.space_a && selLink.space_b === l.space_b) || (selLink.space_a === l.space_b && selLink.space_b === l.space_a));
                 const connected = selected != null && (l.space_a === selected || l.space_b === selected);
+                // Focus/spotlight fade: a link follows its rooms out of focus.
+                const linkDim = focusCheck && (!focusCheck(sa) || !focusCheck(sb));
                 return (
-                  <g key={l.id} className="link-hit" onClick={() => onLinkClick(l)}>
+                  <g key={l.id} className={`link-hit${linkDim ? ' dim' : ''}`} onClick={() => onLinkClick(l)}>
                     {/* Aggregated building-to-building links carry how many room
                         relationships rolled up into them. */}
                     {l.count > 0 && (
@@ -607,9 +657,12 @@ export default function DiagramCanvas({
                   key={o.key}
                   data-space-id={s.id}
                   data-instance={i}
+                  role="img"
+                  aria-label={`${s.name}${count > 1 ? ` ${i + 1} of ${count}` : ''} — ${fmtArea(ea(s), units)}`}
                   className={`bubble ${isSel ? 'selected' : ''} ${inMulti ? 'multi' : ''} ${overlapping ? 'overlap' : ''} ${ghost ? 'ghost' : ''} ${dimmed ? 'dim' : ''}`}
                   transform={`translate(${n.x}, ${n.y})${rot ? ` rotate(${rot})` : ''}`}
                   onPointerDown={(e) => onBubbleDown(e, o)}
+                  onContextMenu={onBubbleContext ? (e) => onBubbleContext(e, o) : undefined}
                   onPointerEnter={() => (hoverRef.current = { space: s, idx: i })}
                   onPointerLeave={() => (hoverRef.current?.space.id === s.id && hoverRef.current?.idx === i ? (hoverRef.current = null) : null)}
                 >
@@ -803,8 +856,33 @@ export default function DiagramCanvas({
                   {b.circ > 0 && (
                     <path className="circ-fill" d={polygonPath(b.boundary)} fill="url(#circ-hatch)" />
                   )}
+                  {/* Fit chip — how many of this storey's rooms reach their
+                      target area inside the envelope, at a glance. */}
+                  {b.cells.length > 0 && (() => {
+                    const total = b.cells.length;
+                    const misfit = b.cells.filter((c) => c.tight).length;
+                    const bb = polyBounds(b.boundary);
+                    return (
+                      <text
+                        className={`env-fit-chip${misfit ? ' bad' : ''}`}
+                        x={(bb.minX + bb.maxX) / 2}
+                        y={bb.maxY + 16}
+                        textAnchor="middle"
+                      >
+                        <title>
+                          {misfit
+                            ? `${misfit} room${misfit === 1 ? ' is' : 's are'} squeezed below target — enlarge the envelope, move rooms to another storey, or trim targets`
+                            : 'Every room on this storey reaches its target area inside the envelope'}
+                        </title>
+                        {misfit ? `${total - misfit} of ${total} rooms fit` : `all ${total} rooms fit`}
+                      </text>
+                    );
+                  })()}
                   {b.cells.map((c) => {
                     const isSelCell = selected === c.spaceId;
+                    // Focus/spotlight fade — a cell follows its room's group.
+                    const cellSpace = byId.get(c.spaceId);
+                    const cellDim = focusCheck && cellSpace && !focusCheck(cellSpace);
                     // Fitted label: measured-width line breaks at a font scaled
                     // to the cell (same fitter the bubbles use), name block
                     // above centre and the area line below so neither collides
@@ -821,7 +899,7 @@ export default function DiagramCanvas({
                       && measureText(`${fmtArea(c.areaPU, units)} / ${fmtArea(c.targetPU, units)}`, 8.5) < cw * 0.85;
                     const ink = labelInk(c.color, theme);
                     return (
-                      <g key={`vc:${c.key}`} className={`voronoi-cell ${c.tight ? 'tight' : ''}${isSelCell ? ' selected' : ''}${c.related ? ' related' : ''}`}>
+                      <g key={`vc:${c.key}`} className={`voronoi-cell ${c.tight ? 'tight' : ''}${isSelCell ? ' selected' : ''}${c.related ? ' related' : ''}${cellDim ? ' dim' : ''}`}>
                         <path
                           className="voronoi-fill"
                           d={polygonPath(c.poly)}

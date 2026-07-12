@@ -127,8 +127,8 @@
 .stack-level.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .stack-level-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
 .stack-level.active .stack-level-name { color: var(--text); }
-.stack-bar-wrap { height: 10px; background: var(--panel3); border-radius: 3px; overflow: hidden; }
-.stack-bar { display: block; height: 100%; background: var(--accent); border-radius: 3px; min-width: 2px; }
+.stack-bar-wrap { height: 10px; background: var(--panel3); border-radius: 3px; overflow: hidden; display: flex; }
+.stack-bar { display: block; height: 100%; background: var(--accent); min-width: 2px; flex: none; }
 .stack-level-area { font-size: 10px; color: var(--muted); }
 
 /* Ghost = a Master-plan space seeded from its concept position but not yet
@@ -1337,3 +1337,293 @@ rect.poly-handle:hover, rect.poly-handle:active { transform: scale(1.2); transfo
   .stage-fabs { gap: 10px; }
   .fab { width: 46px; height: 46px; }
 }
+
+/* ===== View zoom cluster (bottom-right, above the legend) ===== */
+.zoom-cluster {
+  position: absolute;
+  right: 12px;
+  bottom: 56px;
+  z-index: 8;
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 9px;
+  background: var(--glass);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: var(--shadow);
+}
+.zoom-btn,
+.zoom-readout {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 4px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  font-size: 14px;
+  cursor: pointer;
+}
+.zoom-readout { min-width: 46px; font-size: 11.5px; }
+.zoom-btn:hover:not(:disabled),
+.zoom-readout:hover { background: var(--panel2); color: var(--text); }
+.zoom-btn:disabled { opacity: 0.35; cursor: default; }
+
+/* ===== Legend spotlight — click a group label to fade the rest ===== */
+.legend-label {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.legend-label:hover { color: var(--text); }
+.legend-item.active { color: var(--text); font-weight: 600; }
+.legend-item.faded { opacity: 0.45; }
+.legend-clear {
+  background: none;
+  border: none;
+  padding: 0 2px;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+.legend-clear:hover { color: var(--text); }
+
+/* Focus/spotlight fades follow the rooms across every layer of the canvas. */
+.link-hit.dim { pointer-events: none; }
+.link-hit.dim .link { opacity: 0.06; }
+.group-hull.dim { fill-opacity: 0.015; stroke-opacity: 0.06; }
+.hull-label.dim { opacity: 0.12; }
+.voronoi-cell.dim { opacity: 0.12; }
+.voronoi-cell.dim .voronoi-fill { pointer-events: none; }
+
+/* ===== Ctrl+K quick-select palette ===== */
+.palette-overlay { align-items: flex-start; padding-top: 12vh; }
+.palette {
+  width: min(460px, 92vw);
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.palette-input {
+  width: 100%;
+  padding: 13px 16px;
+  border: none;
+  border-bottom: 1px solid var(--border-soft);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
+  outline: none;
+}
+.palette-list { max-height: 46vh; overflow-y: auto; padding: 6px; }
+.palette-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.palette-row.active { background: var(--panel2); }
+.palette-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.palette-cmd { color: var(--accent); font-size: 11px; flex: none; width: 10px; text-align: center; }
+.palette-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.palette-sub { color: var(--muted); font-size: 11.5px; flex: none; }
+.palette-empty { padding: 18px; text-align: center; color: var(--muted); font-size: 13px; }
+.palette-foot {
+  padding: 7px 16px;
+  border-top: 1px solid var(--border-soft);
+  color: var(--faint);
+  font-size: 11px;
+}
+
+/* ===== Export menu (⤓ Export in the topbar) ===== */
+.export-popover { display: flex; flex-direction: column; gap: 2px; padding: 6px; max-width: 300px; }
+.export-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.export-row:hover { background: var(--panel2); }
+.export-name { font-weight: 600; }
+.export-sub { color: var(--muted); font-size: 11.5px; }
+
+/* ===== Bulk-mutation toast (bottom-centre, above the action bar) ===== */
+.stage-toast {
+  position: absolute;
+  bottom: 104px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(520px, calc(100% - 24px));
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--glass);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: var(--shadow);
+  font-size: 12.5px;
+  color: var(--text);
+  animation: toast-in 0.18s ease-out;
+}
+@keyframes toast-in { from { opacity: 0; transform: translateX(-50%) translateY(6px); } }
+@media (prefers-reduced-motion: reduce) { .stage-toast { animation: none; } }
+.stage-toast-undo {
+  border: 1px solid var(--accent);
+  border-radius: 7px;
+  background: none;
+  color: var(--accent);
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.stage-toast-undo:hover { background: var(--accent-soft); }
+.stage-toast-close { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 11px; padding: 2px; }
+.stage-toast-close:hover { color: var(--text); }
+
+/* ===== Adjacency rail — status dots + clickable pairs ===== */
+.rel-glyph { white-space: nowrap; }
+.rel-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-right: 5px;
+  vertical-align: middle;
+  background: var(--faint);
+}
+.rel-dot.met { background: var(--good); }
+.rel-dot.unmet { background: var(--bad); }
+.rel-jump {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.rel-jump:hover b { color: var(--accent); }
+tr.rel-unmet .rel-pair b { color: var(--text); }
+tr.rel-met .rel-pair { opacity: 0.75; }
+
+/* Envelope fit chip — "N of M rooms fit" under each sketched envelope. */
+.env-fit-chip {
+  font-size: 10.5px;
+  font-weight: 600;
+  fill: var(--muted);
+  paint-order: stroke;
+  stroke: var(--panel);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+  pointer-events: all;
+}
+.env-fit-chip.bad { fill: var(--bad); }
+
+/* ===== Right-click context menu on rooms / envelopes ===== */
+.ctx-menu {
+  position: absolute;
+  z-index: 11;
+  min-width: 180px;
+  display: flex;
+  flex-direction: column;
+  padding: 5px;
+  border-radius: 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+}
+.ctx-title {
+  padding: 5px 9px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border-soft);
+  margin-bottom: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
+.ctx-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 9px;
+  border: none;
+  border-radius: 7px;
+  background: none;
+  color: var(--text);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.ctx-item:hover { background: var(--panel2); }
+.ctx-item.danger { color: var(--bad); }
+.ctx-item kbd {
+  font-size: 10px;
+  color: var(--faint);
+  background: var(--panel2);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+/* ===== Label hierarchy — one voice for names & areas across every view =====
+   Names: Space Grotesk 600 (bubbles, cells, envelopes, plates, hulls all
+   already 600). Areas / meta figures: JetBrains Mono, slightly muted. */
+.voronoi-name,
+.envelope-label,
+.floor-plate-label { font-family: 'Space Grotesk', 'Inter', sans-serif; }
+.env-fit-chip { font-family: 'JetBrains Mono', monospace; font-weight: 500; }
+/* Theme-aware fallback when no per-room ink is supplied (was hardcoded white). */
+.bubble-area { fill: var(--text); fill-opacity: 0.72; }
+
+/* Floor select in the action bar (single + multi) — Building env. */
+.action-level select,
+.action-level-sel {
+  background: var(--panel2);
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  color: var(--text);
+  font-size: 12px;
+  padding: 3px 6px;
+}
+
+/* ===== Onion skin — adjacent storeys ghosted under the edited floor ===== */
+.onion rect { fill: none; vector-effect: non-scaling-stroke; stroke-width: 1.2; }
+.onion.above rect { stroke: var(--accent2); opacity: 0.45; stroke-dasharray: 5 4; }
+.onion.below rect { stroke: var(--muted); opacity: 0.4; stroke-dasharray: 2 4; }

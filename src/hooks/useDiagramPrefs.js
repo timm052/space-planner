@@ -15,6 +15,7 @@ const PERSISTED = {
   snapEdges: 'snapedges',
   snapGrid: 'snapgrid',
   interior: 'interior',
+  onion: 'onion',
 };
 
 /** Initial view-pref values, reading persisted keys from the store. */
@@ -36,6 +37,7 @@ export function initialDiagramPrefs(store = prefs) {
     snapGrid: store.getBool('snapgrid', true), // snap to the metric grid
     interior: store.getBool('interior', true), // Voronoi room sketch inside envelopes
     interiorLevel: 'all', // storey the interior sketch shows (level label; unset/stale → ground)
+    onion: store.getBool('onion', false), // Building: ghost the adjacent storeys under the edited floor
   };
 }
 

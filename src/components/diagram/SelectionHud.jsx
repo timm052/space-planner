@@ -33,6 +33,10 @@ export default function SelectionHud({
   showHeight,
   heightOf,
   onHeight,
+  // Building env — move the room (or the whole selection) to another floor.
+  levelsFor = null, // storey labels | null to hide
+  onLevel,
+  onMultiLevel,
   // envelope master plan — the selected unit is a building: show its drawn
   // footprint (editable, area-locks the outline) against the required one,
   // plus "shape it like its concept hull".
@@ -79,8 +83,7 @@ export default function SelectionHud({
   rotateLayer,
   moveLayer,
   panActive,
-  effScale,
-  scaleLabelFor,
+  idleHint,
 }) {
   const bar = (() => {
     // Link selected → link form.
@@ -132,6 +135,17 @@ export default function SelectionHud({
           <datalist id="diagram-categories">
             {departments.map((d) => <option key={d} value={d} />)}
           </datalist>
+          {levelsFor && (
+            <select
+              className="action-level-sel"
+              value=""
+              onChange={(e) => e.target.value && onMultiLevel(e.target.value)}
+              title="Move every selected room to a floor"
+            >
+              <option value="">▤ Floor…</option>
+              {levelsFor.map((l) => <option key={l} value={l}>{l}</option>)}
+            </select>
+          )}
           <button className="action-btn icon danger" onClick={onMultiDelete} title="Remove all (Del)" aria-label="Remove all">
             <TrashIcon />
           </button>
@@ -185,6 +199,15 @@ export default function SelectionHud({
           </>
         ) : (
           <span className="action-area mono">{fmtArea(ea(sel), units)}</span>
+        )}
+        {levelsFor && !envelope && (
+          <label className="action-height action-level" title="Which floor this room belongs to — moving it keeps its plan position">
+            <span className="muted">▤</span>
+            <select value={(sel.level || '').trim()} onChange={(e) => onLevel(sel, e.target.value)}>
+              {(sel.level || '').trim() === '' && <option value="">Unassigned</option>}
+              {levelsFor.map((l) => <option key={l} value={l}>{l}</option>)}
+            </select>
+          </label>
         )}
         {showHeight && !envelope && (
           <label className="action-height" title="Clear height in metres (Enter to apply). Empty = the floor's height; taller than the storey = a double-height / multi-floor volume.">
@@ -271,8 +294,7 @@ export default function SelectionHud({
         ? 'Moving image layer — drag the canvas to reposition it.'
         : panActive
         ? 'Pan — drag the canvas. Release Space (or toggle Pan off) to edit.'
-        : 'Click a room to select · drag to move · Shift-click for several · hold Space to pan · press ? for shortcuts' +
-          (effScale ? ` · ${scaleLabelFor(effScale)}` : '')}
+        : idleHint || 'Click a room to select · drag to move · Shift-click for several · hold Space to pan · press ? for shortcuts'}
     </div>
   );
 }

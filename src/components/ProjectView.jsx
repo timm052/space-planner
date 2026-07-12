@@ -3,29 +3,16 @@ import { api } from '../api.js';
 import { buildCsv } from '../compute.js';
 import Dashboard from './Dashboard.jsx';
 import BubbleTab from './BubbleTab.jsx';
-import LegacyDiagramTab from './LegacyDiagramTab.jsx';
 import BriefTab from './BriefTab.jsx';
 import SnapshotsTab from './SnapshotsTab.jsx';
 import { Banner, Empty } from './ui.jsx';
 
 const TABS = ['Dashboard', 'Bubble Diagram', 'Brief', 'Milestones'];
-// Frozen pre-refactor diagram, revealed by the dev toggle for side-by-side
-// comparison with the live (decomposed) diagram. See LegacyDiagramTab.jsx.
-const LEGACY_TAB = 'Diagram (Legacy)';
 
 export default function ProjectView({ projectId, onBack }) {
   const [data, setData] = useState(null);
   const [tab, setTab] = useState('Bubble Diagram');
   const [error, setError] = useState(null);
-  // Dev toggle (persisted) that reveals the frozen legacy diagram tab.
-  const [devMode, setDevMode] = useState(() => localStorage.getItem('bt_dev') === '1');
-  useEffect(() => {
-    localStorage.setItem('bt_dev', devMode ? '1' : '0');
-  }, [devMode]);
-  // If the legacy tab is showing and dev mode is turned off, fall back.
-  useEffect(() => {
-    if (!devMode && tab === LEGACY_TAB) setTab('Bubble Diagram');
-  }, [devMode, tab]);
   // Shared selection: a space selected on the Diagram highlights in the Brief
   // (and vice-versa). null = nothing selected.
   const [selectedSpaceId, setSelectedSpaceId] = useState(null);
@@ -59,8 +46,6 @@ export default function ProjectView({ projectId, onBack }) {
   }
 
   const isDiagram = tab === 'Bubble Diagram';
-  const isLegacyDiagram = tab === LEGACY_TAB;
-  const navTabs = devMode ? [...TABS, LEGACY_TAB] : TABS;
 
   return (
     <div className="project-view">
@@ -75,10 +60,10 @@ export default function ProjectView({ projectId, onBack }) {
           </span>
         </div>
         <nav className="tabs">
-          {navTabs.map((t) => (
+          {TABS.map((t) => (
             <button
               key={t}
-              className={`tab ${tab === t ? 'active' : ''} ${t === LEGACY_TAB ? 'tab-legacy' : ''}`}
+              className={`tab ${tab === t ? 'active' : ''}`}
               onClick={() => setTab(t)}
             >
               {t === 'Bubble Diagram' ? 'Diagram' : t}
@@ -88,21 +73,13 @@ export default function ProjectView({ projectId, onBack }) {
           ))}
         </nav>
         <div className="project-bar-actions">
-          <button
-            className={`btn small ${devMode ? 'on' : ''}`}
-            onClick={() => setDevMode((v) => !v)}
-            title="Dev: reveal the frozen legacy diagram tab for side-by-side comparison"
-            aria-pressed={devMode}
-          >
-            🧪 Dev
-          </button>
           <button className="btn small" onClick={exportCsv} title="Export the area schedule as CSV">
             ⤓ CSV
           </button>
         </div>
       </div>
 
-      <div className={`project-content ${isDiagram || isLegacyDiagram ? 'full' : ''}`}>
+      <div className={`project-content ${isDiagram ? 'full' : ''}`}>
         {tab === 'Dashboard' && (
           <Dashboard project={project} spaces={spaces} snapshots={snapshots} />
         )}
@@ -112,17 +89,7 @@ export default function ProjectView({ projectId, onBack }) {
             spaces={spaces}
             adjacencies={adjacencies}
             images={images}
-            onChanged={refresh}
-            selectedSpaceId={selectedSpaceId}
-            onSelectSpace={setSelectedSpaceId}
-          />
-        )}
-        {isLegacyDiagram && (
-          <LegacyDiagramTab
-            project={project}
-            spaces={spaces}
-            adjacencies={adjacencies}
-            images={images}
+            snapshots={snapshots}
             onChanged={refresh}
             selectedSpaceId={selectedSpaceId}
             onSelectSpace={setSelectedSpaceId}

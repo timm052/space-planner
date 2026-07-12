@@ -57,6 +57,7 @@ export function StageTopbar({
   envStatus,
   showLayers,
   hasBuildings,
+  showStatusColor = false,
   colorBy,
   setPref,
   hasLevels,
@@ -82,9 +83,7 @@ export function StageTopbar({
   adjDataKey,
   highlightGaps,
   onToggleGaps,
-  onExportPng,
-  onExportPdf,
-  onExportSet,
+  onFind,
   onHelp,
 }) {
   return (
@@ -108,12 +107,21 @@ export function StageTopbar({
           ))}
         </div>
         <div className="ctrl-sep" />
-        {hasBuildings && (
+        {(hasBuildings || showStatusColor) && (
           <div className="ctrl-field">
             <span className="ctrl-label">Colour</span>
             <div className="seg seg-sm">
               <button className={colorBy === 'department' ? 'active' : ''} onClick={() => setPref('colorBy', 'department')}>Category</button>
-              <button className={colorBy === 'building' ? 'active' : ''} onClick={() => setPref('colorBy', 'building')}>Building</button>
+              {hasBuildings && (
+                <button className={colorBy === 'building' ? 'active' : ''} onClick={() => setPref('colorBy', 'building')}>Building</button>
+              )}
+              {showStatusColor && (
+                <button
+                  className={colorBy === 'status' ? 'active' : ''}
+                  onClick={() => setPref('colorBy', 'status')}
+                  title="Colour rooms by compliance with the latest milestone — over / on / under the brief target"
+                >Status</button>
+              )}
             </div>
           </div>
         )}
@@ -181,10 +189,13 @@ export function StageTopbar({
             onToggle={onToggleGaps}
           />
         )}
-        <button className="act-btn wide" onClick={onExportPng} title="Export the current view as a PNG image (2×)">↓ PNG</button>
-        <button className="act-btn wide" onClick={onExportPdf} title="Export this environment as a sheet — NTS concept diagram, or a scale-accurate drawing">↓ PDF</button>
-        {onExportSet && (
-          <button className="act-btn wide" onClick={onExportSet} title="Export the drawing set — concept sheet, master plan and per-floor building sheets in one PDF">↓ Set</button>
+        <button
+          className={`act-btn wide ${panel === 'export' ? 'active' : ''}`}
+          onClick={() => setPanel(panel === 'export' ? null : 'export')}
+          title="Export — PNG image, PDF sheet or the full drawing set"
+        >⤓ Export</button>
+        {onFind && (
+          <button className="act-btn" onClick={onFind} title="Find a room or command (Ctrl+K)">⌕</button>
         )}
         <button className="act-btn" onClick={onHelp} title="Shortcuts & help (?)">?</button>
       </div>
@@ -297,7 +308,7 @@ export function MorePopover({
 }
 
 /** The left tool dock: Select / Link, then Auto-layout and Recentre. */
-export function ToolDock({ tool, onTool, autoRunning, onAutoLayout, showAutoLayout = true, showSnap = false, snapEdges = true, snapGrid = true, onToggleSnapEdges, onToggleSnapGrid, showInterior = false, interior = true, onToggleInterior, onRecentre }) {
+export function ToolDock({ tool, onTool, autoRunning, onAutoLayout, showAutoLayout = true, showSnap = false, snapEdges = true, snapGrid = true, onToggleSnapEdges, onToggleSnapGrid, showInterior = false, interior = true, onToggleInterior, showOnion = false, onion = false, onToggleOnion, onRecentre }) {
   return (
     <div className="tool-dock">
       <button
@@ -360,8 +371,37 @@ export function ToolDock({ tool, onTool, autoRunning, onAutoLayout, showAutoLayo
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6z" /><circle cx="12" cy="12" r="2.5" /></svg>
         </button>
       )}
+      {showOnion && (
+        <button
+          className={`tool-btn ${onion ? 'active' : ''}`}
+          onClick={onToggleOnion}
+          title={onion ? 'Onion skin — the storeys above & below ghost under this floor' : 'Onion skin — off (ghost the adjacent storeys while editing a floor)'}
+          aria-pressed={onion}
+        >
+          {/* stacked outlines — onion skin */}
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l9 5-9 5-9-5z" /><path d="M3 13.5l9 5 9-5" strokeDasharray="2.5 2.5" /></svg>
+        </button>
+      )}
       <button className="tool-btn" onClick={onRecentre} title="Recentre view">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3" /><line x1="12" y1="2" x2="12" y2="6" strokeLinecap="round" /><line x1="12" y1="18" x2="12" y2="22" strokeLinecap="round" /><line x1="2" y1="12" x2="6" y2="12" strokeLinecap="round" /><line x1="18" y1="12" x2="22" y2="12" strokeLinecap="round" /></svg>
+      </button>
+    </div>
+  );
+}
+
+/** Bottom-right view navigation: zoom out / readout / zoom in / fit. The
+ *  readout doubles as "reset to 100%". Wheel and pinch zoom keep working —
+ *  this cluster just makes the view zoom visible and clickable. */
+export function ZoomControls({ zoom, min, max, onZoomIn, onZoomOut, onZoomReset, onFit }) {
+  return (
+    <div className="zoom-cluster" role="group" aria-label="View zoom">
+      <button className="zoom-btn" onClick={onZoomOut} disabled={zoom <= min + 1e-9} title="Zoom out (−)">−</button>
+      <button className="zoom-readout mono" onClick={onZoomReset} title="Reset zoom to 100%">
+        {Math.round(zoom * 100)}%
+      </button>
+      <button className="zoom-btn" onClick={onZoomIn} disabled={zoom >= max - 1e-9} title="Zoom in (+)">+</button>
+      <button className="zoom-btn" onClick={onFit} title="Fit the program in view (0)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>
       </button>
     </div>
   );
