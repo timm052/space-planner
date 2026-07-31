@@ -1,16 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { rootContainer, isContainerKind } from '../compute.js';
+import { STATUS_LABEL, STATUS_HEX, STATUS_ORDER as STATUS_KEYS } from '../viz.js';
 
 // Fixed default colours for the compliance-status colour mode (recolourable
-// via the legend like any label). Hexes, not CSS vars — the canvas label-ink
-// math needs literal colours.
-const STATUS_COLORS = {
-  'Over target': '#e5675f',
-  'On target': '#4cc38a',
-  'Under target': '#57c7d4',
-  'No milestone data': '#8d96a8',
-};
-const STATUS_ORDER = Object.keys(STATUS_COLORS);
+// via the legend like any label). Sourced from viz.js so the diagram lens, the
+// Brief lens and every data screen share ONE status palette. Hexes, not CSS
+// vars — the canvas label-ink math needs literal colours.
+const STATUS_COLORS = Object.fromEntries(STATUS_KEYS.map((k) => [STATUS_LABEL[k], STATUS_HEX[k]]));
+const STATUS_ORDER = STATUS_KEYS.map((k) => STATUS_LABEL[k]); // label order for legend sort
 
 /**
  * Colour + grouping logic for the diagram: how a room maps to a colour group

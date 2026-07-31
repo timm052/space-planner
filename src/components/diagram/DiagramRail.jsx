@@ -1,5 +1,6 @@
 import { api } from '../../api.js';
-import { fmtArea } from '../../compute.js';
+import { fmtArea, instanceLabel } from '../../compute.js';
+import { linkKey } from '../../adjacency.js';
 import { Empty } from '../ui.jsx';
 
 /**
@@ -20,6 +21,7 @@ export default function DiagramRail({
   stackLevels,
   levelHeightOf,
   onLevelHeight,
+  onRenameFloor,
   floorMode,
   onPickFloor,
   focusBuilding,
@@ -146,7 +148,21 @@ export default function DiagramRail({
             <div className="stack-heights">
               {stackLevels.map((lv) => (
                 <label key={lv} className="stack-height" title={`Floor-to-floor height of “${lv}” in metres — applies across buildings`}>
-                  <span className="stack-height-name">{lv}</span>
+                  {onRenameFloor ? (
+                    <input
+                      className="stack-height-rename"
+                      defaultValue={lv}
+                      title="Rename this floor — applies to every space on it (Enter to apply)"
+                      onKeyDown={(e) => { if (e.key === 'Enter') e.target.blur(); }}
+                      onBlur={(e) => {
+                        const v = e.target.value.trim();
+                        if (v && v !== lv) onRenameFloor(lv, v);
+                        else e.target.value = lv;
+                      }}
+                    />
+                  ) : (
+                    <span className="stack-height-name">{lv}</span>
+                  )}
                   <input
                     type="number"
                     min="2"
@@ -245,8 +261,7 @@ export default function DiagramRail({
               {(() => {
                 const stateOf = (l) => {
                   if (!linkStates) return null;
-                  const key = l.space_a < l.space_b ? `${l.space_a}:${l.space_b}` : `${l.space_b}:${l.space_a}`;
-                  return linkStates.get(key) ?? null;
+                  return linkStates.get(linkKey(l.space_a, l.inst_a, l.space_b, l.inst_b)) ?? null;
                 };
                 // Unmet first — the schedule doubles as the fix-it list.
                 const rank = (l) => (stateOf(l) === 'unmet' ? 0 : stateOf(l) === 'met' ? 1 : 2);
@@ -256,7 +271,10 @@ export default function DiagramRail({
                   const b = byId.get(l.space_b);
                   if (!a || !b) return null;
                   const state = stateOf(l);
-                  const nameOf = (s) => `${isContainerId?.(s.id) ? '🏢 ' : ''}${s.name}`;
+                  // Instance-aware label: count>1 spaces show the specific room's
+                  // letter (Meeting Rooms B); containers get the 🏢 prefix.
+                  const nameOf = (s, inst) =>
+                    `${isContainerId?.(s.id) ? '🏢 ' : ''}${s.name}${Math.max(1, s.count || 1) > 1 ? ` ${instanceLabel(inst ?? 0)}` : ''}`;
                   return (
                     <tr key={l.id} className={state ? `rel-${state}` : ''}>
                       <td className="rel-glyph">
@@ -271,7 +289,7 @@ export default function DiagramRail({
                       </td>
                       <td className="rel-pair">
                         <button className="rel-jump" onClick={() => onJumpLink?.(l)} title="Go to this pair on the diagram">
-                          <b>{nameOf(a)}</b> ↔ <b>{nameOf(b)}</b>
+                          <b>{nameOf(a, l.inst_a)}</b> ↔ <b>{nameOf(b, l.inst_b)}</b>
                         </button>
                       </td>
                       <td className="rel-strength">

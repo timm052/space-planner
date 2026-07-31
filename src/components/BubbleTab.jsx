@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api.js';
-import { fmtArea, areaToM2, distToMeters, distUnit, leafSpaces, rootContainer, isContainerKind, spaceStatus } from '../compute.js';
+import { fmtArea, areaToM2, distToMeters, distUnit, leafSpaces, rootContainer, isContainerKind, spaceStatus, instanceName } from '../compute.js';
+import { STATUS_LABEL } from '../viz.js';
 // pdfExport is lazy-loaded on demand — keeps jsPDF out of the initial bundle.
 import { useHistory } from '../useHistory.js';
 import { SCALE_PRESETS, ratioToScale, scaleToRatio, zoomAbout } from '../scale.js';
-import { pinsOf, filterCss, parsePoly, regularPolygon, outlinePoints, polygonArea, polygonCentroid, hullOfDiscs, simplifyOutline, normalizePolygon, powerCells, balanceCellWeights, pointInPolygon, closestPointOnPolygon, polygonSpansAtY } from '../geometry.js';
+import { pinsOf, filterCss, parsePoly, regularPolygon, rectanglePolygon, outlinePoints, polygonArea, polygonCentroid, hullOfDiscs, simplifyOutline, normalizePolygon, powerCells, balanceCellWeights, pointInPolygon, closestPointOnPolygon, polygonSpansAtY } from '../geometry.js';
 import { pinPatch } from '../pins.js';
-import { edgeGap, adjacencyScore, linkSatisfied, closestInstancePair, aggregateByRoot, CONCEPT_THRESHOLDS_U } from '../adjacency.js';
+import { edgeGap, adjacencyScore, linkSatisfied, closestInstancePair, aggregateByRoot, linkKey, CONCEPT_THRESHOLDS_U } from '../adjacency.js';
 import { orderedLevels, levelRankMap } from '../floors.js';
 import { buildStackScene, build3DScene } from './diagram/scenes.js';
 import * as selection from './diagram/selection.js';
@@ -60,9 +61,12 @@ const ENV_CAPS = {
   building: {
     geometry: 'box', sim: false, pin: false, forces: false, autoLayout: false,
     layers: 'view', floors: true, scaleUi: true, north: true, snap: true,
-    rotate: '90', resize: true, shapeTools: false, tray: 'block', adjacency: 'metric',
+    rotate: 'free90', resize: true, shapeTools: false, tray: 'block', adjacency: 'metric',
   },
 };
+// rotate capability groups: envs with the free-rotate handle / the 90° button.
+const ROTATE_FREE = new Set(['free', 'free90']);
+const ROTATE_90 = new Set(['90', 'free90']);
 
 // BubbleTab unmounts when you leave the Diagram tab, which would otherwise lose
 // every non-pinned bubble's position and let the sim re-scatter them on return.
@@ -95,10 +99,10 @@ function persistViewSlot(key, v) {
 const ZOOM_MIN = 0.2;
 const ZOOM_MAX = 6;
 
-// Colour-by-status legend labels (vs the latest milestone, ± project tolerance).
-const STATUS_LABELS = { over: 'Over target', on: 'On target', under: 'Under target', missing: 'No milestone data' };
+// Colour-by-status legend labels (vs the latest milestone) — shared vocabulary.
+const STATUS_LABELS = STATUS_LABEL;
 
-export default function BubbleTab({ project, spaces, adjacencies, images = [], snapshots = [], onChanged, selectedSpaceId = null, onSelectSpace }) {
+export default function BubbleTab({ project, spaces, adjacencies, images = [], snapshots = [], onChanged, selectedSpaceId = null, onSelectSpace, onPullToBrief = null }) {
   // Selection + link-tool state lives in one pure state machine (see
   // diagram/selection.js and diagram/linking.js). Transitions are applied via
   // applySel() below; the destructure keeps every read site unchanged.
@@ -127,7 +131,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
   // per-feature ternaries (see docs/diagram-environments-plan.md, Phase 4a).
   //   geometry:  what shapeOf returns ('auto' = drawn footprint else bubble)
   //   layers:    'edit' (full layer UI) · 'view' (render only) · 'none'
-  //   rotate:    'free' (drag handle) · '90' (quarter-turn button) · 'none'
+  //   rotate:    'free' (drag handle) · '90' (quarter-turn button) ·
+  //              'free90' (both — Building massing) · 'none' (Concept circles)
   //   tray:      which promotion tray shows ('plan' = place on site,
   //              'block' = block up into floors)
   //   adjacency: how the compliance score is judged
@@ -201,7 +206,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     setSel(next);
     for (const f of fx) {
       if (f.type === 'notify') onSelectSpace?.(f.id);
-      else if (f.type === 'maybeCreateLink' && !findPair(f.a, f.b)) createLink(f.a, f.b, f.kind);
+      else if (f.type === 'maybeCreateLink' && !findPair(f.a, f.b, f.ia ?? 0, f.ib ?? 0)) createLink(f.a, f.b, f.kind, f.ia ?? 0, f.ib ?? 0);
     }
     // Every selection change funnels through here (canvas, rail, Brief sync) —
     // the interior sketch follows the selection onto its storey.
@@ -436,7 +441,10 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
 
 
 
-  // Placement rectangle (in diagram units) for an image layer.
+  // Placement rectangle (in diagram units) for an image layer. Site imagery is
+  // the FIXED frame of reference: north is anchored to the satellite image
+  // (north-up), and the north rose rotates the DESIGN onto it — imagery never
+  // rotates from north_deg.
   function layerRect(im) {
     const nd = im && dims[im.id];
     if (!im || !nd) return null;
@@ -588,10 +596,15 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     return a > 0 ? a : null;
   };
   // Circulation share of a building's GROSS footprint: the container row's
-  // own circ_pct, else the project default (1 − net:gross target); 0 = off.
+  // own circ_pct, else the project's circulation allowance (Brief tab), else
+  // the net:gross target fallback; 0 = off.
   const circOf = (c) => {
     const v = c?.circ_pct;
-    const share = v != null ? Number(v) : Math.max(0, 1 - (project.grossing_target || 1));
+    const share = v != null
+      ? Number(v)
+      : project.circulation != null
+      ? Number(project.circulation)
+      : Math.max(0, 1 - (project.grossing_target || 1));
     return Math.min(0.6, Math.max(0, share)) || 0;
   };
   // Required GROSS footprint: the biggest storey grossed up for circulation —
@@ -767,10 +780,13 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     // Geometry is decided by the ENVIRONMENT, not per space: Concept is
     // bubbles-only, Building is boxes-only (the massing model), Master plan is
     // 'auto' — a drawn footprint (room outline or building envelope) renders
-    // as the polygon, anything not yet drawn stays a bubble; never a box.
+    // as the polygon; an un-drawn BUILDING shows the default rectangle it will
+    // be seeded with (so ghosts, fresh placements and drawn envelopes all read
+    // the same); an un-drawn room stays a bubble; never a box.
     if (caps.geometry === 'bubble') return 'bubble';
     if (caps.geometry === 'box') return 'box';
-    return s.shape === 'poly' && parsePoly(s) ? 'poly' : 'bubble';
+    if (s.shape === 'poly' && parsePoly(s)) return 'poly';
+    return isContainerKind(s) ? 'poly' : 'bubble';
   };
 
   // On-screen area of any shape, in diagram-units². All shapes share this so a
@@ -806,6 +822,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     project, nodesRef, pinOverride, history, applySpace, commitSpace, setError,
     setTick, toSvgCoords, shapeOf, areaUnits, selected, selectedInst,
     posPatch: polyPosPatch,
+    // Un-drawn building envelopes render (and seed as) the default rectangle.
+    defaultOutline: (s) => (isEnvelope && isContainerKind(s) ? rectanglePolygon(1.4) : null),
   });
 
   // Seed order per environment: an authored env falls back through the earlier
@@ -819,6 +837,15 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
   // Tracks which environment the live node map is seeded for; an env switch
   // re-seeds every node from the new environment's layout.
   const seededEnvRef = useRef(env);
+  // Persisted-slot signature per instance key, as of the last refetch. Lets the
+  // seeding effect tell "this refetch carries nothing new" (live session
+  // positions win, as ever) from "the layout column changed under the session"
+  // (undo/redo or another writer) — the latter must visibly move the room.
+  const lastPersistedRef = useRef(new Map());
+  const persistedSig = (s, i) => {
+    const p = persistedPos(s, i);
+    return p ? JSON.stringify(p) : '';
+  };
 
   // Persist an authored drop to the active layout column (undoable). Independent
   // of the other environments' layouts. Build a slot from a live node, carrying
@@ -829,12 +856,14 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     ...(n.rot ? { rot: Math.round(n.rot) } : {}),
     ...(n.a > 0 ? { a: Math.round(n.a) } : {}),
   });
-  // Placing a building on the site seeds its envelope outline — a hexagon
-  // area-locked to the required footprint, ready for vertex editing. Returns
-  // the extra shape fields for the write (null when nothing to seed).
+  // Placing a building on the site seeds its envelope outline — a sharp
+  // rectangle area-locked to the required footprint, ready for vertex editing
+  // (the same outline the un-placed ghost already shows, so placement never
+  // pops the shape). Returns the extra shape fields for the write (null when
+  // nothing to seed).
   const envelopeSeed = (space) =>
     isEnvelope && isContainerKind(space) && !(space.shape === 'poly' && parsePoly(space))
-      ? { shape: 'poly', shape_json: JSON.stringify(regularPolygon(6)) }
+      ? { shape: 'poly', shape_json: JSON.stringify(rectanglePolygon(1.4)) }
       : null;
   const envelopeSeedBefore = (space) => ({ shape: space.shape ?? null, shape_json: space.shape_json ?? null });
   const writeSlot = (space, idx, label) => {
@@ -934,7 +963,19 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     // The corner you GRAB follows the pointer (like every drawing tool); the
     // opposite corner is the anchor. The anchor→corner rectangle's aspect is
     // held while the area locks to the room's target.
-    const cx = p.x + rd.offX, cy = p.y + rd.offY;
+    let cx = p.x + rd.offX, cy = p.y + rd.offY;
+    // Object/grid snap applies to the GRABBED CORNER while scaling too — a
+    // resized wall latches flush to its neighbour's edge, same as a move.
+    if (caps.snap && (snapEdges || snapGrid)) {
+      const nb = neighbourEdges(rd.key);
+      const gx = resolveAxis(cx, 0, nb.x, e.altKey, snapEdges, snapGrid);
+      const gy = resolveAxis(cy, 0, nb.y, e.altKey, snapEdges, snapGrid);
+      cx = gx.val; cy = gy.val;
+      const guides = [];
+      if (gx.cand) guides.push({ x: gx.cand.at, y0: Math.min(cy, gx.cand.c - gx.cand.h), y1: Math.max(cy, gx.cand.c + gx.cand.h) });
+      if (gy.cand) guides.push({ y: gy.cand.at, x0: Math.min(cx, gy.cand.c - gy.cand.h), x1: Math.max(cx, gy.cand.c + gy.cand.h) });
+      alignRef.current = guides;
+    }
     const a = (-rd.rot * Math.PI) / 180;
     const vx = cx - rd.ax, vy = cy - rd.ay;
     const lx = vx * Math.cos(a) - vy * Math.sin(a);
@@ -958,6 +999,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     const rd = resizeRef.current;
     if (!rd) return false;
     resizeRef.current = null;
+    if (alignRef.current.length) { alignRef.current = []; setTick((t) => t + 1); } // drop resize snap guides
     if (rd.moved) await savePlanPos(rd.space, rd.idx); // planSlot carries w/h
     return true;
   }
@@ -1274,9 +1316,17 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
   // envelope (falling back to its blocked rooms' centroid, then the canvas
   // centre), ordered so strongly-linked rooms land next to each other. Floors
   // share the same origin so the storeys stack. One undoable step.
-  async function blockUp(rootId) {
+  async function blockUp(rootId, { refit = false, floor = null } = {}) {
+    // Default: pack only rooms WITHOUT a Building slot (first promotion).
+    // refit: re-pack rooms that already have one (fresh adjacency-greedy
+    // grid); floor limits the pass to a single storey.
     const mine = (o) => (rootId == null ? rootIdOf(o.s) == null : rootIdOf(o.s) === rootId);
-    const targets = instances.filter((o) => mine(o) && !blockPinsOf(o.s)[o.i]);
+    const targets = instances.filter(
+      (o) =>
+        mine(o) &&
+        (refit || !blockPinsOf(o.s)[o.i]) &&
+        (floor == null || (o.s.level || '').trim() === floor)
+    );
     if (!targets.length) return;
     const root = rootId != null ? byId.get(rootId) : null;
     const slot = root ? planPinsOf(root)[0] : null;
@@ -1415,10 +1465,139 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     }
     setTick((t) => t + 1);
     await savePlanKeys(moved); // Building env → writes block_json, one undo step
-    showToast(`Blocked up ${moved.length} room${moved.length === 1 ? '' : 's'}`, history.undoLabel);
+    showToast(
+      `${refit ? 'Re-packed' : 'Blocked up'} ${moved.length} room${moved.length === 1 ? '' : 's'}${floor ? ` on ${floor}` : ''}`,
+      history.undoLabel
+    );
+  }
+
+
+  // Rename a storey across every space that carries the label (one undo step).
+  // Heights carry over; the floor switcher and interior filter follow.
+  async function renameFloor(oldLvl, next) {
+    const name = (next || '').trim();
+    if (!name || name === oldLvl) return;
+    if (levels.includes(name)) {
+      setError(`A floor called “${name}” already exists.`);
+      return;
+    }
+    const changes = spaces
+      .filter((s) => (s.level || '').trim() === oldLvl)
+      .map((s) => ({ id: s.id, before: { level: s.level }, after: { level: name } }));
+    if (!changes.length) return;
+    const h = heightOfLevel(oldLvl);
+    await commitMany(changes, 'rename floor');
+    setLevelHeight(name, h); // keep the storey height with its floor
+    if (floorMode === oldLvl) setPref('floorView', name);
+    if (interiorLevel === oldLvl) setPref('interiorLevel', name);
+    showToast(`Renamed ${oldLvl} → ${name} across ${changes.length} space${changes.length === 1 ? '' : 's'}`, history.undoLabel);
+  }
+
+  // Align / distribute the multi-selection (authored envs). Alignment targets
+  // the selection's bounding box; distribution equalises the edge gaps. Uses
+  // the real rendered extents (footHalf), so boxes align flush at any rotation
+  // step and bubbles/polys by their bounding circle. One undo step.
+  async function alignSelection(mode) {
+    const items = [...multi]
+      .map((k) => {
+        const [id, i] = k.split(':');
+        const space = byId.get(Number(id));
+        const n = nodesRef.current.get(k);
+        if (!space || !n || !levelVisible(space)) return null;
+        const h = footHalf(space, n);
+        return { k, n, hx: h.x, hy: h.y, i: Number(i) };
+      })
+      .filter(Boolean);
+    if (items.length < 2) return;
+    const minL = Math.min(...items.map((it) => it.n.x - it.hx));
+    const maxR = Math.max(...items.map((it) => it.n.x + it.hx));
+    const minT = Math.min(...items.map((it) => it.n.y - it.hy));
+    const maxB = Math.max(...items.map((it) => it.n.y + it.hy));
+    if (mode === 'left') for (const it of items) it.n.x = minL + it.hx;
+    else if (mode === 'right') for (const it of items) it.n.x = maxR - it.hx;
+    else if (mode === 'hcentre') { const c = (minL + maxR) / 2; for (const it of items) it.n.x = c; }
+    else if (mode === 'top') for (const it of items) it.n.y = minT + it.hy;
+    else if (mode === 'bottom') for (const it of items) it.n.y = maxB - it.hy;
+    else if (mode === 'vcentre') { const c = (minT + maxB) / 2; for (const it of items) it.n.y = c; }
+    else if (mode === 'disth' || mode === 'distv') {
+      const horiz = mode === 'disth';
+      const sorted = [...items].sort((a, b) => (horiz ? a.n.x - b.n.x : a.n.y - b.n.y));
+      const span = horiz ? maxR - minL : maxB - minT;
+      const total = sorted.reduce((t, it) => t + 2 * (horiz ? it.hx : it.hy), 0);
+      const gap = (span - total) / (sorted.length - 1);
+      let cur = horiz ? minL : minT;
+      for (const it of sorted) {
+        const half = horiz ? it.hx : it.hy;
+        if (horiz) it.n.x = cur + half;
+        else it.n.y = cur + half;
+        cur += 2 * half + gap;
+      }
+    }
+    setTick((t) => t + 1);
+    await savePlanKeys(items.map((it) => it.k));
+    showToast(`${mode.startsWith('dist') ? 'Distributed' : 'Aligned'} ${items.length} rooms`, history.undoLabel);
+  }
+
+  // Rotate the whole multi-selection 90° clockwise about its centre: each
+  // room's position orbits the selection centroid and its own orientation
+  // turns with it, so the arrangement rotates as one rigid piece. One undo
+  // step (savePlanKeys persists position + rot together).
+  async function rotateSelection() {
+    const items = [...multi]
+      .map((k) => {
+        const space = byId.get(Number(k.split(':')[0]));
+        const n = nodesRef.current.get(k);
+        return space && n && levelVisible(space) ? { k, n } : null;
+      })
+      .filter(Boolean);
+    if (items.length === 0) return;
+    const cx = items.reduce((t, it) => t + it.n.x, 0) / items.length;
+    const cy = items.reduce((t, it) => t + it.n.y, 0) / items.length;
+    for (const it of items) {
+      const dx = it.n.x - cx;
+      const dy = it.n.y - cy;
+      it.n.x = cx - dy; // (dx,dy) → (−dy,dx): +90° with screen-y downward
+      it.n.y = cy + dx;
+      it.n.rot = ((it.n.rot || 0) + 90) % 360;
+    }
+    setTick((t) => t + 1);
+    await savePlanKeys(items.map((it) => it.k));
+    showToast(`Rotated ${items.length} room${items.length === 1 ? '' : 's'} 90°`, history.undoLabel);
+  }
+
+  // Stack vertically-linked rooms: every room on `floor` with a relationship
+  // to a room on ANOTHER storey moves onto its partner's plan position, so the
+  // pair lines up in plan (stairs, lifts, cores). One undo step.
+  async function stackLinkedRooms(floor) {
+    if (!floor) return;
+    const lvlOf = (s) => (s.level || '').trim();
+    const moved = new Set();
+    for (const l of adjacencies) {
+      const a = byId.get(l.space_a);
+      const b = byId.get(l.space_b);
+      if (!a || !b || lvlOf(a) === lvlOf(b)) continue;
+      const here = lvlOf(a) === floor ? a : lvlOf(b) === floor ? b : null;
+      if (!here) continue;
+      const partner = here === a ? b : a;
+      const n = nodesRef.current.get(`${here.id}:0`);
+      const pn = nodesRef.current.get(`${partner.id}:0`);
+      if (!n || !pn) continue;
+      n.x = pn.x;
+      n.y = pn.y;
+      moved.add(`${here.id}:0`);
+    }
+    if (!moved.size) {
+      showToast(`No cross-floor relationships involve ${floor}`);
+      return;
+    }
+    setTick((t) => t + 1);
+    await savePlanKeys([...moved]);
+    showToast(`Stacked ${moved.size} room${moved.size === 1 ? '' : 's'} over their linked partners`, history.undoLabel);
   }
 
   // Keep simulation nodes in sync with the leaves (per instance). Existing nodes
+  // keep their live session position unless their persisted slot changed since
+  // the last refetch (undo/redo — see step 0). Missing nodes
   // seed from a pin, then the saved layout cache. A genuinely-new room is dropped
   // into free space NEAR its building's existing rooms (inside the cluster if
   // there's room, otherwise just outside its edge); a room belonging to a
@@ -1431,11 +1610,34 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     // the new environment's positions (its cache, else its persisted layout).
     if (seededEnvRef.current !== env) {
       nodes.clear();
+      lastPersistedRef.current.clear();
       seededEnvRef.current = env;
     }
     const cache = layoutCache.get(cacheKeyFor(env));
     const keys = new Set(instances.map((o) => o.key));
     for (const key of [...nodes.keys()]) if (!keys.has(key)) nodes.delete(key);
+
+    // 0. Reconcile rooms whose PERSISTED slot changed since the last refetch —
+    //    an undo/redo (or another writer) rewrote the layout column, so the DB
+    //    is the truth and the room must visibly follow it. A refetch that
+    //    carries nothing new leaves live positions alone (the signature is
+    //    unchanged), and a room mid-gesture is never clobbered — its own drop
+    //    will persist and re-sync it.
+    const seen = lastPersistedRef.current;
+    const busy = new Set();
+    if (dragRef.current?.starts) for (const s of dragRef.current.starts) busy.add(s.key);
+    else if (dragRef.current?.key) busy.add(dragRef.current.key);
+    if (rotateRef.current) busy.add(rotateRef.current.key);
+    if (resizeRef.current) busy.add(resizeRef.current.key);
+    instances.forEach((o) => {
+      const n = nodes.get(o.key);
+      const prev = seen.get(o.key);
+      if (!n || prev === undefined || busy.has(o.key)) return;
+      const pin = persistedPos(o.s, o.i);
+      const sig = pin ? JSON.stringify(pin) : '';
+      if (sig === prev || !pin) return; // unchanged, or no slot anywhere — session keeps it
+      nodes.set(o.key, { x: pin.x, y: pin.y, rot: pin.rot || 0, w: pin.w, h: pin.h, a: pin.a, vx: 0, vy: 0 });
+    });
 
     // 1. Seed placed + cached nodes first so new rooms can be placed relative to
     //    the rooms that already have a home.
@@ -1500,6 +1702,12 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
         members.get(ck).push(pos);
       }
     }
+    // Remember every instance's persisted slot as of THIS refetch — the
+    // baseline the next refetch's reconcile pass (step 0) compares against.
+    // Mid-gesture keys are recorded too: their drag deliberately wins over
+    // whatever landed while they were carried.
+    for (const key of [...lastPersistedRef.current.keys()]) if (!keys.has(key)) lastPersistedRef.current.delete(key);
+    instances.forEach((o) => lastPersistedRef.current.set(o.key, persistedSig(o.s, o.i)));
     pinOverride.current.clear();
     setTick((t) => t + 1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1574,9 +1782,26 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
 
   useSimulation({ enabled: caps.sim, instances, leaves, adjacencies, byId, autoRunRef, setAutoRunning, nodesRef, alphaRef, dragRef, relaxRef, radiusOf, instPin, groupKey, clusterKey, nodeForce, buildingForce, setTick, onSettle: persistConceptLayout });
 
-  // Closest instance pair between two spaces — used by PDF export, adjacency
-  // rendering, and the scale bar. Reads nodesRef so it is always current.
+  // Closest instance pair between two spaces — used by the scale bar and as the
+  // fallback for aggregated (building-to-building) links. Reads nodesRef so it
+  // is always current.
   const closestPair = (sa, sb) => closestInstancePair(nodesRef.current, sa, sb);
+
+  // Endpoints of a link for rendering / scoring. A real link targets SPECIFIC
+  // instances (inst_a/inst_b), so draw and grade exactly those rooms — not the
+  // nearest pair. Aggregated 'agg:' building links (envelope master plan) are
+  // derived, not instance-specific, so they keep the closest-pair fallback.
+  // Returns { a, b, d, ai, bi } or null when an endpoint instance isn't placed.
+  const linkEnds = (l) => {
+    const sa = byId.get(l.space_a);
+    const sb = byId.get(l.space_b);
+    if (!sa || !sb) return null;
+    if (String(l.id).startsWith('agg:')) return closestPair(sa, sb);
+    const ai = l.inst_a ?? 0, bi = l.inst_b ?? 0;
+    const a = nodesRef.current.get(`${sa.id}:${ai}`);
+    const b = nodesRef.current.get(`${sb.id}:${bi}`);
+    return a && b ? { a, b, d: Math.hypot(b.x - a.x, b.y - a.y), ai, bi } : null;
+  };
 
   // ---------- viewBox geometry ----------
   // Visible viewBox is the container size divided by the view zoom; its origin
@@ -1658,6 +1883,19 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
       ld.x = p.x;
       ld.y = p.y;
       if (Math.hypot(p.x - ld.fx, p.y - ld.fy) > 6) ld.moved = true;
+      // Live drop target: the band snaps to the room under the cursor so a
+      // valid release reads before you let go.
+      const hit = ld.moved ? hitInstanceAt(p, ld.fromId) : null;
+      if (hit) {
+        const hn = nodesRef.current.get(hit.key);
+        ld.overKey = hit.key;
+        ld.tx = hn?.x ?? p.x;
+        ld.ty = hn?.y ?? p.y;
+      } else {
+        ld.overKey = null;
+        ld.tx = null;
+        ld.ty = null;
+      }
       setTick((t) => t + 1);
       return;
     }
@@ -1722,6 +1960,51 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     setTick((t) => t + 1);
   }
 
+  // Shape-aware instance hit-test (world coords): circles by radius, boxes by
+  // their actual rotated rectangle, polygons by containment — so link drops on
+  // the END of a long room register, not just near its centre. Returns the
+  // {s, i, key} instance under `pt`, preferring the nearest centre when
+  // instances overlap.
+  function hitInstanceAt(pt, excludeId = null) {
+    const PAD = 6;
+    let best = null;
+    let bestScore = Infinity;
+    for (const o of instances) {
+      if (!levelVisible(o.s) || o.s.id === excludeId) continue;
+      const n = nodesRef.current.get(o.key);
+      if (!n) continue;
+      const dx = pt.x - n.x;
+      const dy = pt.y - n.y;
+      const rad = ((n.rot || 0) * Math.PI) / 180;
+      const lx = dx * Math.cos(rad) + dy * Math.sin(rad);
+      const ly = -dx * Math.sin(rad) + dy * Math.cos(rad);
+      const r = radiusOf(o.s);
+      const kind = shapeOf(o.s);
+      let hit;
+      if (kind === 'box') {
+        let bw = r * Math.sqrt(Math.PI);
+        let bh = bw;
+        if (n.w > 0 && n.h > 0) {
+          const aspect = n.w / n.h;
+          bh = Math.sqrt(areaUnits(o.s) / aspect);
+          bw = aspect * bh;
+        }
+        hit = Math.abs(lx) <= bw / 2 + PAD && Math.abs(ly) <= bh / 2 + PAD;
+      } else if (kind === 'poly') {
+        const verts = polyVertsOf(o.s);
+        hit = verts ? pointInPolygon(verts, { x: lx, y: ly }) : Math.hypot(dx, dy) <= r + PAD;
+      } else {
+        hit = Math.hypot(dx, dy) <= r + PAD;
+      }
+      const score = Math.hypot(dx, dy);
+      if (hit && score < bestScore) {
+        bestScore = score;
+        best = o;
+      }
+    }
+    return best;
+  }
+
   async function onUp(e) {
     if (polyPointerUp()) return; // vertex drag release — handled by usePolyEditing
     if (await rotPointerUp()) return; // rotate release — persist plan_json rot
@@ -1735,23 +2018,16 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
       linkDragRef.current = null;
       setTick((t) => t + 1); // clear the preview
       if (!ld.moved) {
-        await handleBubbleClick(ld.fromId);
+        await handleBubbleClick(ld.fromId, ld.fromInst || 0);
         return;
       }
+      // Shape-aware drop: boxes and polygons accept a release anywhere inside
+      // their outline (not just near the centre), each on its OWN instance.
       const drop = e && Number.isFinite(e.clientX) ? toSvgCoords(e) : { x: ld.x, y: ld.y };
-      let target = null;
-      let best = Infinity;
-      for (const o of instances) {
-        if (!levelVisible(o.s) || o.s.id === ld.fromId) continue;
-        const n = nodesRef.current.get(o.key);
-        if (!n) continue;
-        const d = Math.hypot(n.x - drop.x, n.y - drop.y);
-        if (d <= radiusOf(o.s) + 6 && d < best) {
-          best = d;
-          target = o.s;
-        }
+      const hit = hitInstanceAt(drop, ld.fromId);
+      if (hit && !findPair(ld.fromId, hit.s.id, ld.fromInst || 0, hit.i)) {
+        await createLink(ld.fromId, hit.s.id, selRef.current.linkKind, ld.fromInst || 0, hit.i);
       }
-      if (target && !findPair(ld.fromId, target.id)) await createLink(ld.fromId, target.id, selRef.current.linkKind);
       return;
     }
     if (marqueeRef.current) {
@@ -1831,7 +2107,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
       }
       const n = nodesRef.current.get(o.key);
       const p = toSvgCoords(e);
-      linkDragRef.current = { fromId: o.s.id, fx: n?.x ?? p.x, fy: n?.y ?? p.y, x: p.x, y: p.y, moved: false };
+      // Capture WHICH instance the drag starts from so the link targets that
+      // specific room (not just the nearest at drop time).
+      linkDragRef.current = { fromId: o.s.id, fromInst: o.i, fx: n?.x ?? p.x, fy: n?.y ?? p.y, x: p.x, y: p.y, moved: false };
       return;
     }
     try {
@@ -2118,15 +2396,16 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
   async function handleBubbleClick(spaceId, idx = 0) {
     setError(null);
     // Link mode: pick a first room, then a second to connect them (the
-    // maybeCreateLink fx creates the adjacency unless the pair exists).
+    // maybeCreateLink fx creates the adjacency unless the pair exists) —
+    // instance-aware, so clicking room B of a count>1 space links room B.
     // Select mode: select / retarget instance / deselect.
-    if (selRef.current.tool === 'link') applySel((s) => linking.linkClick(s, spaceId));
+    if (selRef.current.tool === 'link') applySel((s) => linking.linkClick(s, spaceId, idx));
     else applySel((s) => selection.selectClick(s, spaceId, idx));
   }
 
   async function removeSelLink() {
     if (!selLink) return;
-    await setLinkStrength(selLink.space_a, selLink.space_b, null);
+    await setLinkStrength(selLink.space_a, selLink.space_b, null, selLink.inst_a ?? 0, selLink.inst_b ?? 0);
     applySel(linking.clearSelLink);
   }
 
@@ -2228,9 +2507,100 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
   }
 
   function setNorth(deg) {
+    if (project.north_locked) return;
     const d = ((deg % 360) + 360) % 360;
     clearTimeout(debouncers.current.north);
     debouncers.current.north = setTimeout(() => saveProject({ north_deg: d }, { silent: true }), 250);
+  }
+  function toggleNorthLock() {
+    saveProject({ north_locked: project.north_locked ? 0 : 1 }, { silent: true });
+  }
+
+  // ---------- north rose = rotate the design onto the site ----------
+  // The satellite image (or first visible site layer) is the FIXED, north-up
+  // frame of reference; dragging the rose turns the whole DESIGN rigidly about
+  // that image's centre. Without site imagery the rose falls back to plain
+  // north annotation (setNorth above).
+  const siteAnchor = () => {
+    const im = imgLayers.find((x) => x.visible && x.kind === 'satellite') || imgLayers.find((x) => x.visible);
+    const r = im ? layerRect(im) : null;
+    return { x: r ? r.cx : W / 2, y: r ? r.cy : H / 2, anchored: !!r };
+  };
+  const northDragRef = useRef(null); // { pivot, total, snapshot } while the rose turns the design
+
+  function northDragStart() {
+    if (project.north_locked) return; // rose is inert while locked
+    const pivot = siteAnchor();
+    const snapshot = new Map();
+    for (const [k, n] of nodesRef.current) snapshot.set(k, { x: n.x, y: n.y, rot: n.rot || 0 });
+    northDragRef.current = { pivot, total: 0, snapshot };
+  }
+  function northDragRotate(deltaDeg) {
+    const d = northDragRef.current;
+    if (!d) return;
+    d.total += deltaDeg;
+    const a = (d.total * Math.PI) / 180;
+    const cos = Math.cos(a);
+    const sin = Math.sin(a);
+    // Live preview: every node orbits the site centre from its drag-start
+    // position (snapshot-based, so accumulated float error can't creep in).
+    for (const [k, n] of nodesRef.current) {
+      const s0 = d.snapshot.get(k);
+      if (!s0) continue;
+      const dx = s0.x - d.pivot.x;
+      const dy = s0.y - d.pivot.y;
+      n.x = d.pivot.x + dx * cos - dy * sin;
+      n.y = d.pivot.y + dx * sin + dy * cos;
+      n.rot = (((s0.rot + d.total) % 360) + 360) % 360;
+    }
+    setTick((t) => t + 1);
+  }
+  async function northDragCommit() {
+    const d = northDragRef.current;
+    northDragRef.current = null;
+    if (!d || Math.abs(d.total) < 0.05) return;
+    const a = (d.total * Math.PI) / 180;
+    const cos = Math.cos(a);
+    const sin = Math.sin(a);
+    // Rotate a persisted pin map (plan_json / block_json) rigidly about the
+    // site centre — positions orbit, each footprint's own rot turns with it.
+    const rotPins = (json) => {
+      let pins;
+      try { pins = JSON.parse(json); } catch { return null; }
+      if (!pins || typeof pins !== 'object') return null;
+      const next = {};
+      for (const [i, p] of Object.entries(pins)) {
+        if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) { next[i] = p; continue; }
+        const dx = p.x - d.pivot.x;
+        const dy = p.y - d.pivot.y;
+        const q = { ...p, x: d.pivot.x + dx * cos - dy * sin, y: d.pivot.y + dx * sin + dy * cos };
+        const nr = Math.round((((p.rot || 0) + d.total) % 360 + 360) % 360);
+        if (nr) q.rot = nr; else delete q.rot;
+        next[i] = q;
+      }
+      return JSON.stringify(next);
+    };
+    // Both authored layouts turn together (site plan + building floors), so
+    // the scheme stays consistent across environments — one undoable step.
+    const changes = [];
+    for (const s of spaces) {
+      const before = {};
+      const after = {};
+      for (const col of ['plan_json', 'block_json']) {
+        if (!s[col]) continue;
+        const next = rotPins(s[col]);
+        if (next == null || next === s[col]) continue;
+        before[col] = s[col];
+        after[col] = next;
+      }
+      if (Object.keys(after).length) changes.push({ id: s.id, before, after });
+    }
+    if (!changes.length) return;
+    // Both environments' cached session layouts are stale after the turn.
+    layoutCache.delete(cacheKeyFor('masterplan'));
+    layoutCache.delete(cacheKeyFor('building'));
+    await commitMany(changes, 'rotate design');
+    showToast(`Rotated the design ${d.total > 0 ? '+' : ''}${Math.round(d.total)}° about the site`, history.undoLabel);
   }
 
   // ---------- PNG ----------
@@ -2381,7 +2751,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
           // the colour) and wears its name above the outline, like the canvas.
           opacity: interiorCells.length ? 0.06 : project.bubble_opacity ?? 0.32,
           labelAbove: interiorCells.length > 0,
-          label: s.name + (count > 1 ? ` ${i + 1}` : ''),
+          label: instanceName(s, i),
           sublabel: fmtArea(ea(s), units),
         });
       }
@@ -2434,8 +2804,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
         const sa = byId.get(l.space_a);
         const sb = byId.get(l.space_b);
         if (!sa || !sb) return null;
-        const a = sheetPos(kind, sa, 0);
-        const b = sheetPos(kind, sb, 0);
+        // Draw between the SPECIFIC linked instances (matches the on-screen link).
+        const a = sheetPos(kind, sa, l.inst_a ?? 0);
+        const b = sheetPos(kind, sb, l.inst_b ?? 0);
         if (!a || !b) return null;
         return { x1: a.x, y1: a.y, x2: b.x, y2: b.y, strength: l.strength };
       })
@@ -2628,7 +2999,12 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
               .filter((s) => rootIdOf(s) === c.id && (s.level || '').trim() === editingFloor)
               .reduce((t, s) => t + (s.count || 1) * ea(s), 0);
             const drawn = ea(c);
-            fit = used > 0 ? { floor: editingFloor, used, drawn, over: used / (1 - circOf(c)) > drawn + 0.5 } : null;
+            const circ = circOf(c);
+            // spare = the envelope share this storey's rooms leave free — the
+            // implied circulation/structure. `over` (= spare below the
+            // building's circulation share) is the red condition.
+            const spare = drawn > 0 ? (drawn - used) / drawn : 0;
+            fit = used > 0 ? { floor: editingFloor, used, drawn, spare, circ, over: used / (1 - circ) > drawn + 0.5 } : null;
           }
           return {
             id: c.id, name: c.name,
@@ -2711,14 +3087,14 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
       const sa = byId.get(l.space_a);
       const sb = byId.get(l.space_b);
       if (!sa || !sb) continue;
-      const pair = closestPair(sa, sb);
+      const pair = linkEnds(l); // the specific instances this link targets
       if (!pair) continue;
       const gapU = edgeGap(pair.d, radiusOf(sa), radiusOf(sb));
       const met = metric
         ? linkSatisfied(l.strength, gapU * effScale)
         : linkSatisfied(l.strength, gapU, CONCEPT_THRESHOLDS_U);
-      const key = l.space_a < l.space_b ? `${l.space_a}:${l.space_b}` : `${l.space_b}:${l.space_a}`;
-      m.set(key, met ? 'met' : 'unmet');
+      // Keyed per instance-link so count>1 spaces' rows each get their own state.
+      m.set(linkKey(l.space_a, l.inst_a, l.space_b, l.inst_b), met ? 'met' : 'unmet');
     }
     return m.size ? m : null;
   }
@@ -2731,11 +3107,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
         const sa = byId.get(l.space_a);
         const sb = byId.get(l.space_b);
         if (!sa || !sb) return null;
-        const pair = closestPair(sa, sb);
+        const pair = linkEnds(l);
         if (!pair) return null;
         const gapU = edgeGap(pair.d, radiusOf(sa), radiusOf(sb));
-        // space_a/space_b ride along so the unmet list can name and locate pairs.
-        return { id: l.id, strength: l.strength, space_a: l.space_a, space_b: l.space_b, gap: metric ? gapU * effScale : gapU };
+        // space_a/space_b (+ instances) ride along so the unmet list can name and locate pairs.
+        return { id: l.id, strength: l.strength, space_a: l.space_a, space_b: l.space_b, inst_a: l.inst_a ?? 0, inst_b: l.inst_b ?? 0, gap: metric ? gapU * effScale : gapU };
       })
       .filter(Boolean);
     // Scale-free: judge against the Concept sim's rest gaps (see adjacency.js).
@@ -2941,6 +3317,23 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
               run: async () => { for (const g of unblockedGroups) await blockUp(g.rootId); },
             }]
           : []),
+        ...(isBuilding && editingFloor != null
+          ? [
+              {
+                id: 'repack',
+                label: `Re-pack ${editingFloor} — fresh grid, every building`,
+                run: async () => {
+                  for (const c of buildingRoots) await blockUp(c.id, { refit: true, floor: editingFloor });
+                  await blockUp(null, { refit: true, floor: editingFloor }); // floating rooms
+                },
+              },
+              {
+                id: 'stacklinked',
+                label: `Stack linked rooms on ${editingFloor} over their partners`,
+                run: () => stackLinkedRooms(editingFloor),
+              },
+            ]
+          : []),
         { id: 'help', label: 'Shortcuts & help', hint: '?', run: () => setShowHelp(true) },
       ]
     : [];
@@ -3080,13 +3473,13 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
                         key={l.id}
                         className="gaps-row"
                         onClick={() => {
-                          const pair = closestPair(sa, sb);
+                          const pair = linkEnds(l);
                           if (pair) animateViewTo({ x: (pair.a.x + pair.b.x) / 2 - W / 2, y: (pair.a.y + pair.b.y) / 2 - H / 2 });
                           if (!String(l.id).startsWith('agg:')) applySel((s) => linking.selectLink(s, l));
                         }}
                       >
                         <span className={`gaps-strength ${l.strength}`}>{l.strength === 'required' ? '●' : '○'}</span>
-                        <span className="gaps-pair">{sa.name} ↔ {sb.name}</span>
+                        <span className="gaps-pair">{instanceName(sa, l.inst_a ?? 0)} ↔ {instanceName(sb, l.inst_b ?? 0)}</span>
                         <span className="gaps-gap mono">{metric ? `${l.gap.toFixed(0)} m` : `+${Math.round(l.gap)}`}</span>
                       </button>
                     );
@@ -3257,7 +3650,18 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
             </div>
 
             {/* North orientation is a site concern — hidden in scale-free Concept. */}
-            {caps.north && <NorthRose deg={project.north_deg || 0} onSet={setNorth} />}
+            {caps.north && (
+              <NorthRose
+                deg={project.north_deg || 0}
+                designMode={siteAnchor().anchored}
+                locked={!!project.north_locked}
+                onToggleLock={toggleNorthLock}
+                onSet={setNorth}
+                onDragStart={northDragStart}
+                onDragRotate={northDragRotate}
+                onDragEnd={northDragCommit}
+              />
+            )}
           </div>
           </div>
 
@@ -3309,7 +3713,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
             warnOverlaps={isStatic}
             adjActive={showScore}
             verticalAdj={isBuilding && !stackMode && levels.includes(floorMode)}
-            showRotate={caps.rotate === 'free'}
+            showRotate={ROTATE_FREE.has(caps.rotate)}
             showResize={caps.resize}
             ghostUnplaced={isMasterplan}
             placedKeys={placedKeys}
@@ -3332,6 +3736,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
             floorGap={floorGap}
             stackImages={stackImages}
             cam3d={cam3d}
+            onCam3d={(v) => setPref('cam3d', v)}
+            onPick3DRoom={(key) => {
+              const [id, i] = String(key).split(':');
+              pickSpace(Number(id), Number(i));
+            }}
             bubbleStyle={bubbleStyle}
             bubbleOpacity={project.bubble_opacity}
             panActive={panActive}
@@ -3369,6 +3778,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
             colorOf={colorOf}
             rankOf={rankOf}
             closestPair={closestPair}
+            linkEnds={linkEnds}
             shapeOf={shapeOf}
             polyVertsOf={polyVertsOf}
             polyHandlesOf={polyHandlesOf}
@@ -3412,7 +3822,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
               nothing is selected. */}
           <SelectionHud
             showShapeTools={caps.shapeTools && selIsDrawn}
-            showRotateInput={caps.rotate === 'free' && selIsDrawn && selectedSpace != null && shapeOf(selectedSpace) !== 'bubble'}
+            showRotateInput={ROTATE_FREE.has(caps.rotate) && selIsDrawn && selectedSpace != null && shapeOf(selectedSpace) !== 'bubble'}
             rotOf={(s, i) => nodesRef.current.get(`${s.id}:${i}`)?.rot || 0}
             onRotateTo={async (space, idx, v) => {
               const n = nodesRef.current.get(`${space.id}:${idx}`);
@@ -3421,7 +3831,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
               setTick((t) => t + 1);
               await savePlanRot(space, idx);
             }}
-            showRotate90={caps.rotate === '90'}
+            showRotate90={ROTATE_90.has(caps.rotate)}
             onRotate90={rotate90}
             showPin={caps.pin}
             showHeight={isBuilding}
@@ -3430,6 +3840,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
             levelsFor={isBuilding && hasLevels ? levels : null}
             onLevel={moveToFloor}
             onMultiLevel={multiSetLevel}
+            showAlign={isStatic}
+            onAlign={alignSelection}
+            onRotateSelection={rotateSelection}
             envelope={selEnvelope}
             onEnvelopeArea={saveEnvelopeArea}
             onEnvelopeHull={matchEnvelopeToHull}
@@ -3467,6 +3880,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
             onPin={savePin}
             onEditShape={editCustomShape}
             onSetCategory={(space, v) => commitSpace(space, { department: v }, 'set category')}
+            onPullToBrief={onPullToBrief}
             onRemoveSpace={removeSpace}
             rotateLayer={rotateLayer}
             moveLayer={moveLayer}
@@ -3527,7 +3941,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
                 {isEnvUnit && (
                   <button className="ctx-item" onClick={run(() => matchEnvelopeToHull(space))}>⬡ Shape from concept hull</button>
                 )}
-                {caps.rotate === '90' && (
+                {ROTATE_90.has(caps.rotate) && (
                   <button className="ctx-item" onClick={run(() => rotate90(space, idx))}>⟲ Rotate 90°</button>
                 )}
                 {isBuilding && hasLevels &&
@@ -3536,8 +3950,18 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
                     .map((l) => (
                       <button key={l} className="ctx-item" onClick={run(() => moveToFloor(space, l))}>▤ Move to {l}</button>
                     ))}
+                {isBuilding && editingFloor != null && (
+                  <button
+                    className="ctx-item"
+                    onClick={run(() => blockUp(rootIdOf(space), { refit: true, floor: editingFloor }))}
+                    title="Re-run the adjacency-greedy grid for this building's rooms on this floor"
+                  >⊞ Re-pack this floor</button>
+                )}
+                {onPullToBrief && !isEnvUnit && (
+                  <button className="ctx-item" onClick={run(() => onPullToBrief(space.id))} title="Copy this room's programme into the Brief">⇥ Copy into Brief</button>
+                )}
                 {!isEnvUnit && (
-                  <button className="ctx-item danger" onClick={run(() => removeSpace(space))}>Remove from brief <kbd>Del</kbd></button>
+                  <button className="ctx-item danger" onClick={run(() => removeSpace(space))}>Remove from design <kbd>Del</kbd></button>
                 )}
               </div>
             );
@@ -3558,6 +3982,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
           stackLevels={hasLevels ? levels : null}
           levelHeightOf={heightOfLevel}
           onLevelHeight={setLevelHeight}
+          onRenameFloor={renameFloor}
           floorMode={floorMode}
           onPickFloor={(lvl) => setPref('floorView', lvl || 'all')}
           focusBuilding={focusBuilding}
@@ -3580,10 +4005,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
           desCount={desCount}
           linkStates={showScore ? matrixLinkStates() : null}
           onJumpLink={(l) => {
-            const sa = byId.get(l.space_a);
-            const sb = byId.get(l.space_b);
-            if (!sa || !sb) return;
-            const pair = closestPair(sa, sb);
+            const pair = linkEnds(l);
             if (pair) animateViewTo({ x: (pair.a.x + pair.b.x) / 2 - W / 2, y: (pair.a.y + pair.b.y) / 2 - H / 2 });
             applySel((s) => linking.selectLink(s, l));
           }}

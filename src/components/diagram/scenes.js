@@ -3,6 +3,7 @@
 // unit-testable and rebuild cheaply inside the canvas TickLayer each frame.
 import { ISO } from '../../floors.js';
 import { closestInstancePair } from '../../adjacency.js';
+import { instanceLabel } from '../../compute.js';
 import { W, H } from '../../hooks/useViewport.js';
 
 /**
@@ -250,7 +251,7 @@ export function build3DScene({
         box: kind === 'box',
         poly: kind === 'poly' ? polyVertsOf(o.s) : null, // scaled verts, centred at origin
         color: colorOf(o.s),
-        name: `${o.s.name}${Math.max(1, o.s.count || 1) > 1 ? ` ${o.i + 1}` : ''}`,
+        name: `${o.s.name}${Math.max(1, o.s.count || 1) > 1 ? ` ${instanceLabel(o.i)}` : ''}`,
       };
     });
 

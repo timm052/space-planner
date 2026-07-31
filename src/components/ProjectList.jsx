@@ -32,6 +32,9 @@ export default function ProjectList({ projects, onOpen, onChanged }) {
         ...form,
         tolerance: defaults ? Number(defaults.default_tolerance) / 100 : 0.05,
         grossing_target: defaults ? Number(defaults.default_grossing) / 100 : 0.7,
+        circulation: defaults?.default_circulation !== '' && Number.isFinite(Number(defaults?.default_circulation))
+          ? Number(defaults.default_circulation) / 100
+          : null,
       });
       setShowForm(false);
       setForm({ name: '', client: '', stage: 'Concept', units: defaults?.default_units || 'm2' });

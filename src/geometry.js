@@ -492,6 +492,21 @@ export function polyBounds(pts) {
   return { minX, minY, maxX, maxY };
 }
 
+// An axis-aligned rectangle with SHARP corners, normalized to area 1 — the
+// default master-plan building envelope. A rectangle reads as a building
+// footprint (and matches the Building environment's massing boxes) where the
+// old hexagon seed read as an arbitrary blob.
+export function rectanglePolygon(aspect = 1.4) {
+  const h = Math.sqrt(1 / aspect);
+  const w = aspect * h;
+  return normalizePolygon([
+    { x: -w / 2, y: -h / 2, k: 's' },
+    { x: w / 2, y: -h / 2, k: 's' },
+    { x: w / 2, y: h / 2, k: 's' },
+    { x: -w / 2, y: h / 2, k: 's' },
+  ]);
+}
+
 // A regular n-gon, normalized to area 1 (default outline when converting to poly).
 export function regularPolygon(n = 6) {
   const pts = [];

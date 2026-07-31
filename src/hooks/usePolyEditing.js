@@ -42,6 +42,10 @@ export function usePolyEditing({
   // node's recentred position. Defaults to pin_json (Concept); the authored
   // environments pass a patcher that writes their own layout column instead.
   posPatch = pinPatch,
+  // (space) → default normalized outline for a space whose shape isn't drawn
+  // yet (e.g. master-plan building envelopes render a rectangle before they're
+  // placed); null keeps the classic parsePoly-or-nothing behaviour.
+  defaultOutline = null,
 }) {
   const [editShape, setEditShape] = useState(null); // space id whose polygon is being edited
   const polyDragRef = useRef(null); // { space, vi } while dragging a polygon vertex handle
@@ -68,7 +72,7 @@ export function usePolyEditing({
       if (s.shape_json === ov.json) polyOverride.current.delete(s.id); // refetch caught up
       else return ov.verts;
     }
-    return parsePoly(s);
+    return parsePoly(s) || (defaultOutline ? defaultOutline(s) : null);
   };
   // Scale factor that makes the *rendered* (curved) outline's area exactly equal
   // areaUnits(s) — the area lock. We divide by the normalized curve's area k so a
@@ -113,10 +117,13 @@ export function usePolyEditing({
   // open vertex-edit mode. Toggling off when it's already the edit target.
   function editCustomShape(space) {
     if (editShape === space.id) return setEditShape(null);
-    if (shapeOf(space) === 'poly') return setEditShape(space.id);
+    // A space whose 'poly' is only the un-drawn default still needs its
+    // outline PERSISTED before vertex-editing, so fall through when the
+    // stored shape_json is absent.
+    if (shapeOf(space) === 'poly' && parsePoly(space)) return setEditShape(space.id);
     commitSpace(
       space,
-      { shape: 'poly', shape_json: JSON.stringify(parsePoly(space) || regularPolygon(6)) },
+      { shape: 'poly', shape_json: JSON.stringify(parsePoly(space) || defaultOutline?.(space) || regularPolygon(6)) },
       'custom shape'
     );
     setEditShape(space.id);

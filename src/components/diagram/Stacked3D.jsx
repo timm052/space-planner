@@ -73,8 +73,25 @@ function Floor({ floor, S, y, image, showImage }) {
   );
 }
 
-function Room({ room, S, y, boxH }) {
+function Room({ room, S, y, boxH, onPick }) {
   const rW = Math.max(0.06, room.r * S);
+  // Click = select the room (rail + shared selection follow); hover shows a
+  // pointer cursor so the massing reads as interactive.
+  const pick = onPick
+    ? {
+        onClick: (e) => {
+          e.stopPropagation();
+          onPick(room.key);
+        },
+        onPointerOver: (e) => {
+          e.stopPropagation();
+          document.body.style.cursor = 'pointer';
+        },
+        onPointerOut: () => {
+          document.body.style.cursor = '';
+        },
+      }
+    : {};
 
   // Freeform polygon: extrude the (area-locked) outline into a soft, bubble-like
   // cushion standing on the floor slab — a generous bevel rounds the top and
@@ -103,7 +120,7 @@ function Room({ room, S, y, boxH }) {
   if (polyGeom) {
     return (
       <group position={[room.x * S, y + 0.06, room.y * S]}>
-        <mesh castShadow geometry={polyGeom} rotation={[-Math.PI / 2, 0, 0]}>
+        <mesh castShadow geometry={polyGeom} rotation={[-Math.PI / 2, 0, 0]} {...pick}>
           <meshPhysicalMaterial color={room.color} roughness={0.34} metalness={0.02} clearcoat={0.35} clearcoatRoughness={0.6} />
         </mesh>
         <Html position={[0, depth + 0.18, 0]} center distanceFactor={16} occlude={false}>
@@ -122,7 +139,7 @@ function Room({ room, S, y, boxH }) {
     const bd = Math.max(0.08, (room.h || room.r * BOX_K) * S);
     return (
       <group position={[room.x * S, y + boxH / 2 + 0.06, room.y * S]} rotation={[0, (-(room.rot || 0) * Math.PI) / 180, 0]}>
-        <mesh castShadow receiveShadow>
+        <mesh castShadow receiveShadow {...pick}>
           <boxGeometry args={[bw, boxH, bd]} />
           <meshPhysicalMaterial color={room.color} roughness={0.42} metalness={0.02} clearcoat={0.3} clearcoatRoughness={0.65} />
           <Edges color={darkHex(room.color, 0.45)} threshold={30} />
@@ -135,7 +152,7 @@ function Room({ room, S, y, boxH }) {
   }
   return (
     <group position={[room.x * S, y + rW + 0.06, room.y * S]}>
-      <mesh castShadow>
+      <mesh castShadow {...pick}>
         <sphereGeometry args={[rW, 48, 32]} />
         <meshPhysicalMaterial color={room.color} roughness={0.4} metalness={0.02} clearcoat={0.3} clearcoatRoughness={0.65} />
       </mesh>
@@ -171,7 +188,7 @@ function Cameras({ mode, target, fit }) {
   return <PerspectiveCamera key={mode} makeDefault position={pos} fov={c.fov} near={0.1} far={dist * 4 + 300} />;
 }
 
-function Scene({ scene, gap, showImage, camMode }) {
+function Scene({ scene, gap, showImage, camMode, onPickRoom }) {
   // Don't build the scene until the canvas has a real size — R3F can miss its
   // initial ResizeObserver callback when mounting into a freshly-shown panel,
   // and rendering at 0×0 throws transient NaN geometry warnings.
@@ -259,7 +276,7 @@ function Scene({ scene, gap, showImage, camMode }) {
       })}
 
       {rooms.map((room) => (
-        <Room key={room.key} room={room} S={S} y={yOf(room.rank, room.baseU)} boxH={boxHOf(room.hU)} />
+        <Room key={room.key} room={room} S={S} y={yOf(room.rank, room.baseU)} boxH={boxHOf(room.hU)} onPick={onPickRoom} />
       ))}
 
       {/* Master-plan envelope(s) drawn on the ground plane — the footprint the
@@ -306,7 +323,7 @@ function Scene({ scene, gap, showImage, camMode }) {
   );
 }
 
-export default function Stacked3D({ scene, gap, showImage, camMode = 'persp' }) {
+export default function Stacked3D({ scene, gap, showImage, camMode = 'persp', onPickRoom = null }) {
   // R3F sizes its canvas from a ResizeObserver whose initial callback can be
   // missed when the canvas mounts inside a freshly-shown panel. Nudge it a few
   // times — the first nudge can race the lazy three.js chunk still mounting.
@@ -324,7 +341,7 @@ export default function Stacked3D({ scene, gap, showImage, camMode = 'persp' }) 
       style={{ background: 'transparent' }}
     >
       <Suspense fallback={null}>
-        <Scene scene={scene} gap={gap} showImage={showImage} camMode={camMode} />
+        <Scene scene={scene} gap={gap} showImage={showImage} camMode={camMode} onPickRoom={onPickRoom} />
       </Suspense>
     </Canvas>
   );

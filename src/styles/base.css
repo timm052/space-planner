@@ -179,11 +179,12 @@ input:disabled, select:disabled, textarea:disabled { opacity: 0.55; cursor: not-
 .brief-add-row input { flex: 1; min-width: 120px; }
 .brief-add-row input[type='number'] { flex: 0 0 110px; min-width: 80px; }
 .brief-add-parent { font-size: 12px; }
-.brief-table .container-row { background: rgba(240, 181, 63, 0.06); }
-.brief-table .container-row td:first-child { font-weight: 600; }
-.kind-icon { color: var(--accent); margin-right: 8px; display: inline-block; width: 10px; }
+.brief-table .container-row td:first-child { font-weight: 600; box-shadow: inset 2px 0 0 var(--border); }
+.kind-icon { color: var(--faint); margin-right: 8px; display: inline-block; width: 12px; text-align: center; }
+.brief-table .container-row .kind-icon, .brief-table .building-row .kind-icon { color: var(--accent); }
 .parent-select { width: auto; padding: 5px 8px; font-size: 12px; }
-.drag-grip { color: var(--faint); cursor: grab; margin-right: 6px; user-select: none; }
+.drag-grip { color: var(--faint); cursor: grab; margin-right: 6px; user-select: none; opacity: 0; transition: opacity 0.12s; }
+.brief-table tr:hover .drag-grip, .brief-table tr:focus-within .drag-grip { opacity: 1; }
 .brief-table tr[draggable] { cursor: default; }
 .brief-table tr.dragging { opacity: 0.4; }
 .brief-table tr.drop-target td { box-shadow: inset 0 -2px 0 var(--accent); background: rgba(240, 181, 63, 0.08); }
@@ -287,11 +288,45 @@ input:disabled, select:disabled, textarea:disabled { opacity: 0.55; cursor: not-
 .table .num { text-align: right; font-family: 'JetBrains Mono', monospace; font-size: 13px; }
 .table .num input { text-align: right; }
 .strong { font-weight: 700; }
-.row-actions { display: flex; gap: 6px; justify-content: flex-end; }
-tr.editing > td { background: var(--accent-soft); padding: 0; }
-/* Full-width inline edit form — replaces the old inputs crammed into the read-only
-   columns (which overflowed the numeric cells and broke the table alignment). */
-.edit-form { display: flex; flex-direction: column; gap: 13px; padding: 14px 16px 16px; border-left: 3px solid var(--accent); }
+/* Row actions: a consistent set of icon buttons that FLOAT over the row's right
+   edge on hover/focus — so the action column reserves no width and the schedule
+   reads clean (no empty gutter) at rest. */
+.brief-table td.row-actions { width: 0; padding: 0; }
+.brief-table tbody tr { position: relative; }
+.row-actions-float {
+  position: absolute;
+  right: 0; top: 0; bottom: 0;
+  display: flex; align-items: center; gap: 2px;
+  padding: 0 10px 0 30px;
+  background: linear-gradient(to right, transparent, var(--panel2) 30px);
+  opacity: 0; pointer-events: none; transition: opacity 0.12s;
+}
+.brief-table tbody tr:focus-within:not(.editing):not(.detail-row) { background: var(--panel2); }
+.brief-table tr:hover .row-actions-float,
+.brief-table tr:focus-within .row-actions-float { opacity: 1; pointer-events: auto; }
+/* The (empty) action column header/footer cells reserve no width either. */
+.brief-table thead th:last-child,
+.brief-table tfoot td:last-child { width: 0; padding: 0; }
+.row-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; padding: 0;
+  border: none; border-radius: 7px; background: none;
+  color: var(--muted); cursor: pointer; transition: background 0.12s, color 0.12s;
+}
+.row-btn:hover { background: var(--panel3); color: var(--text); }
+.row-btn.on { color: var(--accent); background: var(--accent-soft); }
+.row-btn.flagged { color: var(--accent2); }
+.row-btn.danger:hover { background: rgba(229, 103, 95, 0.16); color: var(--bad); }
+.row-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* Full-width inline edit form — a soft inset panel, not a bolted-on amber slab. */
+tr.editing > td { background: var(--panel2); padding: 0; }
+.edit-form {
+  display: flex; flex-direction: column; gap: 14px;
+  margin: 4px 12px 12px; padding: 15px 17px;
+  background: var(--panel); border: 1px solid var(--border);
+  border-left: 3px solid var(--accent); border-radius: 11px;
+}
 .edit-form-head { display: flex; align-items: center; gap: 10px; }
 .edit-form-title { font-size: 13px; color: var(--muted); }
 .edit-form-title strong { color: var(--text); font-weight: 600; }

@@ -1,3 +1,5 @@
+import { linkKey } from '../../adjacency.js';
+
 /**
  * Adjacency matrix modal. Click a cell to cycle the relationship between two
  * spaces: none → desired → required → none. Changes are undoable (caller
@@ -10,16 +12,23 @@
  * @param {function} onClose     - Close handler.
  */
 export default function MatrixPanel({ leaves, adjacencies, colorOf, onCycle, onClose, linkStates = null }) {
+  // The matrix is a space-level editor: it shows and cycles the FIRST-instance
+  // (inst 0-0) link between two spaces. Finer per-instance relationships for
+  // count>1 spaces are made on the diagram; they don't clutter the grid.
   const strengthOf = (a, b) => {
     const l = adjacencies.find(
-      (x) => (x.space_a === a && x.space_b === b) || (x.space_a === b && x.space_b === a)
+      (x) =>
+        ((x.space_a === a && x.space_b === b) || (x.space_a === b && x.space_b === a)) &&
+        (x.inst_a ?? 0) === 0 &&
+        (x.inst_b ?? 0) === 0
     );
     return l?.strength ?? null;
   };
   // Current-layout satisfaction per pair ('met' | 'unmet'), computed by the
   // caller when the modal opens — the matrix audits the layout, not just the
-  // declarations. Null when the environment can't grade (e.g. no scale).
-  const stateOf = (a, b) => linkStates?.get(a < b ? `${a}:${b}` : `${b}:${a}`) ?? null;
+  // declarations. Space-level: reads the first-instance (0-0) link's state, the
+  // one this grid edits. Null when the environment can't grade (e.g. no scale).
+  const stateOf = (a, b) => linkStates?.get(linkKey(a, 0, b, 0)) ?? null;
 
   const glyph = { required: '●', desired: '○' };
 

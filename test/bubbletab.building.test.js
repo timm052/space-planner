@@ -142,3 +142,88 @@ test('stacking rail bars are segmented by the active colour grouping', async () 
     unmount();
   }
 });
+
+// A second Ground room so multi-selection tools have a pair on one floor.
+const blockedStore = {
+  id: 4, kind: 'space', name: 'Store', parent_id: 1, department: 'Staff', count: 1, target_area: 30,
+  level: 'Ground', block_json: JSON.stringify({ 0: { x: 260, y: 220 } }),
+};
+const mountBuilding3 = () =>
+  mount({ project: { ...project, diagram_env: 'building' }, spaces: [building, blockedLobby, blockedOffice, blockedStore] });
+
+const key = (k, opts = {}) => window.dispatchEvent(new window.KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true, ...opts }));
+const posOf = (el) => {
+  const m = /translate\((-?[\d.]+),\s*(-?[\d.]+)\)/.exec(el.getAttribute('transform'));
+  return { x: Number(m[1]), y: Number(m[2]) };
+};
+
+test('align centres the multi-selection on one axis (one undo step)', async () => {
+  const { container, unmount } = mountBuilding3();
+  try {
+    await act(async () => key('a', { ctrlKey: true })); // select both Ground rooms
+    const btn = [...container.querySelectorAll('.align-btn')].find((b) => b.title === 'Align horizontal centres');
+    assert.ok(btn, 'align cluster renders for the multi-selection');
+    await act(async () => btn.dispatchEvent(ev('click')));
+    const a = posOf(container.querySelector('g.bubble[data-space-id="2"]'));
+    const b = posOf(container.querySelector('g.bubble[data-space-id="4"]'));
+    assert.equal(Math.round(a.x), Math.round(b.x), 'centres share one x');
+    const put = fetchCalls.find((c) => c.options?.method === 'PUT' && String(c.options.body).includes('block_json'));
+    assert.ok(put, 'aligned positions persisted');
+  } finally {
+    unmount();
+  }
+});
+
+test('context menu re-packs the current floor', async () => {
+  const { container, unmount } = mountBuilding3();
+  try {
+    const room = container.querySelector('g.bubble[data-space-id="2"]');
+    await act(async () => room.dispatchEvent(ev('contextmenu', { clientX: 120, clientY: 120 })));
+    const btn = [...container.querySelectorAll('.ctx-item')].find((b) => b.textContent.includes('Re-pack this floor'));
+    assert.ok(btn, 're-pack offered on a single floor');
+    await act(async () => btn.dispatchEvent(ev('click')));
+    assert.match(container.querySelector('.stage-toast')?.textContent ?? '', /Re-packed \d+ rooms on Ground/);
+  } finally {
+    unmount();
+  }
+});
+
+test('renaming a floor updates every space that carries the label', async () => {
+  const { container, unmount } = mountBuilding3();
+  try {
+    const rename = [...container.querySelectorAll('.stack-height-rename')].find((i) => i.defaultValue === 'Ground');
+    assert.ok(rename, 'floor name is editable in the stacking rail');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(rename, 'Level 00');
+      rename.dispatchEvent(new window.Event('input', { bubbles: true }));
+      rename.dispatchEvent(new window.FocusEvent('focusout', { bubbles: true })); // React onBlur listens to focusout
+    });
+    const puts = fetchCalls.filter((c) => c.options?.method === 'PUT' && String(c.options.body).includes('"Level 00"'));
+    assert.equal(puts.length, 2, 'both Ground spaces were renamed');
+    assert.match(container.querySelector('.stage-toast')?.textContent ?? '', /Renamed Ground → Level 00/);
+  } finally {
+    unmount();
+  }
+});
+
+test('palette command stacks linked rooms over their cross-floor partners', async () => {
+  const { container, unmount } = mountBuilding3();
+  try {
+    await act(async () => key('k', { ctrlKey: true }));
+    const input = container.querySelector('.palette-input');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(input, 'stack linked');
+      input.dispatchEvent(new window.Event('input', { bubbles: true }));
+    });
+    const row = [...container.querySelectorAll('.palette-row')].find((r) => r.textContent.includes('Stack linked rooms'));
+    assert.ok(row, 'command offered while editing a floor');
+    await act(async () => row.dispatchEvent(ev('click')));
+    // Lobby (Ground) is linked to Office (Level 1, at 320,300) — it stacks there.
+    const p = posOf(container.querySelector('g.bubble[data-space-id="2"]'));
+    assert.deepEqual([Math.round(p.x), Math.round(p.y)], [320, 300], 'room moved onto its partner');
+  } finally {
+    unmount();
+  }
+});

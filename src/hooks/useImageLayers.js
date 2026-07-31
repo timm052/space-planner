@@ -188,6 +188,10 @@ export function useImageLayers({
         visible: 1,
       });
       seedImageData(created.id, satUrl); // avoid re-downloading what we just sent
+      // North is ANCHORED to the satellite image: web-mercator tiles from the
+      // imagery provider are north-up, so retrieving one imports project north
+      // from it (0° = up) — unless the user has locked north.
+      if (!project.north_locked) await api.updateProject(project.id, { north_deg: 0 });
       setPanel('layers');
       onChanged();
     } catch (err) {
@@ -261,7 +265,15 @@ export function useImageLayers({
       rotateRef.current = null;
       const im = imgById.get(rr.id);
       if (im) {
-        try { await api.updateImage(rr.id, { rot: im.rot }); onChanged(); } catch (e) { setError(e.message); }
+        try {
+          await api.updateImage(rr.id, { rot: im.rot });
+          // North stays with the satellite image: manually turning the sat
+          // layer carries project north along with it (unless locked).
+          if (im.kind === 'satellite' && !project.north_locked) {
+            await api.updateProject(project.id, { north_deg: im.rot || 0 });
+          }
+          onChanged();
+        } catch (e) { setError(e.message); }
       }
       return true;
     }

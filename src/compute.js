@@ -42,6 +42,21 @@ export function isWithinDescendant(space, byId) {
   return false;
 }
 
+// Letter label for one instance of a count>1 space: 0→A, 1→B … 25→Z, then AA,
+// AB, … So "Meeting Rooms" with count 3 reads as A / B / C. Distinct copies of
+// a room are lettered so relationships can name the specific one.
+export function instanceLabel(i) {
+  const n = Math.max(0, Math.trunc(i || 0));
+  if (n < 26) return String.fromCharCode(65 + n);
+  return String.fromCharCode(64 + Math.floor(n / 26)) + String.fromCharCode(65 + (n % 26));
+}
+
+// Display name for a space instance — appends the instance letter only when the
+// space has more than one room (count>1). count=1 spaces read as just the name.
+export function instanceName(space, inst) {
+  return Math.max(1, space?.count || 1) > 1 ? `${space.name} ${instanceLabel(inst)}` : space.name;
+}
+
 // A "leaf" carries area and draws a bubble: a space that isn't a pure container
 // and isn't swallowed by a 'within' ancestor.
 export function isLeaf(space, childIds = null, byId = null) {
@@ -61,14 +76,16 @@ export function childrenOf(spaces, parentId) {
 }
 
 // Depth-first traversal returning { space, depth } from roots down.
-export function orderedTree(spaces) {
+// `cmp` (optional) reorders siblings — a display sort that leaves the
+// persisted sort_order untouched.
+export function orderedTree(spaces, cmp = null) {
   const byParent = new Map();
   for (const s of spaces) {
     const key = s.parent_id ?? null;
     if (!byParent.has(key)) byParent.set(key, []);
     byParent.get(key).push(s);
   }
-  for (const list of byParent.values()) list.sort((a, b) => a.sort_order - b.sort_order || a.id - b.id);
+  for (const list of byParent.values()) list.sort(cmp || ((a, b) => a.sort_order - b.sort_order || a.id - b.id));
   const out = [];
   const visit = (parentKey, depth) => {
     for (const s of byParent.get(parentKey) || []) {
@@ -112,6 +129,78 @@ export function rootContainer(space, byId) {
   return root;
 }
 
+// ---------- Brief matching ----------
+// The Brief (brief_spaces) and the Design (spaces) are independent trees;
+// rooms correspond by PATH — name plus ancestor names, case-insensitive —
+// the same rule the server uses for overwrite/pull reconciliation.
+
+// Siblings that share a name would collide, so duplicates take ' #2', ' #3', …
+// in (sort_order, id) order — the n-th duplicate in one tree matches the n-th
+// in the other. The server's pathKeys (server/brief.js) must stay identical.
+export function pathKeyMap(rows) {
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  // Siblings grouped per parent; a parent missing from `rows` counts as root.
+  const kids = new Map();
+  for (const r of rows) {
+    const pid = r.parent_id != null && byId.has(r.parent_id) ? r.parent_id : null;
+    if (!kids.has(pid)) kids.set(pid, []);
+    kids.get(pid).push(r);
+  }
+  const bySort = (a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || (a.id ?? 0) - (b.id ?? 0);
+  const keys = new Map();
+  // Top-down, so each key extends its parent's already-disambiguated key.
+  const stack = [[null, '']];
+  while (stack.length) {
+    const [pid, parentKey] = stack.pop();
+    const group = kids.get(pid);
+    if (!group) continue;
+    const used = new Set();
+    for (const r of group.sort(bySort)) {
+      const base = (r.name || '').trim().toLowerCase();
+      let name = base;
+      for (let n = 2; used.has(name); n++) name = `${base} #${n}`;
+      used.add(name);
+      const key = parentKey ? `${parentKey} / ${name}` : name;
+      keys.set(r.id, key);
+      stack.push([r.id, key]);
+    }
+  }
+  // Rows inside a parent cycle are unreachable from any root (the API rejects
+  // cycles, but stay total on bad data): key them by their raw name walk.
+  for (const r of rows) {
+    if (keys.has(r.id)) continue;
+    const parts = [];
+    const seen = new Set();
+    for (let cur = r; cur && !seen.has(cur.id); cur = cur.parent_id != null ? byId.get(cur.parent_id) : null) {
+      seen.add(cur.id);
+      parts.push((cur.name || '').trim().toLowerCase());
+    }
+    keys.set(r.id, parts.reverse().join(' / '));
+  }
+  return keys;
+}
+
+// Map each Design leaf id → the matching Brief room's total target area.
+// Null when the Brief is empty (callers fall back to design targets).
+export function briefTargetsFor(spaces, briefSpaces) {
+  if (!briefSpaces || briefSpaces.length === 0) return null;
+  const designKeys = pathKeyMap(spaces);
+  const briefKeys = pathKeyMap(briefSpaces);
+  const briefByKey = new Map(leafSpaces(briefSpaces).map((b) => [briefKeys.get(b.id), b]));
+  const m = new Map();
+  for (const s of leafSpaces(spaces)) {
+    const b = briefByKey.get(designKeys.get(s.id));
+    if (b) m.set(s.id, targetTotal(b));
+  }
+  return m;
+}
+
+// The target a Design space is measured against: its Brief match when one
+// exists, else its own design target.
+export function effectiveTarget(space, targets) {
+  return targets && targets.has(space.id) ? targets.get(space.id) : targetTotal(space);
+}
+
 // ---------- Compliance ----------
 
 export function briefNet(spaces) {
@@ -122,9 +211,11 @@ export function snapshotNet(snapshot, spaces) {
   return leafSpaces(spaces).reduce((sum, s) => sum + (snapshot.areas[s.id] ?? 0), 0);
 }
 
-// Status of one space in one snapshot relative to brief & tolerance.
-export function spaceStatus(space, snapshot, tolerance) {
-  const target = targetTotal(space);
+// Status of one space in one snapshot relative to its target & tolerance.
+// `targets` (optional Map from briefTargetsFor) overrides the design target
+// with the Brief's, so drift is measured against the agreed programme.
+export function spaceStatus(space, snapshot, tolerance, targets = null) {
+  const target = effectiveTarget(space, targets);
   const actual = snapshot.areas[space.id];
   if (actual == null) return { status: 'missing', target, actual: null, delta: null, pct: null };
   const delta = actual - target;
@@ -136,7 +227,8 @@ export function spaceStatus(space, snapshot, tolerance) {
 }
 
 // Roll up leaves by a grouping key ('department' or 'building').
-export function rollup(spaces, snapshot, tolerance, by = 'department') {
+// `targets` (optional) measures against Brief targets, as in spaceStatus.
+export function rollup(spaces, snapshot, tolerance, by = 'department', targets = null) {
   const byId = new Map(spaces.map((s) => [s.id, s]));
   const leaves = leafSpaces(spaces);
   const groups = new Map();
@@ -147,7 +239,7 @@ export function rollup(spaces, snapshot, tolerance, by = 'department') {
       key = root ? root.name : 'Unassigned';
     }
     const g = groups.get(key) || { key, target: 0, actual: 0, hasActual: false };
-    g.target += targetTotal(s);
+    g.target += effectiveTarget(s, targets);
     const a = snapshot ? snapshot.areas[s.id] : null;
     if (a != null) {
       g.actual += a;
@@ -207,13 +299,17 @@ export function fmtPct(value, { signed = true } = {}) {
   return `${sign}${pct.toFixed(1)}%`;
 }
 
-export function buildCsv(project, spaces, snapshots) {
+export function buildCsv(project, spaces, snapshots, briefSpaces = []) {
   const esc = (v) => {
     const s = String(v ?? '');
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const byId = new Map(spaces.map((s) => [s.id, s]));
   const leaves = leafSpaces(spaces);
+  // Brief columns appear once a Brief exists: the agreed target per room
+  // (matched by path) and the design's variance against it.
+  const hasBrief = briefSpaces.length > 0;
+  const targets = briefTargetsFor(spaces, briefSpaces);
   const header = [
     'Building',
     'Department',
@@ -221,10 +317,15 @@ export function buildCsv(project, spaces, snapshots) {
     'Count',
     'Unit Target',
     'Total Target',
+    ...(hasBrief ? ['Brief Target', 'vs Brief %'] : []),
     ...snapshots.map((sn) => `${sn.label} (${sn.taken_at})`),
   ];
   const rows = leaves.map((s) => {
     const root = rootContainer(s, byId);
+    const bt = targets && targets.has(s.id) ? targets.get(s.id) : null;
+    const briefCols = hasBrief
+      ? [bt ?? '', bt ? Math.round(((targetTotal(s) - bt) / bt) * 1000) / 10 : '']
+      : [];
     return [
       root ? root.name : '',
       s.department,
@@ -232,9 +333,19 @@ export function buildCsv(project, spaces, snapshots) {
       s.count,
       s.target_area,
       targetTotal(s),
+      ...briefCols,
       ...snapshots.map((sn) => sn.areas[s.id] ?? ''),
     ];
   });
+  // Brief rooms with no matching design room yet — still part of the programme.
+  if (hasBrief) {
+    const designKeySet = new Set(pathKeyMap(spaces).values());
+    const briefKeys = pathKeyMap(briefSpaces);
+    for (const b of leafSpaces(briefSpaces)) {
+      if (designKeySet.has(briefKeys.get(b.id))) continue;
+      rows.push(['', b.department, `${b.name} (Brief only)`, b.count, b.target_area, '', targetTotal(b), '', ...snapshots.map(() => '')]);
+    }
+  }
   const totals = [
     '',
     '',
@@ -242,8 +353,9 @@ export function buildCsv(project, spaces, snapshots) {
     '',
     '',
     briefNet(spaces),
+    ...(hasBrief ? [briefNet(briefSpaces), ''] : []),
     ...snapshots.map((sn) => snapshotNet(sn, spaces)),
   ];
-  const gross = ['', '', 'GROSS (GIA)', '', '', '', ...snapshots.map((sn) => sn.gross_area || '')];
+  const gross = ['', '', 'GROSS (GIA)', '', '', '', ...(hasBrief ? ['', ''] : []), ...snapshots.map((sn) => sn.gross_area || '')];
   return [header, ...rows, totals, gross].map((r) => r.map(esc).join(',')).join('\n');
 }

@@ -1,17 +1,20 @@
 import { useState } from 'react';
 import { api } from '../api.js';
-import { briefNet, snapshotNet, leafSpaces, fmtArea, fmtPct } from '../compute.js';
+import { briefNet, briefTargetsFor, effectiveTarget, snapshotNet, leafSpaces, targetTotal, fmtArea, fmtPct } from '../compute.js';
 import { categoryColor, statusColor } from '../viz.js';
 import { Banner, Empty } from './ui.jsx';
 
 const statusOf = (pct, tol) => (pct > tol ? 'over' : pct < -tol ? 'under' : 'on');
 const fmtNum = (v) => (v == null || Number.isNaN(v) ? '—' : Math.round(v).toLocaleString());
 
-// Change schedule (M·02): which spaces grew/shrank between the two most recent milestones.
-function ChangeSchedule({ project, spaces, snapshots }) {
+// Change schedule (M·02): which spaces grew/shrank between two milestones.
+// Defaults to the two most recent; either end can be re-picked.
+function ChangeSchedule({ project, spaces, snapshots, selectedSpaceId, onGoToDiagram }) {
+  const [fromId, setFromId] = useState(null); // null = second-latest
+  const [toId, setToId] = useState(null); // null = latest
   if (snapshots.length < 2) return null;
-  const a = snapshots[snapshots.length - 2];
-  const b = snapshots[snapshots.length - 1];
+  const a = snapshots.find((s) => s.id === fromId) ?? snapshots[snapshots.length - 2];
+  const b = snapshots.find((s) => s.id === toId) ?? snapshots[snapshots.length - 1];
   const leaves = leafSpaces(spaces);
   const suffix = project.units === 'ft2' ? 'ft²' : 'm²';
 
@@ -32,7 +35,16 @@ function ChangeSchedule({ project, spaces, snapshots }) {
     <>
       <div className="sec-head">
         <span className="sec-tag t-accent2">M·02</span>
-        <span className="sec-title">Change · {a.label} → {b.label}</span>
+        <span className="sec-title">Change</span>
+        <span className="ms-compare" role="group" aria-label="Milestones to compare">
+          <select value={a.id} onChange={(e) => setFromId(Number(e.target.value))} aria-label="Compare from">
+            {snapshots.map((sn) => <option key={sn.id} value={sn.id}>{sn.label}</option>)}
+          </select>
+          <span className="muted">→</span>
+          <select value={b.id} onChange={(e) => setToId(Number(e.target.value))} aria-label="Compare to">
+            {snapshots.map((sn) => <option key={sn.id} value={sn.id}>{sn.label}</option>)}
+          </select>
+        </span>
         <span className="sec-meta right">
           Net change{' '}
           <span className="mono" style={{ fontWeight: 700, color: netColor }}>
@@ -48,7 +60,15 @@ function ChangeSchedule({ project, spaces, snapshots }) {
           rows.map(({ s, va, vb, delta }) => {
             const grew = delta > 0;
             return (
-              <div className="dl-row" key={s.id}>
+              <div
+                className={`dl-row ${onGoToDiagram ? 'clickable' : ''} ${selectedSpaceId === s.id ? 'sel' : ''}`}
+                key={s.id}
+                role={onGoToDiagram ? 'button' : undefined}
+                tabIndex={onGoToDiagram ? 0 : undefined}
+                title={onGoToDiagram ? `Show ${s.name} on the diagram` : undefined}
+                onClick={onGoToDiagram ? () => onGoToDiagram(s.id) : undefined}
+                onKeyDown={onGoToDiagram ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onGoToDiagram(s.id); } } : undefined}
+              >
                 <span className="swatch" style={{ background: categoryColor(s.department) }} />
                 <span className="dl-name" style={{ flex: 'none', minWidth: 160 }}>{s.name}</span>
                 <span className="dl-dept">{s.department}</span>
@@ -66,7 +86,7 @@ function ChangeSchedule({ project, spaces, snapshots }) {
   );
 }
 
-export default function SnapshotsTab({ project, spaces, snapshots, onChanged }) {
+export default function SnapshotsTab({ project, spaces, briefSpaces = [], snapshots, onChanged, selectedSpaceId = null, onGoToDiagram }) {
   const [editing, setEditing] = useState(null); // null | 'new' | snapshot id
   const [error, setError] = useState(null);
 
@@ -77,8 +97,13 @@ export default function SnapshotsTab({ project, spaces, snapshots, onChanged }) 
   }
 
   if (spaces.length === 0) {
-    return <Empty>Define the brief first — milestones record designed areas against it.</Empty>;
+    return <Empty>No design yet — milestones record the design’s measured areas against the Brief. Start in the Brief tab.</Empty>;
   }
+
+  // Measure against the Brief when one exists (rooms matched by path);
+  // otherwise the design's own targets stand in.
+  const hasBrief = briefSpaces.length > 0;
+  const targets = briefTargetsFor(spaces, briefSpaces);
 
   if (editing != null) {
     return (
@@ -87,6 +112,8 @@ export default function SnapshotsTab({ project, spaces, snapshots, onChanged }) 
         <SnapshotEditor
           project={project}
           spaces={spaces}
+          targets={targets}
+          hasBrief={hasBrief}
           snapshot={editing === 'new' ? null : snapshots.find((s) => s.id === editing)}
           onDone={() => {
             setEditing(null);
@@ -99,7 +126,7 @@ export default function SnapshotsTab({ project, spaces, snapshots, onChanged }) 
     );
   }
 
-  const target = briefNet(spaces);
+  const target = hasBrief ? briefNet(briefSpaces) : briefNet(spaces);
   const latestId = snapshots.length ? snapshots[snapshots.length - 1].id : null;
 
   return (
@@ -158,24 +185,34 @@ export default function SnapshotsTab({ project, spaces, snapshots, onChanged }) 
         </div>
       )}
 
-      <ChangeSchedule project={project} spaces={spaces} snapshots={snapshots} />
+      <ChangeSchedule project={project} spaces={spaces} snapshots={snapshots} selectedSpaceId={selectedSpaceId} onGoToDiagram={onGoToDiagram} />
     </div>
   );
 }
 
-function SnapshotEditor({ project, spaces, snapshot, onDone, onCancel, onError }) {
+function SnapshotEditor({ project, spaces, targets = null, hasBrief = false, snapshot, onDone, onCancel, onError }) {
   const [label, setLabel] = useState(snapshot?.label ?? '');
   const [takenAt, setTakenAt] = useState(snapshot?.taken_at ?? new Date().toISOString().slice(0, 10));
   const [gross, setGross] = useState(snapshot?.gross_area || '');
+  // Only leaves carry measured areas — containers roll up.
+  const leaves = leafSpaces(spaces);
   const [areas, setAreas] = useState(() => {
     const init = {};
-    for (const s of spaces) init[s.id] = snapshot?.areas?.[s.id] ?? '';
+    for (const s of leaves) init[s.id] = snapshot?.areas?.[s.id] ?? '';
     return init;
   });
   const [busy, setBusy] = useState(false);
 
   const unitLabel = project.units === 'ft2' ? 'ft²' : 'm²';
-  const netSoFar = spaces.reduce((sum, s) => sum + (Number(areas[s.id]) || 0), 0);
+  const netSoFar = leaves.reduce((sum, s) => sum + (Number(areas[s.id]) || 0), 0);
+
+  // One-click capture: the Design tab's current areas ARE the designed areas
+  // at this milestone — no retyping.
+  function prefillFromDesign() {
+    const next = {};
+    for (const s of leaves) next[s.id] = targetTotal(s) || '';
+    setAreas(next);
+  }
 
   async function save(e) {
     e.preventDefault();
@@ -220,19 +257,38 @@ function SnapshotEditor({ project, spaces, snapshot, onDone, onCancel, onError }
           onChange={(e) => setGross(e.target.value)}
         />
       </div>
+      <p className="hint" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <button className="btn small" type="button" onClick={prefillFromDesign} title="Fill every space with its current area from the Design tab">
+          ⤓ Use current design areas
+        </button>
+        {project.circulation != null && (
+          <button
+            className="btn small ghost"
+            type="button"
+            onClick={() => setGross(Math.round(netSoFar * (1 + project.circulation)))}
+            disabled={netSoFar <= 0}
+            title={`Estimate gross from the entered net × ${(1 + project.circulation).toFixed(2)} (the project's circulation allowance)`}
+          >
+            ≈ Estimate gross
+          </button>
+        )}
+        <span>…then adjust any space measured differently.</span>
+      </p>
 
       <table className="table">
         <thead>
           <tr>
             <th>Space</th>
-            <th className="num">Brief target</th>
+            <th className="num" title={hasBrief ? 'The agreed Brief target (matched by room path)' : 'The design target (no Brief yet)'}>
+              {hasBrief ? 'Brief target' : 'Design target'}
+            </th>
             <th className="num">Designed area ({unitLabel})</th>
             <th className="num">Δ</th>
           </tr>
         </thead>
         <tbody>
-          {spaces.map((s) => {
-            const target = (s.count || 1) * s.target_area;
+          {leaves.map((s) => {
+            const target = effectiveTarget(s, targets);
             const v = Number(areas[s.id]);
             const pct = areas[s.id] !== '' && target > 0 ? (v - target) / target : null;
             const cls =

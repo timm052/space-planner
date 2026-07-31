@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { closestInstancePair, CONCEPT_REST_GAP_U } from '../adjacency.js';
+import { CONCEPT_REST_GAP_U } from '../adjacency.js';
 
 /**
  * Runs the force-directed bubble simulation in a requestAnimationFrame loop.
@@ -92,9 +92,6 @@ export function useSimulation({
       return !!d && (d.key === key || (d.groupSet != null && d.groupSet.has(key)));
     };
     const fixedInst = (o) => held(o.key) || !!instPinRef.current(o.s, o.i);
-
-    // Closest instance pair between two spaces (for adjacency springs).
-    const closestPair = (sa, sb) => closestInstancePair(nodesRef.current, sa, sb);
 
     // Adjacency spring rest GAP (edge to edge, diagram units). The sim only
     // runs in the scale-free Concept environment, so these are the shared
@@ -206,19 +203,24 @@ export function useSimulation({
         const sa = byId.get(l.space_a);
         const sb = byId.get(l.space_b);
         if (!sa || !sb) continue;
-        const pair = closestPair(sa, sb);
-        if (!pair) continue;
+        // A link targets SPECIFIC instances (inst_a/inst_b) — pull exactly those
+        // rooms together, so a count>1 space's copies settle where their own
+        // relationships want them (not just the nearest pair).
+        const ai = l.inst_a ?? 0, bi = l.inst_b ?? 0;
+        const a = nodesRef.current.get(`${sa.id}:${ai}`);
+        const b = nodesRef.current.get(`${sb.id}:${bi}`);
+        if (!a || !b) continue;
         const rest = radiusOfRef.current(sa) + radiusOfRef.current(sb) + restGapUnits(l.strength);
-        const unmetBoost = pair.d > rest ? 1.5 : 1;
-        const k = (l.strength === 'required' ? 0.05 : 0.016) * nf * unmetBoost;
-        const dx = pair.b.x - pair.a.x;
-        const dy = pair.b.y - pair.a.y;
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
         const d = Math.hypot(dx, dy) || 0.01;
+        const unmetBoost = d > rest ? 1.5 : 1;
+        const k = (l.strength === 'required' ? 0.05 : 0.016) * nf * unmetBoost;
         const f = ((d - rest) / d) * k * alpha;
-        if (!held(`${sa.id}:${pair.ai}`) && !instPinRef.current(sa, pair.ai))
-          ((pair.a.vx += dx * f), (pair.a.vy += dy * f));
-        if (!held(`${sb.id}:${pair.bi}`) && !instPinRef.current(sb, pair.bi))
-          ((pair.b.vx -= dx * f), (pair.b.vy -= dy * f));
+        if (!held(`${sa.id}:${ai}`) && !instPinRef.current(sa, ai))
+          ((a.vx += dx * f), (a.vy += dy * f));
+        if (!held(`${sb.id}:${bi}`) && !instPinRef.current(sb, bi))
+          ((b.vx -= dx * f), (b.vy -= dy * f));
       }
 
       // 4. Collision separation

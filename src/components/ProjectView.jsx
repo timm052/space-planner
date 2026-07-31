@@ -3,19 +3,27 @@ import { api } from '../api.js';
 import { buildCsv } from '../compute.js';
 import Dashboard from './Dashboard.jsx';
 import BubbleTab from './BubbleTab.jsx';
-import BriefTab from './BriefTab.jsx';
+import DesignTab from './DesignTab.jsx';
+import ProgramTab from './ProgramTab.jsx';
 import SnapshotsTab from './SnapshotsTab.jsx';
+import HelpPanel from './HelpPanel.jsx';
 import { Banner, Empty } from './ui.jsx';
 
-const TABS = ['Dashboard', 'Bubble Diagram', 'Brief', 'Milestones'];
+// "Brief" = the independent agreed programme (brief_spaces). "Design" = the
+// live areas that drive the diagram (spaces). Order follows the workflow:
+// overview → agree the brief → develop the design → arrange it → record it.
+const TABS = ['Dashboard', 'Brief', 'Design', 'Bubble Diagram', 'Milestones'];
 
 export default function ProjectView({ projectId, onBack }) {
   const [data, setData] = useState(null);
-  const [tab, setTab] = useState('Bubble Diagram');
+  // Brief-first: a fresh project (no design yet) opens on the Brief; established
+  // projects keep the Diagram default. `tabState` null = use that heuristic.
+  const [tabState, setTab] = useState(null);
   const [error, setError] = useState(null);
   // Shared selection: a space selected on the Diagram highlights in the Brief
   // (and vice-versa). null = nothing selected.
   const [selectedSpaceId, setSelectedSpaceId] = useState(null);
+  const [showHelp, setShowHelp] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -33,10 +41,11 @@ export default function ProjectView({ projectId, onBack }) {
   if (error) return <div className="scroll"><div className="page"><Banner>{error}</Banner></div></div>;
   if (!data) return <div className="scroll"><div className="page"><Empty>Loading project…</Empty></div></div>;
 
-  const { project, spaces, snapshots, adjacencies = [], images = [] } = data;
+  const { project, spaces, brief_spaces = [], snapshots, adjacencies = [], brief_adjacencies = [], images = [] } = data;
+  const tab = tabState ?? (spaces.length === 0 ? 'Brief' : 'Bubble Diagram');
 
   function exportCsv() {
-    const csv = buildCsv(project, spaces, snapshots);
+    const csv = buildCsv(project, spaces, snapshots, brief_spaces);
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -46,6 +55,19 @@ export default function ProjectView({ projectId, onBack }) {
   }
 
   const isDiagram = tab === 'Bubble Diagram';
+
+  // Select a space and reveal it on the Diagram — the data screens' "jump to
+  // the diagram" affordance, matching the diagram's own click-to-pan rows.
+  function goToDiagram(spaceId) {
+    setSelectedSpaceId(spaceId);
+    setTab('Bubble Diagram');
+  }
+
+  // Copy one diagram room's programme into the Brief (the reverse of "overwrite").
+  async function pullToBrief(spaceId) {
+    try { await api.pullToBrief(project.id, spaceId); await refresh(); }
+    catch (e) { setError(e.message); }
+  }
 
   return (
     <div className="project-view">
@@ -67,7 +89,8 @@ export default function ProjectView({ projectId, onBack }) {
               onClick={() => setTab(t)}
             >
               {t === 'Bubble Diagram' ? 'Diagram' : t}
-              {t === 'Brief' && <span className="tab-count">{spaces.length}</span>}
+              {t === 'Brief' && <span className="tab-count">{brief_spaces.length}</span>}
+              {t === 'Design' && <span className="tab-count">{spaces.length}</span>}
               {t === 'Milestones' && <span className="tab-count">{snapshots.length}</span>}
             </button>
           ))}
@@ -76,12 +99,29 @@ export default function ProjectView({ projectId, onBack }) {
           <button className="btn small" onClick={exportCsv} title="Export the area schedule as CSV">
             ⤓ CSV
           </button>
+          <button className="btn small ghost" onClick={() => setShowHelp(true)} title="Workflow guide & help for this page" aria-label="Help">
+            ?
+          </button>
         </div>
       </div>
 
+      {showHelp && (
+        <HelpPanel
+          page={isDiagram ? 'diagram' : tab.toLowerCase()}
+          onClose={() => setShowHelp(false)}
+        />
+      )}
+
       <div className={`project-content ${isDiagram ? 'full' : ''}`}>
         {tab === 'Dashboard' && (
-          <Dashboard project={project} spaces={spaces} snapshots={snapshots} />
+          <Dashboard
+            project={project}
+            spaces={spaces}
+            briefSpaces={brief_spaces}
+            snapshots={snapshots}
+            selectedSpaceId={selectedSpaceId}
+            onGoToDiagram={goToDiagram}
+          />
         )}
         {isDiagram && (
           <BubbleTab
@@ -93,19 +133,42 @@ export default function ProjectView({ projectId, onBack }) {
             onChanged={refresh}
             selectedSpaceId={selectedSpaceId}
             onSelectSpace={setSelectedSpaceId}
+            onPullToBrief={pullToBrief}
           />
         )}
         {tab === 'Brief' && (
-          <BriefTab
+          <ProgramTab
+            project={project}
+            briefSpaces={brief_spaces}
+            designCount={spaces.length}
+            designSpaces={spaces}
+            designAdjacencies={adjacencies}
+            briefAdjacencies={brief_adjacencies}
+            onChanged={refresh}
+          />
+        )}
+        {tab === 'Design' && (
+          <DesignTab
             project={project}
             spaces={spaces}
+            briefSpaces={brief_spaces}
+            snapshots={snapshots}
             onChanged={refresh}
             selectedSpaceId={selectedSpaceId}
             onSelectSpace={setSelectedSpaceId}
+            onPullToBrief={pullToBrief}
           />
         )}
         {tab === 'Milestones' && (
-          <SnapshotsTab project={project} spaces={spaces} snapshots={snapshots} onChanged={refresh} />
+          <SnapshotsTab
+            project={project}
+            spaces={spaces}
+            briefSpaces={brief_spaces}
+            snapshots={snapshots}
+            onChanged={refresh}
+            selectedSpaceId={selectedSpaceId}
+            onGoToDiagram={goToDiagram}
+          />
         )}
       </div>
     </div>

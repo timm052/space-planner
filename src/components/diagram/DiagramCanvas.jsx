@@ -1,5 +1,5 @@
 import { lazy, memo, Suspense } from 'react';
-import { fmtArea, distUnit, rootContainer } from '../../compute.js';
+import { fmtArea, distUnit, rootContainer, instanceLabel } from '../../compute.js';
 import { edgeGap, linkSatisfied } from '../../adjacency.js';
 import { hullOfDiscs, smoothHullPath, filterCss, polygonPath, polyBounds, polygonArea } from '../../geometry.js';
 import { darkHex, labelInk } from '../../viz.js';
@@ -108,6 +108,8 @@ export default function DiagramCanvas({
   floorGap,
   stackImages,
   cam3d,
+  onCam3d,
+  onPick3DRoom,
   bubbleStyle,
   bubbleOpacity,
   panActive,
@@ -147,6 +149,7 @@ export default function DiagramCanvas({
   colorOf,
   rankOf,
   closestPair,
+  linkEnds,
   shapeOf,
   polyVertsOf,
   polyHandlesOf,
@@ -217,7 +220,7 @@ export default function DiagramCanvas({
           for (const l of adjacencies) {
             const sa = byId.get(l.space_a), sb = byId.get(l.space_b);
             if (!sa || !sb || (sa.level || '') === (sb.level || '')) continue; // same floor
-            const pair = closestPair(sa, sb);
+            const pair = linkEnds ? linkEnds(l) : closestPair(sa, sb);
             if (!pair) continue;
             const gap = edgeGap(pair.d, radiusOf(sa), radiusOf(sb)) * (effScale || 1);
             const met = linkSatisfied(l.strength, gap);
@@ -243,9 +246,20 @@ export default function DiagramCanvas({
           {is3D && scene3d && (
             <div className="stage-3d">
               <Suspense fallback={<div className="stage-3d-hint">Loading 3-D view…</div>}>
-                <Stacked3D scene={scene3d} gap={floorGap} showImage={stackImages} camMode={cam3d} />
+                <Stacked3D scene={scene3d} gap={floorGap} showImage={stackImages} camMode={cam3d} onPickRoom={onPick3DRoom} />
               </Suspense>
-              <div className="stage-3d-hint">Drag to orbit · scroll to zoom · right-drag to pan</div>
+              {/* Camera presets — the CAM map already drives these; the ⋯ menu
+                  select stays as the long-form list. */}
+              {onCam3d && (
+                <div className="cam-presets" role="group" aria-label="3-D camera preset">
+                  {[['persp', 'Persp'], ['iso', 'Iso'], ['top', 'Plan'], ['front', 'Front'], ['side', 'Side']].map(([v, l]) => (
+                    <button key={v} className={cam3d === v ? 'active' : ''} onClick={() => onCam3d(v)} title={`${l} view`}>
+                      {l}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <div className="stage-3d-hint">Drag to orbit · scroll to zoom · right-drag to pan · click a room to select it</div>
             </div>
           )}
           <svg
@@ -347,7 +361,11 @@ export default function DiagramCanvas({
                         textAnchor="middle"
                         transform={e.rot ? `rotate(${-e.rot} 0 ${bot})` : undefined}
                       >
-                        {e.fit.floor} · {fmtArea(e.fit.used, units)} / {fmtArea(e.fit.drawn, units)} · {e.fit.over ? 'over' : 'fits'}
+                        <title>
+                          {`What this storey's rooms leave free for circulation & structure — the building's circulation share needs ≥ ${Math.round(e.fit.circ * 100)}%.`}
+                        </title>
+                        {e.fit.floor} · {fmtArea(e.fit.used, units)} / {fmtArea(e.fit.drawn, units)} ·{' '}
+                        {e.fit.spare < 0 ? 'over' : `${Math.round(e.fit.spare * 100)}% spare${e.fit.over ? ' — tight' : ''}`}
                       </text>
                     )}
                   </g>
@@ -498,7 +516,7 @@ export default function DiagramCanvas({
                         vectorEffect: 'non-scaling-stroke',
                       };
                       const tip = (
-                        <title>{`${o.s.name}${Math.max(1, o.s.count || 1) > 1 ? ` ${o.i + 1}` : ''} — ${f.label} · ${fmtArea(ea(o.s), units)}`}</title>
+                        <title>{`${o.s.name}${Math.max(1, o.s.count || 1) > 1 ? ` ${instanceLabel(o.i)}` : ''} — ${f.label} · ${fmtArea(ea(o.s), units)}`}</title>
                       );
                       const kind = shapeOf(o.s);
                       if (kind === 'poly') {
@@ -545,7 +563,7 @@ export default function DiagramCanvas({
               stack.ordered.map((o) => {
                 const p = stack.screenPos.get(o.key);
                 if (!p) return null;
-                const label = `${o.s.name}${Math.max(1, o.s.count || 1) > 1 ? ` ${o.i + 1}` : ''}`;
+                const label = `${o.s.name}${Math.max(1, o.s.count || 1) > 1 ? ` ${instanceLabel(o.i)}` : ''}`;
                 return (
                   <g key={`slbl:${o.key}`} transform={`translate(${p.x}, ${p.y})`} className="bubble stacked">
                     <title>{label} — {fmtArea(ea(o.s), units)}</title>
@@ -571,10 +589,18 @@ export default function DiagramCanvas({
                 const sb = byId.get(l.space_b);
                 if (!sa || !sb) return null;
                 if (!levelVisible(sa) || !levelVisible(sb)) return null;
-                const pair = closestPair(sa, sb);
+                const pair = linkEnds ? linkEnds(l) : closestPair(sa, sb);
                 if (!pair) return null;
-                const isSelLink = selLink && ((selLink.space_a === l.space_a && selLink.space_b === l.space_b) || (selLink.space_a === l.space_b && selLink.space_b === l.space_a));
-                const connected = selected != null && (l.space_a === selected || l.space_b === selected);
+                const lia = l.inst_a ?? 0, lib = l.inst_b ?? 0;
+                // Instance-aware select/connect: only the SPECIFIC link (matching
+                // space AND instance on each end) highlights.
+                const isSelLink = selLink && (
+                  (selLink.space_a === l.space_a && selLink.space_b === l.space_b && (selLink.inst_a ?? 0) === lia && (selLink.inst_b ?? 0) === lib) ||
+                  (selLink.space_a === l.space_b && selLink.space_b === l.space_a && (selLink.inst_a ?? 0) === lib && (selLink.inst_b ?? 0) === lia)
+                );
+                const connected = selected != null && (
+                  (l.space_a === selected && lia === selectedInst) || (l.space_b === selected && lib === selectedInst)
+                );
                 // Focus/spotlight fade: a link follows its rooms out of focus.
                 const linkDim = focusCheck && (!focusCheck(sa) || !focusCheck(sb));
                 return (
@@ -658,7 +684,7 @@ export default function DiagramCanvas({
                   data-space-id={s.id}
                   data-instance={i}
                   role="img"
-                  aria-label={`${s.name}${count > 1 ? ` ${i + 1} of ${count}` : ''} — ${fmtArea(ea(s), units)}`}
+                  aria-label={`${s.name}${count > 1 ? ` ${instanceLabel(i)} of ${count}` : ''} — ${fmtArea(ea(s), units)}`}
                   className={`bubble ${isSel ? 'selected' : ''} ${inMulti ? 'multi' : ''} ${overlapping ? 'overlap' : ''} ${ghost ? 'ghost' : ''} ${dimmed ? 'dim' : ''}`}
                   transform={`translate(${n.x}, ${n.y})${rot ? ` rotate(${rot})` : ''}`}
                   onPointerDown={(e) => onBubbleDown(e, o)}
@@ -668,7 +694,7 @@ export default function DiagramCanvas({
                 >
                   <title>
                     {s.name}
-                    {count > 1 ? ` ${i + 1} of ${count}` : ''} — {fmtArea(ea(s), units)}
+                    {count > 1 ? ` ${instanceLabel(i)} of ${count}` : ''} — {fmtArea(ea(s), units)}
                   </title>
                   {pinned &&
                     (poly ? (
@@ -704,13 +730,14 @@ export default function DiagramCanvas({
                     >▱ {s.name}</text>
                   ) : rot ? (
                     <g transform={`rotate(${-rot})`}>
-                      <BubbleLabel label={`${s.name}${count > 1 ? ` ${i + 1}` : ''}`} r={r} areaStr={fmtArea(ea(s), units)} ink={inkColor} />
+                      {/* The env badge below already states the drawn area — write it once. */}
+                      <BubbleLabel label={`${s.name}${count > 1 ? ` ${instanceLabel(i)}` : ''}`} r={r} areaStr={envInfo ? null : fmtArea(ea(s), units)} ink={inkColor} />
                     </g>
                   ) : (
                     <BubbleLabel
-                      label={`${s.name}${count > 1 ? ` ${i + 1}` : ''}`}
+                      label={`${s.name}${count > 1 ? ` ${instanceLabel(i)}` : ''}`}
                       r={r}
-                      areaStr={fmtArea(ea(s), units)}
+                      areaStr={envInfo ? null : fmtArea(ea(s), units)}
                       ink={inkColor}
                     />
                   )}
@@ -947,12 +974,20 @@ click to select · drag to move the building · drag the dot to re-plan the room
             {/* Rubber-band link preview — from the grabbed room to the cursor
                 while dragging with the Link tool. Read from a ref so it tracks
                 every move. */}
-            {linkDrag?.current?.moved && (
-              <g className="link-preview" pointerEvents="none">
-                <line x1={linkDrag.current.fx} y1={linkDrag.current.fy} x2={linkDrag.current.x} y2={linkDrag.current.y} />
-                <circle cx={linkDrag.current.x} cy={linkDrag.current.y} r="4" />
-              </g>
-            )}
+            {linkDrag?.current?.moved && (() => {
+              // Snap the band to the room under the cursor (overKey/tx/ty set
+              // by the drag handler) so a valid drop reads before release.
+              const ld = linkDrag.current;
+              const onTarget = ld.overKey != null && ld.tx != null;
+              const ex = onTarget ? ld.tx : ld.x;
+              const ey = onTarget ? ld.ty : ld.y;
+              return (
+                <g className={`link-preview${onTarget ? ' on-target' : ''}`} pointerEvents="none">
+                  <line x1={ld.fx} y1={ld.fy} x2={ex} y2={ey} />
+                  <circle cx={ex} cy={ey} r={onTarget ? 7 : 4} />
+                </g>
+              );
+            })()}
 
             {/* Edge-alignment guides — the neighbour edge/centre a dragged
                 footprint is snapping to. Read from a ref so they track the live

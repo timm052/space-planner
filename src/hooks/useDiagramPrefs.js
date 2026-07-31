@@ -33,8 +33,8 @@ export function initialDiagramPrefs(store = prefs) {
     cam3d: 'persp', // WebGL 3-D camera preset (Stacked3D)
     nodeForce: store.getNum('nodeforce', 1), // auto-layout force: rooms
     buildingForce: store.getNum('buildingforce', 0.5), // auto-layout force: buildings
-    snapEdges: store.getBool('snapedges', true), // snap to neighbour edges/corners
-    snapGrid: store.getBool('snapgrid', true), // snap to the metric grid
+    snapEdges: store.getBool('snapedges', false), // snap to neighbour edges/corners
+    snapGrid: store.getBool('snapgrid', false), // snap to the metric grid
     interior: store.getBool('interior', true), // Voronoi room sketch inside envelopes
     interiorLevel: 'all', // storey the interior sketch shows (level label; unset/stale → ground)
     onion: store.getBool('onion', false), // Building: ghost the adjacent storeys under the edited floor

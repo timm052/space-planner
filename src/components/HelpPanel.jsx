@@ -1,6 +1,7 @@
-// Modal overlay explaining the diagram. Content is organised around the three
-// environments (Concept → Master plan → Building); the section for the
-// environment that's open is listed first and tagged "you are here".
+// Page-aware help overlay. A short workflow guide sits on top; every detail
+// section below is collapsible, and only the sections for the page (and, on
+// the diagram, the open environment) start expanded — so the panel reads as a
+// one-screen guide, not a manual.
 const SHORTCUTS = {
   Mouse: [
     ['Click', 'Select a room — or a link'],
@@ -17,7 +18,7 @@ const SHORTCUTS = {
   Keyboard: [
     ['Ctrl+K', 'Find a room or command — select & fly to it'],
     ['V', 'Select tool'],
-    ['L', 'Link tool — click two rooms'],
+    ['L', 'Link tool — drag from room to room'],
     ['A', 'Auto-layout pass (Concept only)'],
     ['P', 'Pin / unpin (Concept only)'],
     ['+ / − / 0', 'Zoom in / out / fit the program in view'],
@@ -30,8 +31,62 @@ const SHORTCUTS = {
   ],
 };
 
+// The workflow in order; `page` keys match HelpPanel's `page` prop.
+const WORKFLOW = [
+  ['Brief', 'brief', 'Agree the programme — rooms, counts, areas & formulas. Import from a spreadsheet, lean on benchmarks, save dated revisions.'],
+  ['Send to Design', 'design', 'Push the Brief onto the Design tab (per-row preview). The Design schedule is the live copy the diagram draws.'],
+  ['Diagram', 'diagram', 'Arrange it: ◯ Concept relationships → ▱ Master plan envelopes on the site → ▤ Building floors & massing.'],
+  ['Milestones', 'milestones', 'Record designed areas at each stage — one click prefills from the current design.'],
+  ['Dashboard', 'dashboard', 'Watch drift against the Brief: KPIs, drift chart, flagged rooms and the change log.'],
+];
+
 const SECTIONS = [
   {
+    page: 'brief',
+    title: 'Brief — the agreed programme',
+    items: [
+      ['An independent record', 'The Brief is its own room tree, decoupled from the diagram — edit it freely; nothing moves until you Send to Design.'],
+      ['Import', '⇪ Import pastes a schedule straight from Excel/Sheets (name · category · count · area), optionally grouped into zones by category.'],
+      ['Formulas', 'Any area cell accepts =formulas: @variables, [Room] references, min/max/round/sum, percentages. Typing @ or [ suggests as you go.'],
+      ['Benchmarks', 'Typical allowances per building type as ready-made formulas — customise the library per project (✎) or app-wide in Settings.'],
+      ['Grossing', 'The circulation allowance estimates gross from net, feeds the master plan’s envelope sizing and the milestone editor.'],
+      ['Required adjacencies', 'Declare which rooms must sit together; the card scores them against the diagram’s actual links.'],
+      ['Revisions', 'Save the Brief as a dated revision (Rev A/B/C) and diff the current programme against it later.'],
+      ['Milestone', '◷ records the Brief’s areas as targets mapped onto the design by name.'],
+    ],
+  },
+  {
+    page: 'design',
+    title: 'Design — the live schedule',
+    items: [
+      ['Drives the diagram', 'These areas size every bubble, footprint and floor plate. Edit here or on the diagram — same numbers.'],
+      ['vs Brief', 'Each row shows its variance against the matching Brief room (by name and parent); the footer totals the net drift.'],
+      ['Options', '◧ Options saves whole schemes (Option A / Option B) and swaps between them — matched rooms keep their milestone history.'],
+      ['Back to the Brief', 'The ⇥ button on a row (or the diagram’s action bar / right-click menu) copies one room’s programme into the Brief.'],
+      ['Sort & subtotals', 'Click a column head to sort the view (drag order is untouched); category subtotals sit in the footer.'],
+    ],
+  },
+  {
+    page: 'milestones',
+    title: 'Milestones — recorded stages',
+    items: [
+      ['Record', 'A milestone captures designed areas at a date — “⤓ Use current design areas” prefills every room from the Design tab.'],
+      ['Targets', 'Rooms measure against the Brief target when one exists (design targets stand in until then).'],
+      ['Gross', '≈ Estimate gross fills the gross area from net × the project’s circulation allowance.'],
+      ['Compare', 'The change schedule diffs any two milestones — pick them in the header.'],
+    ],
+  },
+  {
+    page: 'dashboard',
+    title: 'Dashboard — drift at a glance',
+    items: [
+      ['Brief is the reference', 'The net KPI, drift chart and milestone deltas measure the design against the Brief once one exists.'],
+      ['Flagged spaces', 'Rooms outside tolerance list here — click one to jump to it on the diagram.'],
+      ['Change log', 'Recent changes remembers every programme edit (never geometry) with old → new values.'],
+    ],
+  },
+  {
+    page: 'diagram',
     env: null,
     title: 'The three environments',
     items: [
@@ -49,6 +104,7 @@ const SECTIONS = [
     ],
   },
   {
+    page: 'diagram',
     env: 'concept',
     title: 'Concept — bubbles & relationships',
     items: [
@@ -62,12 +118,13 @@ const SECTIONS = [
     ],
   },
   {
+    page: 'diagram',
     env: 'masterplan',
     title: 'Master plan — envelopes on the site',
     items: [
       ['Buildings, not rooms', 'With buildings in the brief, the master plan places one ENVELOPE per building — the building’s footprint. (A flat brief without buildings places rooms directly.)'],
       ['Place', 'Un-placed buildings wait in the tray as ghosts at their concept position. Place (or drag) writes them onto the site and seeds a hexagonal outline sized to the required footprint.'],
-      ['Envelope area', 'The badge shows the drawn footprint against the REQUIRED one (the building’s biggest storey) and turns red when the envelope is too small. Select an envelope to set its area by number.'],
+      ['Envelope area', 'The badge under each envelope shows the drawn footprint against the REQUIRED one (the building’s biggest storey) and turns red when the envelope is too small. Select an envelope to set its area by number.'],
       ['Outline', '✎ Shape edits the envelope’s outline — drag corners, click ＋ to add one, double-click to remove. The outline stays area-locked; only its shape changes.'],
       ['Corner styles', 'While editing, every corner can be a smooth curve, a tight fillet or a sharp corner: the action-bar buttons set all corners at once, right-clicking a handle cycles just that one (circle = curve, rounded square = fillet, square = sharp). Styles carry through the stacked, 3-D and PDF views.'],
       ['From the concept hull', 'The ⬡ Hull button reshapes a selected envelope to match its building’s hull in the Concept view; “⬡ Envelopes from concept hulls” in the ⋯ menu does every building at once. Only the shape transfers — the area stays locked to the envelope.'],
@@ -75,14 +132,16 @@ const SECTIONS = [
       ['Re-plan a room', 'Drag a cell’s dot to move the room inside its envelope — the cells re-balance live, and the move saves back to the Concept view and pins the room there.'],
       ['Fit chip', 'Under each sketched envelope, “N of M rooms fit” totals the storey at a glance — red while any room is squeezed below its target.'],
       ['One storey at a time', 'With levels assigned, the Interior selector in the toolbar picks which storey’s rooms fill each envelope (ground by default — a floor plate holds one storey, so there is no “all floors” overlay). Rooms without a level count as ground.'],
-      ['Circulation', 'The ⤨ % field on a selected envelope reserves a circulation share of the gross footprint (empty = the project’s net:gross default, 0 = off). It grosses up the required footprint and hatches the interior the room cells leave free.'],
+      ['Circulation', 'The ⤨ % field on a selected envelope reserves a circulation share of the gross footprint (empty = the project’s circulation allowance from the Brief tab, 0 = off). It grosses up the required footprint and hatches the interior the room cells leave free.'],
       ['Building links', 'Room relationships that cross buildings roll up into building-to-building links between the envelopes (hover one for the count), and the ◈ badge grades them in metres — so the site layout answers the Concept’s demands.'],
-      ['Site & scale', '⧉ Layers imports site plans / satellite images; calibrate one to set the real scale (or pick a preset). North, the scale bar and the metric grid follow.'],
+      ['Site & scale', '⧉ Layers imports site plans / satellite images; calibrate one to set the real scale (or pick a preset). The scale bar and metric grid follow.'],
+      ['North', 'North is anchored to the satellite image: fetching one imports project north from the imagery provider (tiles are north-up), and rotating the image layer carries north with it. The bearing always reads 0–360°. Dragging the compass rose rotates the DESIGN about the site centre — the image and north stay put while the scheme turns onto the site (both the master plan and the building floors, one undoable step). The 🔒 padlock on the rose locks north: the rose goes inert and nothing — image rotation or a new satellite fetch — can move the bearing until you unlock it.'],
       ['Authored, always', 'There is no simulation here — nothing ever moves by itself. Overlapping footprints get a red dashed warning outline instead of being pushed apart.'],
-      ['Precision', 'Drags snap to neighbour edges/corners and to the metric grid (two toggles in the dock; Alt = finer). Arrow keys nudge 1 m, Shift-arrows 0.1 m. The ⟲ handle rotates a footprint (Shift = 15°) — or type exact degrees in the action bar’s ⟲ field.'],
+      ['Precision', 'Drags can snap to neighbour edges/corners and to the metric grid (two toggles in the dock, off by default; Alt = finer). Arrow keys nudge 1 m, Shift-arrows 0.1 m. The ⟲ handle rotates a footprint (Shift = 15°) — or type exact degrees in the action bar’s ⟲ field.'],
     ],
   },
   {
+    page: 'diagram',
     env: 'building',
     title: 'Building — floors & massing',
     items: [
@@ -90,16 +149,20 @@ const SECTIONS = [
       ['Rectangles', 'Every room is an area-locked rectangle: drag a corner handle to change its proportions (the target area holds, the opposite corner stays pinned), ⟲ 90° turns it.'],
       ['Floors', 'You land on one floor at a time — the Floors menu (or the Stacking rail) switches storeys; “All floors”, stacked and 3-D views are read-only overviews.'],
       ['Move between floors', 'Right-click a room → “Move to …”, or use the ▤ selector in the action bar (works on a multi-selection too). The plan position carries over.'],
+      ['Re-pack & stack', 'Right-click → “Re-pack this floor” re-runs the adjacency-greedy grid for that building; the Ctrl+K palette also offers “Re-pack (all buildings)” and “Stack linked rooms” — which moves every room with a cross-floor relationship directly over its partner.'],
+      ['Align & distribute', 'With several rooms selected, the action bar gains align (edges / centres, both axes) and distribute (equal gaps) — flush walls without pixel-nudging.'],
       ['Onion skin', 'The layered dock button ghosts the storey above (teal dashes) and below (grey dots) under the floor you are editing — line up stairs, cores and stacked rooms by eye.'],
-      ['Fit per floor', 'Each envelope underlay reads “Ground · used / drawn · fits” for the floor being edited and turns red when the storey (plus circulation) exceeds the footprint.'],
+      ['Fit per floor', 'Each envelope underlay reads “Ground · used / drawn · N% spare” for the floor being edited — the spare share is what is left for circulation & structure, red when it drops below the building’s circulation share.'],
+      ['Rename floors', 'Floor names in the Stacking rail are editable — a rename updates every space on that storey (one undo step) and carries the storey height along.'],
       ['Focus', 'Click a building in the Stacking rail to fade everything else; its master-plan envelope shows as a dashed underlay to arrange rooms inside.'],
       ['Stacking rail', 'Per building: gross area per floor as a colour-banded bar chart (segments follow the Colour control — vertical zoning at a glance), the envelope footprint it must fit (red when a storey exceeds it), click a row to edit that floor.'],
       ['Vertical links', 'A room linked to another floor wears an ↑/↓/↕ tab — green when the pair stacks in plan (stairs/lifts line up), red when it doesn’t. Click the tab to jump to the partner’s floor with it selected.'],
       ['Heights', 'Storey heights live at the top of the Stacking rail (per level, in metres; 3.5 m default). A selected room’s ↥ field sets its own clear height — taller than its storey reads as a double-height / multi-floor volume in 3-D. Heights need the drawing scale to show at true proportion.'],
-      ['3-D', 'Stacked · 3D is a WebGL model — orbit, zoom, switch camera presets, floor spacing via the ⇕ slider, site image on the ground floor. With a scale set, storeys stack at their real heights.'],
+      ['3-D', 'Stacked · 3D is a WebGL model — orbit, zoom, camera preset buttons (Persp / Iso / Plan / Front / Side) top-right, floor spacing via the ⇕ slider, site image on the ground floor. Click a room to select it. With a scale set, storeys stack at their real heights.'],
     ],
   },
   {
+    page: 'diagram',
     env: null,
     title: 'Output',
     items: [
@@ -111,38 +174,41 @@ const SECTIONS = [
   },
 ];
 
-export default function HelpPanel({ env = 'concept', onClose }) {
-  // The current environment's section floats to the top of the grid.
-  const sections = [...SECTIONS].sort((a, b) => (b.env === env ? 1 : 0) - (a.env === env ? 1 : 0));
+export default function HelpPanel({ page = 'diagram', env = null, onClose }) {
+  // A section starts expanded when it belongs to this page — and, on the
+  // diagram, to the open environment (env-null diagram sections expand only
+  // when no environment matches, e.g. help opened from the project bar).
+  const envMatch = SECTIONS.some((s) => s.page === 'diagram' && s.env === env);
+  const isOpen = (sec) =>
+    sec.page === page && (page !== 'diagram' || sec.env === env || (!envMatch && sec.env === null && sec.title !== 'Output'));
+  const sections = [...SECTIONS].sort((a, b) => Number(isOpen(b)) - Number(isOpen(a)));
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal help-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
-          <h2>Diagram — shortcuts &amp; how it works</h2>
+          <h2>How BriefTrack works</h2>
           <button className="btn ghost" onClick={onClose}>
             ✕
           </button>
         </div>
-        <div className="help-shortcuts">
-          {Object.entries(SHORTCUTS).map(([col, rows]) => (
-            <div key={col} className="help-shortcut-col">
-              <h3>{col}</h3>
-              {rows.map(([k, desc]) => (
-                <div key={k} className="help-shortcut-row">
-                  <kbd>{k}</kbd>
-                  <span>{desc}</span>
-                </div>
-              ))}
-            </div>
+
+        <ol className="help-workflow" aria-label="The workflow">
+          {WORKFLOW.map(([label, key, desc], i) => (
+            <li key={key} className={key === page ? 'here' : ''}>
+              <span className="hw-step">{i + 1}</span>
+              <span className="hw-label">{label}{key === page ? ' — you are here' : ''}</span>
+              <span className="hw-desc">{desc}</span>
+            </li>
           ))}
-        </div>
+        </ol>
+
         <div className="help-grid">
           {sections.map((sec) => (
-            <div key={sec.title} className="help-section">
-              <h3>
+            <details key={sec.title} className="help-section" open={isOpen(sec)}>
+              <summary>
                 {sec.title}
-                {sec.env === env && <span className="help-here"> · you are here</span>}
-              </h3>
+                {sec.page === 'diagram' && sec.env != null && sec.env === env && <span className="help-here"> · you are here</span>}
+              </summary>
               <dl>
                 {sec.items.map(([term, desc]) => (
                   <div key={term} className="help-item">
@@ -151,8 +217,26 @@ export default function HelpPanel({ env = 'concept', onClose }) {
                   </div>
                 ))}
               </dl>
-            </div>
+            </details>
           ))}
+          {page === 'diagram' && (
+            <details className="help-section" open>
+              <summary>Mouse &amp; keyboard</summary>
+              <div className="help-shortcuts">
+                {Object.entries(SHORTCUTS).map(([col, rows]) => (
+                  <div key={col} className="help-shortcut-col">
+                    <h3>{col}</h3>
+                    {rows.map(([k, desc]) => (
+                      <div key={k} className="help-shortcut-row">
+                        <kbd>{k}</kbd>
+                        <span>{desc}</span>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
         </div>
         <div className="modal-foot">
           <button className="btn primary" onClick={onClose}>

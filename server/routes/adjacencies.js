@@ -11,26 +11,34 @@ router.post('/projects/:id/adjacencies', (req, res) => {
   const project = requireProject(req, res);
   if (!project) return;
 
-  let { space_a, space_b, strength = 'desired' } = req.body;
+  let { space_a, space_b, inst_a = 0, inst_b = 0, strength = 'desired' } = req.body;
   space_a = Number(space_a);
   space_b = Number(space_b);
+  inst_a = Math.max(0, Math.trunc(Number(inst_a) || 0));
+  inst_b = Math.max(0, Math.trunc(Number(inst_b) || 0));
 
   if (!space_a || !space_b || space_a === space_b) {
     return res.status(400).json({ error: 'Two different spaces are required' });
   }
-  if (db.prepare('SELECT COUNT(*) AS n FROM spaces WHERE project_id = ? AND id IN (?, ?)').get(project.id, space_a, space_b).n !== 2) {
+  // Both spaces must belong to the project; clamp each instance to [0, count-1].
+  const rows = db.prepare('SELECT id, count FROM spaces WHERE project_id = ? AND id IN (?, ?)').all(project.id, space_a, space_b);
+  if (rows.length !== 2) {
     return res.status(400).json({ error: 'Both spaces must belong to this project' });
   }
+  const countOf = (id) => Math.max(1, rows.find((r) => r.id === id)?.count || 1);
+  inst_a = Math.min(inst_a, countOf(space_a) - 1);
+  inst_b = Math.min(inst_b, countOf(space_b) - 1);
   if (!VALID_STRENGTHS.has(strength)) strength = 'desired';
 
-  // Canonical ordering: lower id first, ensures UNIQUE constraint works.
-  const [lo, hi] = space_a < space_b ? [space_a, space_b] : [space_b, space_a];
+  // Canonical ordering: lower space id first (its instance rides along), so the
+  // UNIQUE (space_a, space_b, inst_a, inst_b) key is order-independent.
+  const [la, lai, lb, lbi] = space_a < space_b ? [space_a, inst_a, space_b, inst_b] : [space_b, inst_b, space_a, inst_a];
   db.prepare(
-    `INSERT INTO adjacencies (project_id, space_a, space_b, strength) VALUES (?, ?, ?, ?)
-     ON CONFLICT (space_a, space_b) DO UPDATE SET strength = excluded.strength`
-  ).run(project.id, lo, hi, strength);
+    `INSERT INTO adjacencies (project_id, space_a, space_b, inst_a, inst_b, strength) VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT (space_a, space_b, inst_a, inst_b) DO UPDATE SET strength = excluded.strength`
+  ).run(project.id, la, lb, lai, lbi, strength);
 
-  const row = db.prepare('SELECT * FROM adjacencies WHERE space_a = ? AND space_b = ?').get(lo, hi);
+  const row = db.prepare('SELECT * FROM adjacencies WHERE space_a = ? AND space_b = ? AND inst_a = ? AND inst_b = ?').get(la, lb, lai, lbi);
   res.status(201).json(row);
 });
 

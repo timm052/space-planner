@@ -8,20 +8,23 @@ import { notify } from './selection.js';
 const done = (sel, fx = []) => ({ sel, fx });
 
 /**
- * Link-mode click on a bubble. First click arms `linkFrom`; clicking the same
- * room disarms; a second room requests a link (the component creates it only
- * if the pair doesn't already exist — hence `maybeCreateLink`).
+ * Link-mode click on a bubble. First click arms `linkFrom` (with the SPECIFIC
+ * instance clicked — a count>1 space links the exact room, not always the
+ * first); clicking the same room disarms; a second room requests a link (the
+ * component creates it only if the pair doesn't already exist — hence
+ * `maybeCreateLink`).
  */
-export function linkClick(sel, spaceId) {
+export function linkClick(sel, spaceId, inst = 0) {
   const base = { ...sel, selLink: null };
-  if (sel.linkFrom == null) return done({ ...base, linkFrom: spaceId });
-  if (sel.linkFrom === spaceId) return done({ ...base, linkFrom: null });
-  return done({ ...base, linkFrom: null }, [
-    { type: 'maybeCreateLink', a: sel.linkFrom, b: spaceId, kind: sel.linkKind },
+  if (sel.linkFrom == null) return done({ ...base, linkFrom: spaceId, linkFromInst: inst });
+  if (sel.linkFrom === spaceId) return done({ ...base, linkFrom: null, linkFromInst: 0 });
+  return done({ ...base, linkFrom: null, linkFromInst: 0 }, [
+    { type: 'maybeCreateLink', a: sel.linkFrom, b: spaceId, ia: sel.linkFromInst ?? 0, ib: inst, kind: sel.linkKind },
   ]);
 }
 
-/** Clicking a drawn link selects it (opens the link action bar). */
+/** Clicking a drawn link selects it (opens the link action bar). Carries the
+ *  instance indices so the action bar edits the SPECIFIC link, not the pair. */
 export function selectLink(sel, link) {
   return done(
     {
@@ -29,7 +32,7 @@ export function selectLink(sel, link) {
       selected: null,
       multi: new Set(),
       linkFrom: null,
-      selLink: { space_a: link.space_a, space_b: link.space_b },
+      selLink: { space_a: link.space_a, space_b: link.space_b, inst_a: link.inst_a ?? 0, inst_b: link.inst_b ?? 0 },
     },
     [notify(null)]
   );
@@ -53,5 +56,5 @@ export function setLinkKind(sel, kind) {
  */
 export function setTool(sel, tool) {
   if (tool === 'link') return done({ ...sel, tool: 'link', selected: null, selLink: null });
-  return done({ ...sel, tool: 'select', linkFrom: null });
+  return done({ ...sel, tool: 'select', linkFrom: null, linkFromInst: 0 });
 }

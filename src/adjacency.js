@@ -120,6 +120,15 @@ export function scoreBand(score) {
   return 'bad';
 }
 
+// Canonical key for one instance-level link (space + instance on each end),
+// order-independent — so a per-pair state map can hold several links between
+// the same two spaces (one per instance pair). count=1 spaces use instance 0.
+export function linkKey(a, ia, b, ib) {
+  ia = ia || 0;
+  ib = ib || 0;
+  return a < b || (a === b && ia <= ib) ? `${a}:${ia}:${b}:${ib}` : `${b}:${ib}:${a}:${ia}`;
+}
+
 // Closest pair of instances between two spaces. `positions` is a Map keyed
 // `"${spaceId}:${instanceIndex}"` → { x, y } (the sim's node map, or any
 // projected copy of it — e.g. the stacked view's screen positions).

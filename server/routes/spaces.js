@@ -2,6 +2,10 @@ import { Router } from 'express';
 import { db } from '../db.js';
 import { requireProject } from './projects.js';
 import { oneOf, clampNum } from '../validate.js';
+import { resolveAndPersist } from '../brief.js';
+import { logCreated, logRemoved, logSpaceDiff } from '../changelog.js';
+
+const isFormulaStr = (v) => typeof v === 'string' && v.trim().startsWith('=');
 
 const router = Router();
 
@@ -43,10 +47,12 @@ router.post('/projects/:id/spaces', (req, res) => {
   const kind = oneOf(rawKind, VALID_KINDS, 'space');
   const child_mode = VALID_CHILD_MODES.has(req.body.child_mode) ? req.body.child_mode : 'group';
   const parent_id = req.body.parent_id != null ? Number(req.body.parent_id) : null;
+  // A formula-driven area resolves server-side; only literals must be positive.
+  const area_formula = isFormulaStr(req.body.area_formula) ? req.body.area_formula.trim() : null;
 
   if (!name || !name.trim()) return res.status(400).json({ error: 'Space name is required' });
   const isContainer = CONTAINER_KINDS.has(kind);
-  if (!isContainer && !(Number(target_area) > 0)) {
+  if (!isContainer && !area_formula && !(Number(target_area) > 0)) {
     return res.status(400).json({ error: 'Target area must be positive' });
   }
   if (!parentOk(project.id, parent_id, null)) {
@@ -56,14 +62,17 @@ router.post('/projects/:id/spaces', (req, res) => {
   const max = db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM spaces WHERE project_id = ?').get(project.id).m;
   const r = db
     .prepare(
-      `INSERT INTO spaces (project_id, department, name, count, target_area, notes, sort_order, parent_id, kind, child_mode, level)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO spaces (project_id, department, name, count, target_area, notes, sort_order, parent_id, kind, child_mode, level, area_formula)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       project.id, department, name.trim(), Number(count) || 1,
-      isContainer ? 0 : Number(target_area), notes, max + 1, parent_id, kind, child_mode, level
+      isContainer ? 0 : (Number(target_area) || 0), notes, max + 1, parent_id, kind, child_mode, level, area_formula
     );
-  res.status(201).json(db.prepare('SELECT * FROM spaces WHERE id = ?').get(r.lastInsertRowid));
+  resolveAndPersist(project.id); // derive formula areas + mirror the baseline
+  const created = db.prepare('SELECT * FROM spaces WHERE id = ?').get(r.lastInsertRowid);
+  logCreated(project.id, 'design', created);
+  res.status(201).json(created);
 });
 
 // PUT /api/spaces/:id
@@ -115,19 +124,27 @@ router.put('/spaces/:id', (req, res) => {
     ? (req.body.circ_pct != null ? clampNum(req.body.circ_pct, 0, 0.6, 0) : null)
     : space.circ_pct;
 
+  // area_formula (nullable): a leading-'=' expression, else cleared to a literal.
+  const area_formula = 'area_formula' in req.body
+    ? (isFormulaStr(req.body.area_formula) ? req.body.area_formula.trim() : null)
+    : space.area_formula;
+
   const safeCount = clampNum(count, 1, 100, 1);
   db.prepare(
     `UPDATE spaces SET department = ?, name = ?, count = ?, target_area = ?, notes = ?,
      pin_x = ?, pin_y = ?, pin_json = ?, parent_id = ?, kind = ?, shape = ?, shape_json = ?,
      plan_json = ?, block_json = ?, image = ?, sort_order = ?, child_mode = ?, level = ?,
-     height_m = ?, circ_pct = ? WHERE id = ?`
+     height_m = ?, circ_pct = ?, area_formula = ? WHERE id = ?`
   ).run(
     department, name, safeCount, area, notes,
     pin_x, pin_y, pin_json, parent_id, kind, oneOf(shape, VALID_SHAPES, 'bubble'), shape_json,
     plan_json, block_json, image, sort_order, child_mode, level ?? '',
-    height_m, circ_pct, space.id
+    height_m, circ_pct, area_formula, space.id
   );
-  res.json(db.prepare('SELECT * FROM spaces WHERE id = ?').get(space.id));
+  resolveAndPersist(space.project_id); // re-derive formula areas + mirror baseline
+  const updated = db.prepare('SELECT * FROM spaces WHERE id = ?').get(space.id);
+  logSpaceDiff(space.project_id, 'design', space, updated); // programme fields only
+  res.json(updated);
 });
 
 // DELETE /api/spaces/:id — recursive subtree delete via CTE.
@@ -146,8 +163,13 @@ router.delete('/spaces/:id', (req, res) => {
     )
     .all(id)
     .map((r) => r.id);
+  const root = db.prepare('SELECT * FROM spaces WHERE id = ?').get(id);
   const del = db.prepare('DELETE FROM spaces WHERE id = ?');
   for (const sid of ids) del.run(sid);
+  if (root) {
+    logRemoved(root.project_id, 'design', root);
+    resolveAndPersist(root.project_id); // references/rollups may have changed
+  }
   res.status(204).end();
 });
 
