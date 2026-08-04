@@ -237,6 +237,18 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
   const rectRef = useRef(null);
   const moveRef = useRef(null); // latest pointermove awaiting its frame
   const moveRafRef = useRef(0); // rAF id for the pending move, 0 = none
+  const viewTweenRef = useRef(null); // rAF id of an in-flight view glide
+
+  // Abandon a view glide the moment the user takes the wheel. Without this a
+  // gesture started during the 260 ms glide fights it: both the tween and the
+  // pan handler call setView every frame until the tween runs out. The user's
+  // hand always wins.
+  function stopViewTween() {
+    if (viewTweenRef.current) {
+      cancelAnimationFrame(viewTweenRef.current);
+      viewTweenRef.current = null;
+    }
+  }
   const rotateRef = useRef(null); // { space, idx, key, cx, cy, startRot, startAng } while rotating a footprint
   const resizeRef = useRef(null); // { space, idx, key, edge, cx, cy, rot, target } while area-lock-resizing a box
   const alignRef = useRef([]); // active alignment guide lines ({x}|{y}) during a master-plan drag
@@ -1787,6 +1799,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     const onWheel = (e) => {
       if (!svgRef.current) return;
       e.preventDefault();
+      stopViewTween(); // zooming mid-glide must not fight it
       const rect = readRect();
       const z = zoomRef.current;
       const nz = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z * Math.exp(-e.deltaY * (e.ctrlKey ? 0.006 : 0.0014))));
@@ -1842,6 +1855,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     // A fresh gesture: re-read the rect once here rather than on every move.
     // Bubble presses bubble up to this handler too, so this covers them.
     rectRef.current = null;
+    stopViewTween(); // the user's hand beats an in-flight glide
     if (e.button === 2) {
       if (!dragRef.current) startRightPan(e);
       return;
@@ -2189,10 +2203,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
 
   // Glide the view to a target pan (and optionally zoom) instead of jumping.
   // Honours prefers-reduced-motion by snapping straight to the target.
-  const viewTweenRef = useRef(null);
   useEffect(() => () => cancelAnimationFrame(viewTweenRef.current), []);
   function animateViewTo(target, targetZoom = null) {
-    cancelAnimationFrame(viewTweenRef.current);
+    stopViewTween();
     const zt = targetZoom ?? zoomRef.current;
     if (typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
       setView(target);

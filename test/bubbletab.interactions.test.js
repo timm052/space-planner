@@ -182,6 +182,38 @@ test('marquee over the canvas multi-selects the enclosed rooms', async () => {
   }
 });
 
+test('a gesture abandons an in-flight view glide instead of fighting it', async () => {
+  const { container, svg, unmount } = mount();
+  try {
+    // Recentre starts a 260 ms glide of the view.
+    const recentre = [...container.querySelectorAll('button')].find(
+      (b) => /recentre|recenter/i.test(`${b.title || ''} ${b.textContent || ''}`)
+    );
+    assert.ok(recentre, 'the recentre control exists');
+    await act(async () => recentre.dispatchEvent(ev('click')));
+    await act(async () => flushFrames(2)); // glide underway, not finished
+    const mid = svg.getAttribute('viewBox');
+
+    // Grab the canvas mid-glide and pan. Before the tween was cancelled on
+    // pointerdown, both it and the pan handler drove setView for the rest of
+    // the animation and the view visibly stuttered.
+    await act(async () => {
+      svg.dispatchEvent(ev('pointerdown', { button: 2, buttons: 2, clientX: 400, clientY: 300 }));
+      svg.dispatchEvent(ev('pointermove', { buttons: 2, clientX: 300, clientY: 300 }));
+      flushFrames(1);
+    });
+    const panned = svg.getAttribute('viewBox');
+    assert.notEqual(panned, mid, 'the pan took effect');
+
+    // Let any surviving tween frames run. If the glide were still alive it
+    // would keep stepping toward its own target and move the view again.
+    await act(async () => flushFrames(30));
+    assert.equal(svg.getAttribute('viewBox'), panned, 'the glide did not resume over the pan');
+  } finally {
+    unmount();
+  }
+});
+
 // Characterization: group drag translates the WHOLE selection by one delta and
 // preserves its internal arrangement. Untested before the mode-machine
 // extraction, and exactly the behaviour a refactor could quietly break.

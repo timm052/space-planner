@@ -281,7 +281,35 @@ Only now, with Phase 1 done, do we know what is left to fix.
   every spring added must respect it or we regress a shipped accessibility
   feature.
 
-**Exit:** no hand-rolled tweens left in the viewport; reduced-motion verified.
+### Result — the dependency was not needed
+
+Reading `animateViewTo` before installing anything changed the answer.
+
+The case for springs was **interruptibility**: grab the canvas mid-animation and
+a spring retargets smoothly where a tween fights you. That problem is real here
+— but the cause was not that the animation is a tween. It was that
+`viewTweenRef` was cancelled *only* by a new `animateViewTo` or by unmount.
+**Nothing cancelled it when the user started a gesture.** Grabbing the canvas
+during the 260 ms glide left the tween and the pan handler both calling
+`setView` every frame until the tween ran out.
+
+Fixed with `stopViewTween()` called from `onSvgPointerDown` and the wheel
+handler — the user's hand beats an in-flight glide. A regression test covers it,
+and was checked both ways: it fails with the assertion *"the glide did not
+resume over the pan"* without the fix, and passes with it.
+
+**Verdict: do not add `@react-spring/web`.** What a spring would still buy over
+the existing tween is velocity preservation across an interruption, which for a
+260 ms discrete navigation glide (recentre, jump to a room) is imperceptible.
+The hand-rolled tween already eases correctly, cleans up on unmount, and honours
+`prefers-reduced-motion` by snapping straight to the target. That is not worth a
+dependency in a codebase whose whole character is minimal dependencies.
+
+Revisit only if view animation becomes *continuous and interruptible mid-flight*
+— a momentum/inertia pan, or a camera that a gesture steers while it moves.
+
+**Exit:** ✅ **Done** — the defect springs were meant to solve is fixed and
+tested; the dependency is declined with reasons.
 
 ---
 
@@ -303,6 +331,29 @@ Do not pre-commit to these. Each has a trigger.
   each is finally legible. Either drop the WebGL path and shed the heaviest
   dependency, or keep it because a continuous 2D↔3D camera is wanted — which is
   the one thing SVG genuinely cannot do. **Decide after Phase 3, not before.**
+
+### Status after Phases 0–4
+
+None of the three triggers has fired. Recording the evidence so the decisions
+are not re-litigated from scratch:
+
+- **`@use-gesture/react` — not now.** The trigger was momentum/inertia on pan or
+  a touch requirement. Neither has come up, and the input handling that would
+  have justified it (normalisation, capture, wheel/pinch) is already correct in
+  this codebase — the wheel handler in particular. Revisit if touch support
+  becomes a requirement.
+- **Worker + `comlink` — not now.** The trigger was the baseline showing
+  sim/render contention. It does not: 400 rooms runs a 60-move gesture in ~53 ms
+  of synchronous work, and the profile is flat in `rect/move` across room
+  counts. Revisit when real projects reach room counts where the sim starves the
+  frame — the ROADMAP's "hundreds of rooms" is the right watch line.
+- **three.js — a product call, not a technical one, and deliberately left to
+  the owner.** The data: `Stacked3D` builds to **857 kB (234 kB gzip)**, the
+  heaviest chunk by a wide margin, but it is lazy-loaded, so it costs nothing
+  until a user opens the 3-D view. The duplication with the SVG isometric view
+  is real and both are maintained. The question is whether a free-camera 3-D
+  massing view earns a second rendering backend — that is a decision about what
+  the product is for, so it should not be made as a refactoring side effect.
 
 ---
 
