@@ -17,6 +17,7 @@
 //   node --import tsx scripts/perf-bench.js [rooms=50,150,400] [moves=60]
 
 import '../test/helpers/dom.js';
+import { flushFrames } from '../test/helpers/dom.js';
 import React, { createElement as h } from 'react';
 import { createRoot } from 'react-dom/client';
 
@@ -31,6 +32,9 @@ const BubbleTab = (await import('../src/components/BubbleTab.jsx')).default;
 const act = React.act ?? React.unstable_act;
 
 const DEPTS = ['Public', 'Staff', 'Clinical', 'Support', 'Plant'];
+
+// Pointer events per animation frame — a 250 Hz pointer against a 60 Hz display.
+const FLUSH_EVERY = 4;
 
 function makeSpaces(rooms) {
   const spaces = [
@@ -104,10 +108,15 @@ function run(rooms, moves) {
   const t0 = performance.now();
   act(() => {
     bubble.dispatchEvent(ev('pointerdown', { clientX: start.x, clientY: start.y }));
-    // A sustained drag: `moves` pointermove events, as a real 1000Hz mouse or a
-    // trackpad would deliver across roughly one second of dragging.
+    // A sustained drag: `moves` pointermove events, as a high-report-rate mouse
+    // or a trackpad delivers. jsdom's requestAnimationFrame is a manual queue
+    // (test/helpers/dom.js), so drive a frame every FLUSH_EVERY events —
+    // roughly the ratio of a 250 Hz pointer to a 60 Hz display. Without this the
+    // coalesced build would simply never do the work, and `ms` would compare a
+    // full run against nothing.
     for (let i = 1; i <= moves; i++) {
       svg.dispatchEvent(ev('pointermove', { clientX: start.x + i, clientY: start.y + i * 0.6 }));
+      if (i % FLUSH_EVERY === 0) flushFrames(1);
     }
     svg.dispatchEvent(ev('pointerup', { clientX: start.x + moves, clientY: start.y + moves * 0.6 }));
   });

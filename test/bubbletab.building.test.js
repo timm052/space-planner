@@ -2,7 +2,7 @@
 // (context menu + action-bar selects), floor onion-skin, and the category-
 // segmented stacking bars.
 import './helpers/dom.js'; // MUST be first — sets up window/document for react-dom
-import { fetchCalls } from './helpers/dom.js';
+import { fetchCalls, flushFrames } from './helpers/dom.js';
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import React, { createElement as h } from 'react';
@@ -60,6 +60,7 @@ test('holding the right button pans; a stationary right-click still opens the me
     await act(async () => {
       svg.dispatchEvent(pev('pointerdown', { button: 2, buttons: 2, clientX: 400, clientY: 300 }));
       svg.dispatchEvent(pev('pointermove', { buttons: 2, clientX: 340, clientY: 260 }));
+      flushFrames(1); // pointer moves are coalesced into one frame
     });
     assert.notEqual(svg.getAttribute('viewBox'), vbBefore, 'right-drag panned the view');
     await act(async () => {

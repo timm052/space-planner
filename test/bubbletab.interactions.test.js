@@ -84,6 +84,52 @@ test('dragging a bubble moves it and persists the dropped position', async () =>
   }
 });
 
+// Pointer moves are coalesced into one animation frame (see onMove/flushMove in
+// BubbleTab). These two lock in the contract that buys: the work happens once
+// per frame, and a release never loses the movement that preceded it.
+test('many moves inside one frame collapse to the last position', async () => {
+  const { container, svg, unmount } = mount();
+  try {
+    const bubble = container.querySelector('g.bubble[data-space-id="2"]');
+    const start = posOf(bubble);
+    await act(async () => {
+      bubble.dispatchEvent(ev('pointerdown', { clientX: start.x, clientY: start.y }));
+      // Ten moves, no frame between them — as a 1000 Hz mouse would deliver.
+      for (let i = 1; i <= 10; i++) {
+        svg.dispatchEvent(ev('pointermove', { clientX: start.x + i * 5, clientY: start.y + i * 3 }));
+      }
+      flushFrames(1);
+    });
+    const end = posOf(container.querySelector('g.bubble[data-space-id="2"]'));
+    assert.equal(Math.round(end.x), Math.round(start.x + 50), 'landed on the LAST move, not an intermediate one');
+    assert.equal(Math.round(end.y), Math.round(start.y + 30));
+  } finally {
+    unmount();
+  }
+});
+
+test('a release flushes a move that has not had its frame yet', async () => {
+  const { container, svg, unmount } = mount();
+  try {
+    const bubble = container.querySelector('g.bubble[data-space-id="2"]');
+    const start = posOf(bubble);
+    // No flushFrames anywhere: the move is still pending when the release
+    // lands. Dropping it would commit a stale position to the API.
+    await act(async () => {
+      bubble.dispatchEvent(ev('pointerdown', { clientX: start.x, clientY: start.y }));
+      svg.dispatchEvent(ev('pointermove', { clientX: start.x + 75, clientY: start.y + 25 }));
+      svg.dispatchEvent(ev('pointerup', { clientX: start.x + 75, clientY: start.y + 25 }));
+    });
+    const end = posOf(container.querySelector('g.bubble[data-space-id="2"]'));
+    assert.equal(Math.round(end.x), Math.round(start.x + 75), 'the pending move was applied before the release');
+    assert.equal(Math.round(end.y), Math.round(start.y + 25));
+    const save = fetchCalls.find((c) => c.url === '/api/spaces/2' && c.options?.method === 'PUT');
+    assert.ok(save, 'the flushed position was persisted');
+  } finally {
+    unmount();
+  }
+});
+
 test('a placed bubble pushes neighbours aside — only after the drop', async () => {
   const { container, svg, unmount } = mount();
   try {

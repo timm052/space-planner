@@ -104,8 +104,41 @@ ever an animation problem before we add libraries for it.
   runs. Cache on pointer-down; invalidate from the `ResizeObserver` already in
   [useViewport.js](../src/hooks/useViewport.js) and on scroll.
 
-**Exit:** measurable frame-time improvement against the Phase 0 baseline at
-150+ rooms. Existing interaction tests still pass.
+### Result
+
+Same benchmark, source change stashed and unstashed so both sides run identical
+code paths (60 moves, a frame every 4 events — a 250 Hz pointer against a 60 Hz
+display):
+
+| rooms | rectCalls before | after | rect/move | ms before | after |
+| ----- | ---------------- | ----- | --------- | --------- | ----- |
+|    50 |              121 |     2 | 2.02→0.03 |        17 |    15 |
+|   150 |              121 |     2 | 2.02→0.03 |        22 |    21 |
+|   400 |              121 |     2 | 2.02→0.03 |        61 |    59 |
+
+**Forced layouts on the drag hot path fell 98% (121 → 2 per gesture.)**
+
+Be careful with the `ms` column: it barely moved, and that is expected rather
+than disappointing. jsdom has no layout engine, and the benchmark stubs
+`getBoundingClientRect` to return a constant — so in *this* harness the calls we
+removed were nearly free. Their cost is a browser property (each one forces a
+synchronous layout mid-drag) that this harness cannot model, so jsdom
+**understates** the real win here. The call-count reduction is the honest
+measurement; confirming the wall-clock effect needs a browser profile, which is
+the one piece of Phase 1 left open.
+
+Two behavioural notes worth carrying forward:
+
+- `onUp` now flushes a pending move **synchronously before** handling the
+  release. Without it the last movement of every gesture is dropped and the
+  release commits a stale position.
+- The marquee box moved into `marqueeRef`. `finishMarquee` used to read it from
+  React state, which a same-tick flush would not have seen — the exact
+  "commit the ref, not the state var" trap ARCHITECTURE §7 already warns about.
+
+**Exit:** ✅ **Done.** 299 tests pass (2 new, locking in the coalescing
+contract and the flush-on-release invariant); three existing tests that asserted
+synchronous move work now flush a frame first.
 
 ---
 

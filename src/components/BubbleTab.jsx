@@ -230,7 +230,12 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
   const fileRef = useRef(null);
   const debouncers = useRef({});
   const hoverRef = useRef(null); // { space, idx } currently under the cursor
-  const marqueeRef = useRef(null); // { sx, sy, additive } while drag-selecting
+  const marqueeRef = useRef(null); // { sx, sy, additive, box } while drag-selecting
+  // Pointer hot path: the cached canvas client rect, and the coalescing of
+  // pointermove work into one animation frame. See readRect / onMove below.
+  const rectRef = useRef(null);
+  const moveRef = useRef(null); // latest pointermove awaiting its frame
+  const moveRafRef = useRef(0); // rAF id for the pending move, 0 = none
   const rotateRef = useRef(null); // { space, idx, key, cx, cy, startRot, startAng } while rotating a footprint
   const resizeRef = useRef(null); // { space, idx, key, edge, cx, cy, rot, target } while area-lock-resizing a box
   const alignRef = useRef([]); // active alignment guide lines ({x}|{y}) during a master-plan drag
@@ -1809,8 +1814,23 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
   const originX = W / 2 - vbz.w / 2 + view.x;
   const originY = H / 2 - vbz.h / 2 + view.y;
 
+  // The canvas client rect is read on EVERY coordinate conversion, and a drag
+  // delivers many more pointermove events than there are frames — so reading it
+  // uncached is a forced synchronous layout on the hot path, several times per
+  // move, while the sim runs. Cache it, and drop the cache whenever it could
+  // have changed: a container resize (which moves `vb`), a scroll, or the start
+  // of a fresh gesture.
+  function readRect() {
+    let r = rectRef.current;
+    if (!r) {
+      r = svgRef.current?.getBoundingClientRect() || null;
+      rectRef.current = r;
+    }
+    return r;
+  }
+
   function toSvgCoords(e) {
-    const rect = svgRef.current.getBoundingClientRect();
+    const rect = readRect();
     return {
       x: originX + ((e.clientX - rect.left) * vbz.w) / rect.width,
       y: originY + ((e.clientY - rect.top) * vbz.h) / rect.height,
@@ -1825,7 +1845,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     const onWheel = (e) => {
       if (!svgRef.current) return;
       e.preventDefault();
-      const rect = svgRef.current.getBoundingClientRect();
+      const rect = readRect();
       const z = zoomRef.current;
       const nz = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z * Math.exp(-e.deltaY * (e.ctrlKey ? 0.006 : 0.0014))));
       if (nz === z) return;
@@ -1846,6 +1866,30 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [vb.w, vb.h]);
 
+  // Drop the cached client rect whenever it could have moved. `vb` changing is
+  // the ResizeObserver in useViewport firing; scroll is captured so an ancestor
+  // scrolling counts too. A stale rect would offset every pointer coordinate.
+  useEffect(() => {
+    rectRef.current = null;
+  }, [vb.w, vb.h]);
+  useEffect(() => {
+    const drop = () => { rectRef.current = null; };
+    window.addEventListener('scroll', drop, true);
+    window.addEventListener('resize', drop);
+    return () => {
+      window.removeEventListener('scroll', drop, true);
+      window.removeEventListener('resize', drop);
+    };
+  }, []);
+
+  // Cancel any frame still pending for a move when the diagram goes away.
+  useEffect(
+    () => () => {
+      if (moveRafRef.current) cancelAnimationFrame(moveRafRef.current);
+    },
+    []
+  );
+
   // ---------- pointer handling ----------
   // Right button held = pan, in every environment (a stationary right-click on
   // a room still opens its context menu — see onBubbleContext).
@@ -1853,6 +1897,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     panRef.current = { sx: e.clientX, sy: e.clientY, vx: viewRef.current.x, vy: viewRef.current.y, right: true, moved: false };
   }
   function onSvgPointerDown(e) {
+    // A fresh gesture: re-read the rect once here rather than on every move.
+    // Bubble presses bubble up to this handler too, so this covers them.
+    rectRef.current = null;
     if (e.button === 2) {
       if (!dragRef.current) startRightPan(e);
       return;
@@ -1865,13 +1912,35 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     // Empty-canvas drag = marquee multi-select (a bubble press sets dragRef first).
     if (!dragRef.current) {
       const p = toSvgCoords(e);
-      marqueeRef.current = { sx: p.x, sy: p.y, additive: e.shiftKey };
-      setMarquee({ x0: p.x, y0: p.y, x1: p.x, y1: p.y });
+      const box = { x0: p.x, y0: p.y, x1: p.x, y1: p.y };
+      // The box lives in the ref as well as in state: state drives the visible
+      // rubber band, but the ref is what `finishMarquee` reads — a release can
+      // land in the same tick as the move that sized the box, before React has
+      // committed it (ARCHITECTURE §7: commit the ref, not the state var).
+      marqueeRef.current = { sx: p.x, sy: p.y, additive: e.shiftKey, box };
+      setMarquee(box);
     }
   }
 
+  // Pointer moves arrive far faster than frames — a 1000 Hz mouse or a trackpad
+  // delivers several per frame, and each one did full hit/snap/layout work and
+  // bumped the tick store. Keep only the latest and do the work once per frame.
+  // `onUp` flushes any pending move synchronously first, so the final position
+  // of a gesture is never dropped.
+  function flushMove() {
+    moveRafRef.current = 0;
+    const e = moveRef.current;
+    moveRef.current = null;
+    if (e) onMoveNow(e);
+  }
+
   function onMove(e) {
-    const rect = svgRef.current.getBoundingClientRect();
+    moveRef.current = e;
+    if (!moveRafRef.current) moveRafRef.current = requestAnimationFrame(flushMove);
+  }
+
+  function onMoveNow(e) {
+    const rect = readRect();
     if (polyPointerMove(e)) return; // vertex drag — handled by usePolyEditing
     if (rotPointerMove(e)) return; // rotating a placed footprint
     if (resizePointerMove(e)) return; // area-lock resizing a building box
@@ -1910,7 +1979,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     }
     if (marqueeRef.current) {
       const p = toSvgCoords(e);
-      setMarquee((m) => (m ? { ...m, x1: p.x, y1: p.y } : m));
+      const box = { ...marqueeRef.current.box, x1: p.x, y1: p.y };
+      marqueeRef.current.box = box; // authoritative for the release
+      setMarquee(box); // drives the visible rubber band
       return;
     }
     if (!dragRef.current) return;
@@ -2006,6 +2077,13 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
   }
 
   async function onUp(e) {
+    // Apply any move still waiting on a frame BEFORE the release is handled —
+    // otherwise the last movement of a gesture is silently dropped and the
+    // release commits a stale position. Must stay synchronous and first.
+    if (moveRafRef.current) {
+      cancelAnimationFrame(moveRafRef.current);
+      flushMove();
+    }
     if (polyPointerUp()) return; // vertex drag release — handled by usePolyEditing
     if (await rotPointerUp()) return; // rotate release — persist plan_json rot
     if (await resizePointerUp()) return; // box resize release — persist w/h to block_json
@@ -2287,7 +2365,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
 
   function finishMarquee() {
     const m = marqueeRef.current;
-    const box = marquee;
+    // Read the box from the ref, not from `marquee` state: the move that sized
+    // it may have been flushed in this same tick, before React committed.
+    const box = m?.box || marquee;
     marqueeRef.current = null;
     setMarquee(null);
     if (!box || !m) return;

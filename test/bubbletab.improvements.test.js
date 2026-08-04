@@ -66,6 +66,7 @@ test('link tool: dragging from one room to another creates the relationship', as
     await act(async () => {
       bubble.dispatchEvent(ev('pointerdown', { clientX: from.x, clientY: from.y }));
       svg.dispatchEvent(ev('pointermove', { clientX: (from.x + to.x) / 2, clientY: (from.y + to.y) / 2 }));
+      flushFrames(1); // pointer moves are coalesced into one frame
     });
     assert.ok(container.querySelector('.link-preview'), 'rubber band renders mid-drag');
     await act(async () => {

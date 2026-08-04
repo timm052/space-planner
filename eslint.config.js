@@ -31,6 +31,13 @@ export default [
       // Compiler-era strictness — worth revisiting, but not errors today.
       'react-hooks/set-state-in-effect': 'warn',
       'react-hooks/preserve-manual-memoization': 'warn',
+      // Same call as 'react-hooks/refs' above: the RAF loop mutating nodes in
+      // nodesRef, and the diagram's mutually-recursive handlers, are the
+      // documented design (ARCHITECTURE §7), not oversights. These sites are
+      // pre-existing — they became visible when the compiler stopped bailing
+      // out of BubbleTab during the Phase 1 pointer work, not because that work
+      // introduced them. Demote rather than rewrite documented architecture.
+      'react-hooks/immutability': 'warn',
       'no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
     },
   },
