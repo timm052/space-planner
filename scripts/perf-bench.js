@@ -1,4 +1,4 @@
-// Viewport interaction benchmark — the Phase 0 baseline for docs/viewport-interaction-plan.md.
+// Viewport interaction benchmark — the pointer hot-path baseline (ARCHITECTURE §9).
 //
 // Measures the WORK PER GESTURE on the diagram's pointer hot path, not wall-clock
 // frame time. jsdom has no layout or paint and its requestAnimationFrame is a

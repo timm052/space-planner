@@ -11,16 +11,19 @@
 ## 1. What the app is
 
 BriefTrack reconciles **designed areas against the client brief** for
-architects, and provides a **scale-accurate, image-aware bubble diagram** for
-early space planning.
+architects, and provides a **scale-accurate, image-aware diagram** for early
+space planning.
 
-- **Brief** — the required program as a hierarchy (buildings → spaces), each
-  with a target area and count.
+- **Brief** — the agreed programme as its own hierarchy (`brief_spaces`), with
+  formula-driven areas, benchmarks, dated revisions and a change log.
+- **Design** — the live rooms (`spaces`) that carry geometry and drive the
+  diagram, reconciled against the Brief **explicitly** (see §4).
+- **Diagram** — three environments over one shell: ◯ Concept (bubbles,
+  relationships, force sim), ▱ Master plan (building envelopes on a calibrated
+  site), ▤ Building (per-floor massing blocks) — each with its own persisted
+  layout, exportable as scale-accurate sheets and a multi-page drawing set.
 - **Milestones** — snapshots of measured areas at each design stage; the
   Dashboard shows variance, net:gross efficiency, and drift over time.
-- **Bubble diagram** — one bubble (or box) per room, sized true-to-scale,
-  arranged over a calibrated satellite and/or imported site plan, exportable
-  as a scale-accurate PDF.
 
 The whole thing is **single-user and local** by design (see §2).
 
@@ -74,11 +77,19 @@ src/
                    resolution — keep them on this module, never fork it.
   benchmarks.js    PURE: planning benchmarks (typical allowances by building
                    type) + the project → settings → built-in override chain
+  textfit.js       PURE: measured label fitting (wrap, balance, shrink, ellipsis)
+  imageUtils.js    PURE: image filter presets + data-URL helpers
+  useHistory.js    undo/redo stack for diagram edits
   prefs.js         localStorage UI preferences (one namespace)
   scale.js floors.js viz.js theme.jsx   scale math · storeys/cameras · colours · theming
-  pdfExport.js     jsPDF scene → scale-accurate PDF (lazy-loaded)
+  pdfExport.js     jsPDF: renders a scene onto a sheet; single sheet or a
+                   multi-page drawing set (lazy-loaded)
+  pngExport.js     SVG → 2× raster, or the WebGL frame in 3-D (lazy-loaded)
   hooks/
     useViewport.js useImageDims.js useSimulation.js
+    useDiagramPrefs.js  the diagram's persisted view preferences in one hook
+    usePins.js useLinks.js useSpaceEditing.js usePolyEditing.js
+    useImageLayers.js useCategoryColors.js
     useImageData.js  session cache: image id → data URL (fetched once)
     useTick.js       tick store + <TickLayer> — animation renders bypass chrome
   App.jsx          App shell: topbar, nav, routes between list/project/settings
@@ -101,20 +112,35 @@ src/
     HelpPanel.jsx       Shortcuts modal
     SettingsPage.jsx    App-wide defaults (units, tolerance, grossing)
     diagram/
-      scenes.js         PURE stacked-axonometric + WebGL scene builders
-      DiagramRail.jsx   A·01 Areas + A·02 Adjacency rail
+      scenes.js         PURE scene builders — footprints, interior cells, bubble
+                        radii, sheet bounds, stacked + WebGL scenes. The ONE
+                        definition of each; the canvas AND pdfExport read it
+      modes.js          PURE snap geometry + pointer-mode arbitration
+                        (grid/edge snap, guides, pan, marquee) — JSDoc-typed
+      selection.js linking.js layerTools.js
+                        PURE state machines lifted out of BubbleTab (tested)
+      DiagramCanvas.jsx The SVG scene (renders inside the TickLayer)
+      DiagramToolbar.jsx  Stage topbar, tool dock, zoom cluster, ⋯ More
+      SelectionHud.jsx  The one contextual action bar (room / multi / link)
+      CommandPalette.jsx  Ctrl/Cmd-K room + command finder
+      DiagramRail.jsx   A·01 Areas + A·02 Adjacency rail (Building: stacking)
+      LayersPanel.jsx   Image layers, satellite fetch, scale/calibration panels
       Stacked3D.jsx     WebGL view (lazy-loaded — keeps three.js out of the
                         main bundle)
-      LayerRow.jsx MatrixPanel.jsx NorthRose.jsx
+      LayerRow.jsx MatrixPanel.jsx NorthRose.jsx StagePopover.jsx
   styles.css       Style entry: ordered @imports of styles/ (contiguous slices
                    of the former monolith — import order IS the cascade)
   styles/          tokens.css (the design system) · base.css · views.css ·
                    diagram.css
-  components/ui.jsx           <Banner> / <Empty> — the app's one error/empty markup
-  components/diagram/StagePopover.jsx   unified floating-panel chrome
+  components/ui.jsx           <Banner> / <Empty> / <Overlay> — the app's one
+                              error / empty / modal markup
                    Fonts are self-hosted via @fontsource imports in main.jsx.
+scripts/perf-bench.js  Pointer-path benchmark (rect calls + ms per gesture at
+                   50 / 150 / 400 rooms): node --import tsx scripts/perf-bench.js
 docs/ARCHITECTURE.md  (this file)
-docs/refactor-plan.md ROADMAP.md
+docs/DESIGN.md        the design language as built
+ROADMAP.md            where the project stands, what's next, and the decisions
+                      already taken (with the triggers that would reopen them)
 ```
 
 **`compute.js` is the place to start** when learning the domain: it is pure,
@@ -154,17 +180,29 @@ Diagram/render state (all per-project):
 - `sim_enabled` — force layout on/off.
 - `display_scale` — metres per diagram unit (the chosen drawing scale). Null =
   relative/auto sizing.
-- `bubble_opacity`, `view_x`, `view_y` — view pan offset.
+- `bubble_opacity`, `bubble_style` (`solid|outline|sketch`), `view_x`, `view_y`
+  — view pan offset.
 - `north_deg` — project north, clockwise from up.
-- **Two image layers**, each calibrated independently:
-  - Custom: `bg_image` (data URL), `bg_mpp` (metres/natural-pixel),
-    `bg_opacity`, `bg_visible`, `bg_x`, `bg_y` (centre offset, units),
-    `bg_rot` (deg), `bg_attribution`.
-  - Satellite: `sat_*` mirror of the above.
-- `bg_scale` — **legacy** single-layer scale; only read by the one-time
-  migration in `BubbleTab` (do not use in new code).
 - `north_locked` — 1 freezes north, so rotating the design onto the site does
   not drag the bearing with it.
+- `diagram_env` — the last-open environment (`concept|masterplan|building`).
+  Per-environment pan framing is a client concern (session cache +
+  `brieftrack.viewByEnv` in localStorage), not a column.
+- `level_heights` — JSON `{ "<level label>": metres }`; storeys without an entry
+  use 3.5 m (`DEFAULT_STOREY_M`).
+- `category_colors` — JSON map of category/building label → custom colour.
+- **Legacy image columns** (`bg_*`, `sat_*`, `bg_scale`) — superseded by the
+  `images` table below, folded in once by `migrateImages()` (flagged by
+  `images_migrated`) and stripped from every response by `serialize.js`.
+  **Do not read or write them in new code.**
+
+### `images`
+One row per background layer, unlimited per project: `kind`
+(`satellite|custom`), `name`, `image` (base64 data URL), `mpp` (metres per
+natural pixel — its own calibration), `opacity`, `visible`, `x`, `y` (centre
+offset in units), `rot` (deg CW), `filter`
+(`''|grayscale|blueprint|faded|contrast|ink`), `sort_order`, `attribution`.
+The `image` column never travels in the project bundle — see §5.
 
 Programme state:
 - `variables` — JSON `{ name: number }`, referenced in formulas as `@name`.
@@ -179,11 +217,32 @@ Programme state:
 - `parent_id` — self-FK for hierarchy (nullable; no DB-level cascade, see §7).
 - `kind` — `'space' | 'building' | 'group'`. Containers carry **no area of
   their own**; their area rolls up from leaf descendants.
-- `shape` — `'bubble' | 'box'` (diagram rendering).
+- `child_mode` — how a space relates to its children: `'group'` (pure container
+  summing children — default and legacy), `'within'` (children sit inside its
+  own area and are excluded from totals), `'attached'` (children are separate
+  areas that move with it). Leaf detection in `compute.js` depends on this.
+- `level` — storey label; `height_m` — optional clear height (null = inherit the
+  storey's, so a taller room reads as a double-height volume in 3-D).
+- `circ_pct` — on container rows: the building's circulation allowance, which
+  grosses up the envelope's required footprint.
+- `shape` / `shape_json` — `shape` is **legacy** (geometry now follows the
+  environment, not a per-space toggle); `shape_json` holds the normalised
+  outline used by master-plan envelopes and drawn footprints.
 - `pin_x`/`pin_y` — **legacy** single pin (read as instance 0 only).
-- `pin_json` — current per-instance pins: `{"0":{x,y},"2":{x,y}}` keyed by
-  instance index. A space with `count` N has instances `0..N-1`, each a
-  separate bubble that can be pinned independently.
+
+**Per-environment layouts.** Each environment persists its own positions, keyed
+by instance index (`"0"`, `"1"`, … for a space with `count` N). They are
+different truths and must never overwrite each other:
+
+| Column | Environment | Slot shape |
+| --- | --- | --- |
+| `pin_json` | ◯ Concept | `{ x, y, locked? }` — presence = pinned |
+| `plan_json` | ▱ Master plan | `{ x, y, rot, a }` — presence = placed on the site (`a` = drawn footprint area in units²) |
+| `block_json` | ▤ Building | `{ x, y, w, h, rot }` — presence = blocked into a floor |
+
+On containers, `plan_json` + `shape_json` describe the **building envelope**;
+its drawn area is checked against the required footprint (biggest storey ÷
+`1 − circ_pct`) and the badge turns red when the envelope is too small.
 - `area_formula` — when set, `target_area` is **derived**, not authored. The
   server resolves the expression and persists the result into `target_area`
   (`brief.js`), so every reader can keep using `target_area` and stay unaware
@@ -233,9 +292,10 @@ Key/value app-wide defaults applied to *new* projects.
 
 REST, JSON, under `/api`. Notable contracts:
 
-- `GET /api/projects/:id` returns `{ project, spaces, snapshots, adjacencies,
-  images }` — the whole project in one round trip (the client re-fetches this
-  after every mutation; see §6 "optimistic + refetch"). **Images are metadata
+- `GET /api/projects/:id` returns `{ project, spaces, brief_spaces, snapshots,
+  adjacencies, brief_adjacencies, images }` — the whole project, both trees, in
+  one round trip (the client re-fetches this after every mutation; see §7
+  "optimistic + refetch"). **Images are metadata
   only** (no base64), and the project row is stripped of the legacy
   `bg_image`/`sat_image` blobs (`serialize.js`) — this keeps the per-mutation
   refetch in the KB range.
@@ -251,6 +311,11 @@ REST, JSON, under `/api`. Notable contracts:
   UNION` CTE (see §7 gotcha).
 - `GET /api/geocode?q=` → Nominatim proxy. `GET /api/tile/:z/:x/:y` → Esri World
   Imagery proxy (same-origin so the canvas stays untainted).
+- The Brief subsystem (`brief-spaces`, `brief-diff`, `apply-brief`,
+  `pull-to-brief`, `brief-revisions`, `brief-adjacencies`, `options`, `changes`)
+  is routed through `server/brief.js`, `options.js` and `changelog.js`; the full
+  endpoint table lives in the README. Reconciliation is by **path key**, never
+  by id, and never automatic.
 
 ---
 
@@ -347,16 +412,30 @@ hovered instance) and **pin all** (`savePinAll`). Selection tracks both the
 space (`selected`, drives linking/colour) and the instance (`selectedInst`,
 drives which bubble Pin acts on).
 
-### 6.7 PDF export
+### 6.7 PDF sheets and the drawing set
 
 `pdfExport.js` maps diagram units → mm at a fixed `0.2646 mm/unit` (true scale),
-picks the smallest ISO page (A4…A0) that fits the content bounds, and draws
-image layers (clipped to the frame), links, bubbles/boxes, a scale bar, a north
-arrow, and a title block. **Image rotation is baked** into a rotated canvas in
-`BubbleTab.bakeRotation` *before* handing it to `pdfExport` (which stays
-rotation-agnostic), so exports remain scale-accurate.
+picks the smallest ISO page (A4…A0) that fits the scene bounds, and draws image
+layers (clipped to the frame), links, rooms, a scale bar, a north arrow and a
+title block. `exportDiagramPdf(scene)` renders one sheet;
+`exportDrawingSet({ sheets })` renders the pipeline — concept sheet (NTS, no
+site layers), master plan sheet, one sheet per floor — into a single document,
+built from the **persisted** layouts so it works from any environment.
+**Image rotation and filters are baked** into a canvas *before* the scene reaches
+`pdfExport` (which stays rotation-agnostic), so exports remain scale-accurate.
 
-### 6.8 Hierarchy (leaf-aware compute)
+### 6.8 One definition per quantity (canvas ⇄ sheet)
+
+The sheet and the screen must agree, so the quantities they both need live once,
+in `scenes.js`, and are imported by the canvas, the snap resolver and
+`pdfExport` alike: `boxExtents` / `boxCorners` / `polyAt` (footprint geometry),
+`interiorSeeds` / `interiorCells` (the Voronoi interior sketch),
+`trueScaleRadius` / `relativeRadius` (the two bubble-size rules), and
+`sceneBounds` (which picks the page size). These were each written out 2–4 times
+before; every copy was a chance for the export to disagree with the display.
+**If you need one of these numbers, import it — never re-derive it.**
+
+### 6.9 Hierarchy (leaf-aware compute)
 
 `compute.js` treats only **leaf** spaces (no children, kind `space`) as
 carrying area. `briefNet`, `snapshotNet`, and `rollup` operate over leaves;
@@ -399,9 +478,25 @@ yields `{space, depth}` for the Brief tree.
 - **`API_PORT` in dev.** The preview launcher injects `PORT`, which would make
   the API bind to Vite's port; in dev the API reads `API_PORT` (falls back to
   3001). Don't revert to plain `PORT`.
-- **Legacy migration** runs once on `BubbleTab` mount: old single-image
-  projects (`bg_scale` set, no `*_mpp`) are converted to the dual-layer model
-  (Esri attribution → satellite layer). Guarded by `migratedRef`.
+- **Legacy image migration is server-side**, in `db.js` (`migrateImages()`,
+  guarded by `projects.images_migrated`): old `bg_*`/`sat_*` columns are folded
+  into `images` rows at startup. The client migrates nothing — don't re-add a
+  client-side copy. `migrateAdjacencies()` similarly rebuilds the old
+  `UNIQUE(space_a, space_b)` key into the per-instance one.
+- **Pointer moves are coalesced to one frame.** `onMove` stashes the latest
+  event and schedules a rAF that does the work and the single `setTick`; the
+  client rect is cached on pointer-down and invalidated by the `ResizeObserver`.
+  Two invariants fall out of this and are covered by tests: `onUp` must **flush
+  the pending move synchronously before** handling the release (otherwise the
+  last movement of every gesture is dropped and a stale position is committed),
+  and gesture state a flush reads — the marquee box, for one — must live in a
+  **ref**, not React state.
+- **The user's hand beats an in-flight view glide.** `stopViewTween()` is called
+  from `onSvgPointerDown` and the wheel handler; without it a recentre glide and
+  the pan handler both write `setView` every frame.
+- **Per-environment caches are keyed by environment.** The module-level layout
+  and view caches use `projectId:env` — sharing them lets Concept and Master
+  plan bleed positions into each other.
 - **Rail sections need their own `overflow-y:auto`** — relying on the rail
   scrolling let a long Areas list visually overlap Relationships.
 
@@ -418,9 +513,15 @@ yields `{space, depth}` for the Brief tree.
 the `spaces` POST/PUT in `index.js` and the relevant tab.
 
 **Add a diagram tool:** most live in `BubbleTab.jsx`. Pointer interactions go
-through `onSvgPointerDown/onMove/onUp` (which already multiplex pan / layer-move
-/ calibrate / bubble-drag by mode flags). Keep new geometry in diagram units so
-PDF export and scale stay correct.
+through `onSvgPointerDown/onMove/onUp` (which multiplex pan / marquee /
+layer-move / calibrate / room-drag / vertex-drag / seed-drag); the snap and
+arbitration math belongs in `diagram/modes.js`, where it is pure and tested.
+Keep new geometry in diagram units so the sheets and scale stay correct, and add
+anything the PDF also needs to `scenes.js` rather than to a renderer (§6.8).
+
+**Gate a feature per environment:** add the flag to `ENV_CAPS` in
+`BubbleTab.jsx` and read `caps.<flag>` — one declarative table instead of
+scattered `isConcept && …` ternaries. A fourth environment should be a new row.
 
 **Add a tab:** add to `TABS` in `ProjectView.jsx`; non-diagram tabs render inside
 a `.page` wrapper, the diagram renders full-bleed (`.project-content.full`).
@@ -429,14 +530,23 @@ a `.page` wrapper, the diagram renders full-bleed (`.project-content.full`).
 
 ## 9. Notes for AI agents
 
-- **Run `npm test` and `npm run build` after edits** — the fastest correctness
-  gates. `npm test` (Node's built-in runner via `tsx` for JSX) covers the pure
-  helpers in `compute.js`/`scale.js`, the full REST surface against an isolated
-  temp DB (`BRIEFTRACK_DB_DIR`), and the prop-driven React views rendered to
-  static markup (`react-dom/server`). Add a case there when you change domain
-  math, an endpoint, or a view. Note: `tsx` transforms JSX with the *classic*
-  runtime, so component tests set `globalThis.React` before rendering. Then
-  verify scale/alignment in the running app.
+- **Run `npm test`, `npm run lint` and `npm run build` after edits** — the
+  fastest correctness gates. `npm test` (Node's built-in runner via `tsx` for
+  JSX) is **349 tests**: the pure helpers (`compute`, `scale`, `formula`,
+  `geometry`, `adjacency`, `floors`, `pins`, `textfit`), the diagram's pure
+  modules (`selection`, `linking`, `layerTools`, `modes`, `scenes`), the full
+  REST surface against an isolated temp DB (`BRIEFTRACK_DB_DIR`), the
+  prop-driven React views rendered to static markup (`react-dom/server`), and
+  jsdom pointer-event tests over the diagram shell. Add a case there when you
+  change domain math, an endpoint, a view, or pointer behaviour. Note: `tsx`
+  transforms JSX with the *classic* runtime, so component tests set
+  `globalThis.React` before rendering. Then verify scale/alignment in the running
+  app. (CI runs tests + build + an API smoke test — not lint, yet.)
+- **Pointer-path changes have a benchmark**: `node --import tsx
+  scripts/perf-bench.js` reports `getBoundingClientRect` calls and ms per
+  60-move gesture at 50 / 150 / 400 rooms. The current baseline is ~0.03 rect
+  calls per move; a regression there means a forced synchronous layout came back
+  onto the drag hot path.
 - The API server does **not** hot-reload; **restart it** after touching
   `server/*` (the preview launcher restart re-runs migrations).
 - `compute.js` changes ripple into Dashboard, CSV, and the diagram — verify

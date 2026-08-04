@@ -112,11 +112,10 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
   // applySel() below; the destructure keeps every read site unchanged.
   const [sel, setSel] = useState(selection.initialSelection);
   const { tool, selected, selectedInst, multi, selLink, linkFrom, linkKind } = sel;
-  // Diagram environment (persisted per project, projects.diagram_env). Phase 1:
-  // 'concept' is the bubble/relationship workspace — boxes, custom shapes, image
-  // layers and floors are gated off (isConcept). 'masterplan' and 'building'
-  // temporarily fall back to the full mixed view. See
-  // docs/diagram-environments-plan.md.
+  // Diagram environment (persisted per project, projects.diagram_env).
+  // 'concept' is the bubble/relationship workspace — boxes, custom shapes,
+  // image layers and floors are gated off (isConcept). Each environment owns
+  // its own layout column; see ARCHITECTURE §4 "Per-environment layouts".
   const [env, setEnv] = useState(project.diagram_env || 'concept');
   const isConcept = env === 'concept';
   // Master plan is a static, authored environment: positions live in a separate
@@ -132,7 +131,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
   // The per-instance layout column owned by the current authored environment.
   const layoutCol = isBuilding ? 'block_json' : 'plan_json';
   // What each environment offers — one declarative table instead of scattered
-  // per-feature ternaries (see docs/diagram-environments-plan.md, Phase 4a).
+  // per-feature ternaries (see ARCHITECTURE §8 "Gate a feature per environment").
   //   geometry:  what shapeOf returns ('auto' = drawn footprint else bubble)
   //   layers:    'edit' (full layer UI) · 'view' (render only) · 'none'
   //   rotate:    'free' (drag handle) · '90' (quarter-turn button) ·

@@ -155,10 +155,10 @@ ensureColumn('spaces', 'kind', "kind TEXT DEFAULT 'space'"); // 'space' | 'build
 ensureColumn('spaces', 'shape', "shape TEXT DEFAULT 'bubble'"); // 'bubble' | 'box' | 'poly'
 ensureColumn('spaces', 'shape_json', 'shape_json TEXT'); // freeform polygon: normalized verts [{x,y},…]
 // Master-plan placement, independent of the concept pin_json: per-instance
-// {"0":{x,y,rot},…}. Presence = "placed on the site". See diagram-environments-plan.md.
+// {"0":{x,y,rot,a},…}. Presence = "placed on the site". See ARCHITECTURE §4.
 ensureColumn('spaces', 'plan_json', 'plan_json TEXT');
 // Building placement, independent of concept/master-plan: per-instance
-// {"0":{x,y,w,h,rot},…} (level stays in spaces.level). See diagram-environments-plan.md.
+// {"0":{x,y,w,h,rot},…} (level stays in spaces.level). See ARCHITECTURE §4.
 ensureColumn('spaces', 'block_json', 'block_json TEXT');
 ensureColumn('spaces', 'image', 'image TEXT'); // per-space reference image (data URL)
 // How a space relates to its children: 'group' = pure grouping container (sums
@@ -176,7 +176,7 @@ ensureColumn('projects', 'bubble_style', "bubble_style TEXT DEFAULT 'solid'");
 
 // Diagram environment: which geometry-specific workspace is active.
 // 'concept' (bubbles + relationships) | 'masterplan' (scaled site) | 'building'
-// (massing/floors). See docs/diagram-environments-plan.md.
+// (massing/floors). See ARCHITECTURE §4 "Per-environment layouts".
 ensureColumn('projects', 'diagram_env', "diagram_env TEXT DEFAULT 'concept'");
 
 // Storey heights: JSON map { "<level label>": metres } (absent level → the

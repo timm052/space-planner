@@ -55,16 +55,18 @@ milestone into a recorded snapshot measured against it:
     90° rotation), edited one floor at a time, with edge/corner + metric grid
     snapping, vertical-adjacency badges, a per-building stacking readout
     (click to focus a building) and stacked / 3-D overview modes.
-  - **Two independent image layers** — a **satellite** layer (geocode an
-    address → Esri World Imagery, auto-calibrated from map zoom) **and** an
-    **imported** site-plan/survey layer, each with its own scale calibration,
-    opacity, visibility, position and **rotation**. Calibrate either by marking
-    a known distance; both then share the diagram's scale and line up. "Move"
-    nudges a layer; "Rotate" turns it (e.g. to square the satellite up to
-    north). Rotation is baked into the PDF so the export stays accurate.
-  - **Standard scales** — 1:200 / 1:500 / 1:1000 / 1:2000 (imperial equivalents
-    on ft² projects). Bubbles and all image layers draw true-to-size and
-    rescale together; **bubble positions stay fixed when the scale changes**.
+  - **Image layers** — add as many as you like: a **satellite** layer (geocode
+    an address → Esri World Imagery, auto-calibrated from map zoom) and
+    **imported** site plans or surveys. Each carries its own scale calibration,
+    opacity, visibility, position, **rotation** and a diagrammatic **filter**
+    (grayscale, blueprint, faded, high-contrast, ink). Calibrate one by marking
+    a known distance; all layers then share the diagram's scale and line up.
+    Rotation and filters are baked into the sheets, so exports stay accurate.
+    Layers are editable in Master plan, drawn read-only in Building, and hidden
+    in Concept.
+  - **Standard scales** — 1:100 / 1:200 / 1:500 / 1:1000 / 1:2000 (imperial
+    equivalents on ft² projects). Rooms and all image layers draw true-to-size
+    and rescale together; **positions stay fixed when the scale changes**.
   - **Project north** — drag the compass rose to set north (double-click resets
     to up); it appears on the diagram and the PDF.
   - **PDF sheets & the drawing set** — `↓ PDF` exports the open environment
@@ -73,47 +75,52 @@ milestone into a recorded snapshot measured against it:
     bar and north). `↓ Set` exports the whole pipeline — concept sheet, master
     plan sheet and one sheet per floor — as a single multi-page PDF built from
     each environment's saved layout.
-  - **Split view** — a side panel lists rooms grouped by department/building
-    with editable areas; bubbles resize live as you type.
-  - **Pan** — view locked by default; toggle pan to drag the canvas. Bubbles are
-    not clamped to the viewport.
-  - **One bubble per room** — count 3 draws three clustered bubbles, each
-    pinnable; adjacency links connect the closest pair of rooms.
-  - **Floor view modes** — when the brief uses building levels, switch the
-    diagram between **all floors** together, **one floor at a time**, or a
-    **stacked axonometric** — each floor an isometric plane with its rooms (and
-    the site image, warped to match the perspective) lying on it, tied together
-    by dashed corner guides. Floors can be **offset** apart or **overlaid** on
-    one plane to compare footprints.
-  - **Adjacency compliance score** — with a scale set, a toolbar badge grades how
-    well the current layout honours the declared relationships (the weighted share
-    of required/desired links whose bubbles are actually placed adjacent); click
-    it to highlight the unmet links in red.
-  - **Help** — a "?" panel documents every gesture and feature.
+  - **The rail** — `A·01 Areas` lists rooms by category or by building and
+    level with editable areas (rooms resize live as you type); `A·02 Adjacency`
+    is the relationship schedule, and `▦ Matrix` opens the classic triangular
+    grid over the same data. In Building it doubles as the stacking navigator.
+  - **One room per instance** — count 3 draws three rooms, each placed and
+    linked independently; adjacency links target a specific instance of each
+    space.
+  - **Adjacency compliance score** — a toolbar badge grades how well the layout
+    honours the declared relationships (the weighted share of required/desired
+    links actually placed adjacent — in metres once a scale is set, topologically
+    in Concept); click it to highlight the unmet links in red.
+  - **Navigation** — hold Space or right-drag to pan, wheel to zoom about the
+    cursor, `0` to fit, and `Ctrl/Cmd-K` to find a room or run a command and fly
+    to it. Each environment remembers its own framing.
+  - **Multi-select & undo** — marquee or shift-click, then act on the whole
+    selection; arrow keys nudge by 1 m (Shift = 0.1 m). Edits are undoable with
+    `Ctrl+Z` / `Ctrl+Shift+Z`.
+  - **Help** — a page- and environment-aware "?" panel documents every gesture.
 - **Settings** — user preferences: default units (m²/ft²), default tolerance,
   and default efficiency target for new projects.
 - **Milestones** — record designed net areas (from your BIM/CAD area schedule)
-  at each stage issue, plus gross floor area.
+  at each stage issue, plus gross floor area; one click prefills every room from
+  the current Design tree.
 - **Dashboard** — instant program variance, per-space and per-department (or
   per-building) status against the tolerance, net-to-gross efficiency vs.
-  target, and a drift chart across milestones with the tolerance band.
+  target, a drift chart across milestones with the tolerance band, and the
+  programme change log.
 - **CSV export** — full area schedule (brief vs. every milestone) for client
   reports and stage sign-offs.
 
 ## Interface
 
-A full-screen professional application (not a centered web page): a slim top
-bar with the brand and global nav, then a work area that fills the viewport.
-Inside a project, a compact bar carries the title, tabs and actions. The
-**Diagram** is the centrepiece — its canvas fills all available space (sized
-to the window via a live viewBox) with the editable **Areas** and
-**Relationships** rail alongside it, and floating overlays for layers, legend
-and scale so nothing steals canvas. The same size hierarchy (most-important
-element largest) is applied across the dashboard, brief and milestones.
+A full-screen professional application (not a centered web page) in a flat
+architectural **drafting** language, with **dark, light and auto** themes. A
+slim top bar carries the brand and global nav; inside a project, a compact bar
+carries the title, tabs and actions. The **Diagram** is the centrepiece — its
+canvas fills all available space (sized to the window via a live viewBox), with
+the environment switcher and its progress readout above it, the `A·01 Areas` /
+`A·02 Adjacency` rail alongside, floating glass overlays for the tools, layers,
+legend and scale, and one contextual action bar for whatever is selected. See
+[docs/DESIGN.md](docs/DESIGN.md) for the full design language.
 
 ## Stack
 
-- **Frontend:** React 18 + Vite (SPA, SVG charts, no chart library)
+- **Frontend:** React 18 + Vite (SPA; hand-rolled SVG, no UI or chart library)
+  with three.js / react-three-fiber for the 3-D massing view (lazy-loaded)
 - **Backend:** Express REST API
 - **Database:** SQLite via Node's built-in `node:sqlite` (no native deps) —
   stored in `data/brieftrack.db`, created and seeded with a demo project on
@@ -141,17 +148,26 @@ npm start          # serves API + built app on :3001 (or $PORT)
 npm test           # Node's built-in test runner (no extra deps)
 ```
 
-The suite (`test/`) covers the pure domain logic in `compute.js` (hierarchy,
-leaf-aware rollups, units, CSV), `scale.js` (scale conversions + the
-zoom-about-anchor invariant), `formula.js` (the brief-area expression engine),
-`geometry.js`, `textfit.js` and the diagram's state machines; API integration
-tests that spin the Express app up
-against an isolated temp database (set via `BRIEFTRACK_DB_DIR`) and exercise
-every endpoint, including parent-cycle prevention and recursive subtree deletes;
-and component tests that render the prop-driven React views (Dashboard,
-DriftChart, ProjectList) to static markup via `react-dom/server` and assert on
-the output. JSX in the tests is transformed by `tsx` (the `--import tsx` flag in
-the `test` script). CI runs `npm test` before the build.
+349 tests in `test/` cover:
+
+- the pure domain logic — `compute.js` (hierarchy, leaf-aware rollups, units,
+  CSV), `scale.js` (conversions + the zoom-about-anchor invariant), `formula.js`
+  (the brief-area expression engine), `geometry.js` (hulls, power/Voronoi cells,
+  area-locked outlines), `adjacency.js`, `floors.js`, `pins.js`, `textfit.js`;
+- the diagram's pure modules — the selection / linking / layer-tool state
+  machines, the `modes.js` snap geometry, and the `scenes.js` builders that the
+  canvas and the PDF sheets share;
+- API integration tests that spin the Express app up against an isolated temp
+  database (`BRIEFTRACK_DB_DIR`) and exercise every endpoint, including
+  parent-cycle prevention and recursive subtree deletes;
+- component tests rendering the prop-driven React views to static markup via
+  `react-dom/server`, plus jsdom **pointer-event** tests driving the diagram's
+  interactive shell (drag, marquee, link, pan, calibrate).
+
+JSX in the tests is transformed by `tsx` (the `--import tsx` flag in the `test`
+script). `npm run lint` runs ESLint 9, and
+`node --import tsx scripts/perf-bench.js` re-runs the pointer-path benchmark.
+CI runs `npm test`, the build, and an API smoke test.
 
 ## API
 
@@ -199,10 +215,10 @@ target, and you record the designed total for all three rooms).
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — design decisions, the data
   model, the scale/alignment math, and gotchas. Written for AI agents and
   humans extending the app; **read it before changing the diagram or schema**.
-- **[docs/viewport-interaction-plan.md](docs/viewport-interaction-plan.md)** —
-  the phased plan for the diagram's viewport: pointer hot path, the mode state
-  machine, and a renderer-agnostic scene layer.
-- **[ROADMAP.md](ROADMAP.md)** — where this could go next.
+- **[docs/DESIGN.md](docs/DESIGN.md)** — the design language as built: tokens,
+  type, the drafting vocabulary, and the rules for adding to it.
+- **[ROADMAP.md](ROADMAP.md)** — where the project stands, what comes next, and
+  the decisions already taken (with the triggers that would reopen them).
 
 ## Requirements
 

@@ -4,7 +4,7 @@ import reactHooks from 'eslint-plugin-react-hooks';
 import globals from 'globals';
 
 export default [
-  { ignores: ['dist/', 'node_modules/', 'data/', 'design_handoff_brieftrack_redesign/', '.claude/'] },
+  { ignores: ['dist/', 'node_modules/', 'data/', '.claude/'] },
 
   js.configs.recommended,
 
