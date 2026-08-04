@@ -254,12 +254,51 @@ same footprint, which is the drift this phase exists to prevent.
 that is a wash rather than a win, and the honest framing stays the same as
 Phase 2: this bought correctness and coverage, not volume.
 
-**Exit:** ✅ **Done** for the shared geometry, which was the phase's real
-argument. Deliberately **not** done: `DiagramCanvas` is not yet a dumb scene
-consumer, and there is still no single scene definition per environment —
-`buildSheetScene` remains an async closure inside `BubbleTab` rather than a
-pure builder in `scenes.js`. That last step is now much smaller than it was,
-because the geometry it would need is already extracted and tested.
+### Follow-up pass — two more twins
+
+Found by the same method: grep the formula, count the copies.
+
+**Bubble radius, 3 copies → 1.** The relative rule
+(`16 + 50·√(area/max)`) was written out three times — canvas `radiusOf`, the
+concept-frame `rOf`, and the PDF sheet — and the true-scale rule
+(`max(7, √(m²/π)/effScale)`) twice. This is the most visible quantity in the
+app: if the sheet and the screen size bubbles differently, the export is simply
+wrong. Now `trueScaleRadius` / `relativeRadius`, with the bare numbers named.
+
+**Sheet bounds → `sceneBounds`.** It picks the PDF page size, so an error means
+a clipped or over-sized sheet, and it had no coverage at all.
+
+Tests 338 → 349, covering the properties that make the rules what they are:
+`relativeRadius` is scale-free (the largest room draws the same size whatever
+the absolute areas) and depends only on the ratio; `trueScaleRadius` follows the
+square root; `sceneBounds` measures polygons by vertices, and returns null
+rather than an infinite box when empty.
+
+### Why "make DiagramCanvas a dumb scene consumer" was dropped
+
+Measured before doing it, and the measurement said not to.
+
+`DiagramCanvas` takes **94 props** across a 99-line destructuring block, but
+contains only about **seven** real derivation sites in 1,038 lines. It is
+*already* a presentational component — the computation lives in `BubbleTab` and
+is handed down.
+
+So the remaining work is not extracting logic, it is **prop plumbing**:
+replacing 94 arguments with a few grouped objects. That is ergonomic, not
+correctness; it is mechanical and broad; and it carries no test leverage, since
+there is no new pure logic to cover — the same code gains a different call
+signature and a chance to mis-thread an argument.
+
+Worth doing when a second consumer of the scene actually appears (a WebGL 2-D
+renderer, a server-side sheet renderer), or opportunistically while already
+editing that file. Not worth doing as a refactor for its own sake, which is what
+it would be today.
+
+**Exit:** ✅ **Done.** The phase's real argument — canvas and PDF computing the
+same geometry from one tested definition — holds: footprints, interior cells,
+bubble radius and sheet bounds are all shared. `buildSheetScene` stays in
+`BubbleTab` as orchestration (it is async, because it bakes rotated and filtered
+image layers through a canvas); what it orchestrates is now pure and tested.
 
 ---
 
