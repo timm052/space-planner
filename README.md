@@ -16,10 +16,22 @@ tolerance (e.g. ±5%) per space.
 BriefTrack makes the brief the single source of truth and turns each design
 milestone into a recorded snapshot measured against it:
 
-- **Brief** — the client's program as a **hierarchy**: buildings/zones that
-  contain spaces (and spaces within spaces), in addition to departments.
-  Containers roll up their descendants' areas; only leaf spaces carry area.
-  Add a building, then "+ inside" to nest spaces; re-parent from the edit row.
+- **Brief** — the client's agreed program, kept as its own hierarchy: buildings
+  and zones that contain spaces (and spaces within spaces), in addition to
+  departments. Containers roll up their descendants' areas; only leaf spaces
+  carry area. Add a building, then "+ inside" to nest spaces; re-parent from the
+  edit row. Areas can be **formulas** rather than fixed numbers — `@staff * 12`,
+  `15% * [Adult Collection]`, `max(40, @occupants * 1.8)` — driven by project
+  **variables** and references to other spaces, with a **benchmarks** library of
+  typical allowances by building type and a **circulation allowance** for
+  grossing up. Dated **revisions** record the brief as it gets renegotiated, and
+  a **change log** tracks every programme edit.
+- **Design** — the live areas that drive the diagram, held as a **separate**
+  tree from the Brief so in-progress design numbers never silently overwrite
+  what was agreed. Reconcile them explicitly: preview and apply the Brief onto
+  the Design, or pull a single room's areas back the other way. Save named
+  **design options** to compare A/B schemes against one Brief and swap between
+  them.
 - **Diagram — three environments, one per design stage.** The diagram is a
   pipeline of workspaces, each owning one geometry and its own mechanics, with
   independent per-environment layouts and a progress readout in the switcher:
@@ -130,8 +142,10 @@ npm test           # Node's built-in test runner (no extra deps)
 ```
 
 The suite (`test/`) covers the pure domain logic in `compute.js` (hierarchy,
-leaf-aware rollups, units, CSV) and `scale.js` (scale conversions + the
-zoom-about-anchor invariant); API integration tests that spin the Express app up
+leaf-aware rollups, units, CSV), `scale.js` (scale conversions + the
+zoom-about-anchor invariant), `formula.js` (the brief-area expression engine),
+`geometry.js`, `textfit.js` and the diagram's state machines; API integration
+tests that spin the Express app up
 against an isolated temp database (set via `BRIEFTRACK_DB_DIR`) and exercise
 every endpoint, including parent-cycle prevention and recursive subtree deletes;
 and component tests that render the prop-driven React views (Dashboard,
@@ -144,11 +158,33 @@ the `test` script). CI runs `npm test` before the build.
 | Method | Route | Purpose |
 | --- | --- | --- |
 | GET/POST | `/api/projects` | list / create projects |
-| GET/PUT/DELETE | `/api/projects/:id` | detail (brief + milestones) / update / delete |
-| POST | `/api/projects/:id/spaces` | add a space to the brief |
-| PUT/DELETE | `/api/spaces/:id` | edit / remove a space |
-| POST | `/api/projects/:id/adjacencies` | link two spaces (upserts strength) |
+| GET/PUT/DELETE | `/api/projects/:id` | detail (both trees + milestones) / update / delete |
+| **Design** (`spaces`) | | |
+| POST | `/api/projects/:id/spaces` | add a room to the design |
+| PUT/DELETE | `/api/spaces/:id` | edit / remove a room (recursive subtree delete) |
+| POST | `/api/projects/:id/adjacencies` | link two room instances (upserts strength) |
 | PUT/DELETE | `/api/adjacencies/:id` | change strength / remove link |
+| **Brief** (`brief_spaces`) | | |
+| POST | `/api/projects/:id/brief-spaces` | add a room to the brief |
+| PUT/DELETE | `/api/brief-spaces/:id` | edit / remove a brief room |
+| GET | `/api/projects/:id/brief-diff` | preview brief → design changes (adds/updates/deletes) |
+| POST | `/api/projects/:id/apply-brief` | apply selected changes onto the design |
+| POST | `/api/projects/:id/pull-to-brief` | copy one design room's programme into the brief |
+| POST | `/api/projects/:id/brief-from-design` | seed the brief from the current design |
+| POST | `/api/projects/:id/brief-milestone` | record the brief's areas as a milestone |
+| GET/POST | `/api/projects/:id/brief-revisions` | list / take a dated brief revision |
+| GET/DELETE | `/api/brief-revisions/:id` | fetch / remove a revision |
+| POST | `/api/projects/:id/brief-adjacencies` | declare an adjacency requirement |
+| DELETE | `/api/brief-adjacencies/:id` | remove a requirement |
+| **Options & audit** | | |
+| GET/POST | `/api/projects/:id/options` | list / save a design option (A/B scheme) |
+| POST | `/api/projects/:id/options/:optionId/load` | swap an option into the design |
+| DELETE | `/api/options/:id` | remove an option |
+| GET | `/api/projects/:id/changes` | programme change log |
+| **Images & misc** | | |
+| POST | `/api/projects/:id/images` | upload an image layer |
+| GET | `/api/images/:id/data` | image pixels as a data URL (fetched once, cached) |
+| PUT/DELETE | `/api/images/:id` | edit metadata / remove a layer |
 | GET/PUT | `/api/settings` | user preferences (key–value) |
 | GET | `/api/geocode?q=` | address → lat/lon (Nominatim proxy) |
 | GET | `/api/tile/:z/:x/:y` | satellite tile proxy (Esri World Imagery) |
@@ -163,6 +199,9 @@ target, and you record the designed total for all three rooms).
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — design decisions, the data
   model, the scale/alignment math, and gotchas. Written for AI agents and
   humans extending the app; **read it before changing the diagram or schema**.
+- **[docs/viewport-interaction-plan.md](docs/viewport-interaction-plan.md)** —
+  the phased plan for the diagram's viewport: pointer hot path, the mode state
+  machine, and a renderer-agnostic scene layer.
 - **[ROADMAP.md](ROADMAP.md)** — where this could go next.
 
 ## Requirements

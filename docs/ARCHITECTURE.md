@@ -46,20 +46,34 @@ The whole thing is **single-user and local** by design (see §2).
 ```
 server/
   db.js            Schema, additive migrations (ensureColumn), legacy image
-                   migration (migrateImages), demo seed
+                   migration (migrateImages), adjacency instance-key rebuild
+                   (migrateAdjacencies), demo seed
   index.js         Express app wiring (routers, error handler, static prod)
   serialize.js     Response shaping: publicProject(), IMAGE_META_COLS — keeps
                    base64 payloads out of the per-mutation refetch
-  routes/          One router per resource: projects, spaces, adjacencies,
-                   snapshots, images (incl. GET /images/:id/data), settings,
-                   proxy (geocode + tiles)
+  brief.js         The independent Brief: formula resolution into target_area,
+                   path-keyed Brief⇄Design reconciliation (diff / apply / pull),
+                   dated revisions, brief→milestone
+  options.js       Design options — save/list/load/delete a whole design
+                   (spaces + adjacencies) as a named A/B scheme
+  changelog.js     Programme audit trail; logs programme fields, never geometry
+  routes/          One router per resource: projects, spaces, brief_spaces,
+                   program (revisions, brief adjacencies, changes, options),
+                   adjacencies, snapshots, images (incl. GET /images/:id/data),
+                   settings, proxy (geocode + tiles)
 src/
   api.js           Thin fetch wrapper; one method per endpoint
   compute.js       PURE helpers: area math, hierarchy, units, CSV. No React.
   adjacency.js     PURE: compliance scoring + closestInstancePair (the ONE
                    closest-pair implementation — sim, links, PDF, stacked view)
-  geometry.js      PURE: hulls, polygons, image filters, pinsOf
+  geometry.js      PURE: hulls, polygons, power/Voronoi cells, image filters
   pins.js          PURE: pinPatch — the shared pin_json before/after builder
+  formula.js       PURE: the brief-area formula engine (tokenizer → recursive-
+                   descent parser → evaluator). ONE implementation shared by the
+                   client's live preview and the server's authoritative
+                   resolution — keep them on this module, never fork it.
+  benchmarks.js    PURE: planning benchmarks (typical allowances by building
+                   type) + the project → settings → built-in override chain
   prefs.js         localStorage UI preferences (one namespace)
   scale.js floors.js viz.js theme.jsx   scale math · storeys/cameras · colours · theming
   pdfExport.js     jsPDF scene → scale-accurate PDF (lazy-loaded)
@@ -73,7 +87,15 @@ src/
     ProjectView.jsx     Full-height project frame: bar + tabs + shared selection
     Dashboard.jsx       KPI cards, drift chart, rollups
     BubbleTab.jsx       Diagram orchestrator: state, pointer handlers, canvas
-    BriefTab.jsx        Treemap + hierarchical schedule
+    BriefTab.jsx        The SHARED treemap + hierarchical schedule editor. NOT a
+                        tab itself — ProgramTab and DesignTab each wrap it,
+                        passing a `store` adapter (which table the edits write
+                        to) plus their own actions and sidebar cards.
+    ProgramTab.jsx      The "Brief" tab: the independent agreed programme
+                        (brief_spaces) — import, grossing allowance, adjacency
+                        requirements, revisions, benchmarks, send-to-design
+    DesignTab.jsx       The "Design" tab: the live areas (spaces) that drive
+                        the diagram
     SnapshotsTab.jsx    Milestone recording/editing
     DriftChart.jsx      Hand-rolled SVG line chart
     HelpPanel.jsx       Shortcuts modal
@@ -107,6 +129,24 @@ All schema lives in `server/db.js`. Migrations are **additive only** via
 working. New columns must also be added to `PROJECT_FIELDS` in `index.js` to be
 writable through `PUT /api/projects/:id`.
 
+### Two room trees (read this first)
+
+There are **two independent room hierarchies**, and confusing them is the
+easiest way to break this app:
+
+- **`spaces` — the Design.** The live rooms that carry diagram geometry
+  (pins, shapes, plans, blocks) and drive the canvas. The "Design" tab.
+- **`brief_spaces` — the Brief.** The agreed programme. Programme fields only,
+  **no geometry**. The "Brief" tab.
+
+They are reconciled **explicitly, never implicitly**. `server/brief.js` matches
+rows across the two trees by **path key** — the `/`-joined chain of ancestor
+names — so a Brief row and a Design row correspond when their positions in the
+hierarchy match, not by id. Nothing syncs on its own: the user previews a diff
+and applies it (`apply-brief`), or pulls one room the other way
+(`pull-to-brief`). Preserve that: an automatic sync would silently overwrite
+negotiated programme numbers with in-progress design areas.
+
 ### `projects`
 Core: `name, client, stage, units ('m2'|'ft2'), grossing_target, tolerance`.
 
@@ -123,6 +163,15 @@ Diagram/render state (all per-project):
   - Satellite: `sat_*` mirror of the above.
 - `bg_scale` — **legacy** single-layer scale; only read by the one-time
   migration in `BubbleTab` (do not use in new code).
+- `north_locked` — 1 freezes north, so rotating the design onto the site does
+  not drag the bearing with it.
+
+Programme state:
+- `variables` — JSON `{ name: number }`, referenced in formulas as `@name`.
+- `circulation` — circulation/grossing allowance as a fraction of net
+  (0.35 → gross ≈ net × 1.35). Null = no estimate.
+- `benchmarks` — per-project override of the benchmark library; null falls back
+  to app settings, which fall back to the built-ins in `src/benchmarks.js`.
 
 ### `spaces` (the program — a self-referential tree)
 - `project_id`, `department`, `name`, `count`, `target_area`, `notes`,
@@ -135,14 +184,45 @@ Diagram/render state (all per-project):
 - `pin_json` — current per-instance pins: `{"0":{x,y},"2":{x,y}}` keyed by
   instance index. A space with `count` N has instances `0..N-1`, each a
   separate bubble that can be pinned independently.
+- `area_formula` — when set, `target_area` is **derived**, not authored. The
+  server resolves the expression and persists the result into `target_area`
+  (`brief.js`), so every reader can keep using `target_area` and stay unaware
+  of formulas. Do not write `target_area` directly on a formula-driven row.
+
+### `brief_spaces` (the Brief tree)
+Mirrors the programme fields of `spaces` — `parent_id`, `kind`, `department`,
+`name`, `count`, `target_area`, `area_formula`, `child_mode`, `level`, `notes`,
+`image`, `sort_order` — and deliberately carries **no** geometry columns.
 
 ### `adjacencies`
-`space_a < space_b` (canonicalised), `strength ('required'|'desired')`, unique
-per pair. The bubble diagram's links.
+`space_a`/`space_b` with `inst_a`/`inst_b`, `strength ('required'|'desired')`,
+unique on **(space_a, space_b, inst_a, inst_b)**. Links target a *specific
+instance* of each space, so a `count > 1` space can link its copies
+independently; instance 0 is the first/only room. Old databases had
+`UNIQUE(space_a, space_b)` and are rebuilt into the wider key by
+`migrateAdjacencies()`, existing rows landing at 0–0.
+
+### `brief_adjacencies`
+Adjacency **requirements** declared on Brief rooms ("Kitchen must adjoin
+Servery"), unique per `(a_id, b_id)`. Scored against the Design's actual links
+by path key — the requirement and the link live in different trees.
+
+### `brief_revisions`
+Dated, immutable copies of the whole Brief tree (Rev A/B/C as the brief is
+renegotiated). `data` is the serialized `brief_spaces` rows.
+
+### `design_options`
+Named saves of a whole design (`spaces` + `adjacencies`) as `data`, so A/B
+schemes can be compared against one Brief and swapped in.
+
+### `change_log`
+Append-only audit of programme edits: `tree` ('brief'|'design'), `name`,
+`field`, `old`, `new`. Programme fields only — geometry is never logged.
 
 ### `snapshots` + `snapshot_areas`
 A milestone (`label, taken_at, gross_area`) and its measured area per space.
-Only **leaf** spaces are measured.
+Only **leaf** spaces are measured. `kind` distinguishes a recorded
+`'milestone'` from one generated off the Brief.
 
 ### `settings`
 Key/value app-wide defaults applied to *new* projects.

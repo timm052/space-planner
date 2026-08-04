@@ -55,6 +55,20 @@ export default [
     },
   },
 
+  // Benchmark scripts: Node entry points that mount components into a jsdom,
+  // so they touch both the Node and the browser global sets.
+  {
+    files: ['scripts/**/*.js'],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+      globals: { ...globals.node, ...globals.browser, React: 'readonly' },
+    },
+    rules: {
+      'no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
+    },
+  },
+
   // Component tests render JSX and set globalThis.React (classic runtime under tsx).
   {
     files: ['test/**/*.{js,jsx}'],
