@@ -30,6 +30,8 @@
  * @typedef {{ step: DiagramUnits, minorStep: DiagramUnits }} Grid
  */
 
+import { boxExtents } from './scenes.js';
+
 /** How close (diagram units) an edge must come before it latches. */
 export const SNAP_TOL = 8;
 
@@ -81,18 +83,11 @@ export function snapToGrid(v, fine, grid) {
  */
 export function footHalf(space, node, { isBuilding, areaUnits, radiusOf }) {
   if (isBuilding) {
-    const target = areaUnits(space);
-    let hw, hh;
-    if (node && node.w && node.h) {
-      const aspect = node.w / node.h;
-      const bh = Math.sqrt(target / aspect);
-      hh = bh / 2;
-      hw = (aspect * bh) / 2;
-    } else {
-      hw = hh = Math.sqrt(target) / 2;
-    }
+    const { w, h } = boxExtents(areaUnits(space), node);
     // An odd number of quarter-turns swaps the axes.
-    return Math.round((node?.rot || 0) / 90) % 2 ? { x: hh, y: hw } : { x: hw, y: hh };
+    return Math.round((node?.rot || 0) / 90) % 2
+      ? { x: h / 2, y: w / 2 }
+      : { x: w / 2, y: h / 2 };
   }
   const r = radiusOf(space);
   return { x: r, y: r };

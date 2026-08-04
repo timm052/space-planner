@@ -5,11 +5,11 @@ import { STATUS_LABEL } from '../viz.js';
 // pdfExport is lazy-loaded on demand — keeps jsPDF out of the initial bundle.
 import { useHistory } from '../useHistory.js';
 import { SCALE_PRESETS, ratioToScale, scaleToRatio, zoomAbout } from '../scale.js';
-import { pinsOf, filterCss, parsePoly, regularPolygon, rectanglePolygon, outlinePoints, polygonArea, polygonCentroid, hullOfDiscs, simplifyOutline, normalizePolygon, powerCells, balanceCellWeights, pointInPolygon, closestPointOnPolygon, polygonSpansAtY } from '../geometry.js';
+import { pinsOf, filterCss, parsePoly, regularPolygon, rectanglePolygon, outlinePoints, polygonArea, polygonCentroid, hullOfDiscs, simplifyOutline, normalizePolygon, balanceCellWeights, pointInPolygon, polygonSpansAtY } from '../geometry.js';
 import { pinPatch } from '../pins.js';
 import { edgeGap, adjacencyScore, linkSatisfied, closestInstancePair, aggregateByRoot, linkKey, CONCEPT_THRESHOLDS_U } from '../adjacency.js';
 import { orderedLevels, levelRankMap } from '../floors.js';
-import { buildStackScene, build3DScene } from './diagram/scenes.js';
+import { buildStackScene, build3DScene, boxCorners, polyAt, interiorSeeds, interiorCells } from './diagram/scenes.js';
 import * as selection from './diagram/selection.js';
 import * as linking from './diagram/linking.js';
 import * as layerTools from './diagram/layerTools.js';
@@ -1143,25 +1143,17 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
       if (!verts || verts.length < 3) continue;
       const rad = ((n.rot || 0) * Math.PI) / 180;
       const cos = Math.cos(rad), sin = Math.sin(rad);
-      const toWorld = (x, y) => ({ x: n.x + x * cos - y * sin, y: n.y + x * sin + y * cos });
-      const boundary = verts.map((v) => toWorld(v.x, v.y));
-      const f = Math.sqrt(areaUnits(c) / fr.hullArea);
-      // Storey filter: one floor plate, one storey's rooms (see interiorStorey).
-      // The mapping frame stays the whole building's hull, so seeds don't jump
-      // when switching storeys.
-      const discs = interiorStorey == null
-        ? fr.discs
-        : fr.discs.filter((d) => interiorStoreyOf(d.s) === interiorStorey);
-      const seeds = discs.map((d) => {
-        const key = `${d.s.id}:${d.i}`;
-        let p = seedOverride.current.get(key) ?? toWorld((d.x - fr.hc.x) * f, (d.y - fr.hc.y) * f);
-        if (!pointInPolygon(boundary, p)) {
-          // Outside the drawn envelope (e.g. an unmatched hexagon) — clamp to
-          // the boundary, nudged inward so the cell doesn't degenerate.
-          const cp = closestPointOnPolygon(boundary, p);
-          p = { x: cp.x + (n.x - cp.x) * 0.05, y: cp.y + (n.y - cp.y) * 0.05 };
-        }
-        return { x: p.x, y: p.y, s: d.s, i: d.i, key };
+      const boundary = verts.map((v) => ({
+        x: n.x + v.x * cos - v.y * sin,
+        y: n.y + v.x * sin + v.y * cos,
+      }));
+      // Seeds, storey filter and out-of-envelope clamping are shared with the
+      // PDF sheet (scenes.js) — this view differs only in honouring a live
+      // seed drag via seedOverride.
+      const seeds = interiorSeeds({
+        frame: fr, boundary, origin: n, area: areaUnits(c),
+        storey: interiorStorey, storeyOf: interiorStoreyOf,
+        override: (key) => seedOverride.current.get(key),
       });
       // AREA-TRUE cells: a power diagram whose weights are balanced so each
       // cell's share of the envelope matches the room's share of the storey's
@@ -1183,24 +1175,19 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
         weights = balanceCellWeights(seeds, boundary, targets, draggingHere ? { iters: 14, initial: weights ?? null } : {});
         byBuilding.set(wKey, weights);
       }
-      const cells = powerCells(seeds.map((sd, ix) => ({ ...sd, w: weights[ix] })), boundary);
       // Rooms linked to the current selection — their cells get a highlight so
       // re-planning a seed can aim at its partners.
       const relatedIds = selected != null
         ? new Set(adjacencies.flatMap((l) => (l.space_a === selected ? [l.space_b] : l.space_b === selected ? [l.space_a] : [])))
         : null;
-      // Circulation (optional): each cell shrinks toward its seed to the
-      // room's NET target area; the interstitial band left over renders as
-      // hatched circulation. Off (0) → cells simply fill the envelope.
+      // Circulation (optional): each cell shrinks toward its seed to the room's
+      // NET target area; the band left over renders as hatched circulation.
       const circ = circOf(c);
+      const cells = interiorCells({ seeds, boundary, weights, circ, netAreaOf: areaUnits });
       const cellsOut = [];
-      seeds.forEach((sd, ix) => {
-        let cell = cells[ix];
-        if (!cell) return;
-        if (circ > 0) {
-          const k = Math.min(1, Math.sqrt(areaUnits(sd.s) / (polygonArea(cell) || 1)));
-          if (k < 1) cell = cell.map((p) => ({ x: sd.x + (p.x - sd.x) * k, y: sd.y + (p.y - sd.y) * k }));
-        }
+      for (const entry of cells) {
+        if (!entry) continue;
+        const { seed: sd, cell } = entry;
         const cellPU = effScale ? (polygonArea(cell) * effScale * effScale) / kM2 : null;
         const targetPU = leafEa(sd.s);
         cellsOut.push({
@@ -1212,7 +1199,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
           tight: cellPU != null && cellPU < targetPU * 0.95,
           related: !!relatedIds?.has(sd.s.id) && sd.s.id !== selected,
         });
-      });
+      }
       if (cellsOut.length) out.push({ rootId: c.id, cells: cellsOut, boundary, circ });
     }
     return out.length ? out : null;
@@ -2680,28 +2667,15 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     if (kind === 'masterplan') return planPinsOf(s)[i] ?? pinsOf(s)[i] ?? null;
     return pinsOf(s)[i] ?? null;
   }
-  // A drawn outline (room poly or building envelope) as absolute sheet verts.
-  const sheetPoly = (s, area, pos) => {
-    if (!(s.shape === 'poly' && parsePoly(s))) return null;
-    const pts = outlinePoints(parsePoly(s), 14);
-    const k = polygonArea(pts) || 1;
-    const f = Math.sqrt(area / k);
-    const a = ((pos.rot || 0) * Math.PI) / 180;
-    const c = Math.cos(a), sn = Math.sin(a);
-    return pts.map((p) => {
-      const x = p.x * f, y = p.y * f;
-      return { x: pos.x + x * c - y * sn, y: pos.y + x * sn + y * c };
-    });
-  };
-  // A building box as its (possibly rotated) rectangle corners.
-  const sheetBoxPoly = (area, pos) => {
-    const aspect = pos.w > 0 && pos.h > 0 ? pos.w / pos.h : 1;
-    const bh = Math.sqrt(area / aspect), bw = aspect * bh;
-    const a = ((pos.rot || 0) * Math.PI) / 180;
-    const c = Math.cos(a), sn = Math.sin(a);
-    return [[-bw / 2, -bh / 2], [bw / 2, -bh / 2], [bw / 2, bh / 2], [-bw / 2, bh / 2]]
-      .map(([x, y]) => ({ x: pos.x + x * c - y * sn, y: pos.y + x * sn + y * c }));
-  };
+  // A drawn outline (room poly or building envelope) as absolute sheet verts,
+  // and a building box as its (possibly rotated) corners. Both defer to the
+  // shared footprint geometry in scenes.js so the sheet cannot drift from the
+  // screen — these were hand-synced copies of the canvas's own math.
+  const sheetPoly = (s, area, pos) =>
+    s.shape === 'poly' && parsePoly(s)
+      ? polyAt(outlinePoints(parsePoly(s), 14), area, pos, polygonArea)
+      : null;
+  const sheetBoxPoly = (area, pos) => boxCorners(area, pos);
   // Interior room cells for one envelope, from PERSISTED data — the sheet
   // twin of makeInterior (no live node/drag state, no weight cache): the same
   // concept-frame seed mapping, area-balanced power cells and circulation
@@ -2709,42 +2683,28 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
   function sheetInteriorCells(c, boundary, pos, area) {
     const fr = interiorFrames?.get(c.id);
     if (!fr) return [];
-    const rad = ((pos.rot || 0) * Math.PI) / 180;
-    const cos = Math.cos(rad), sin = Math.sin(rad);
-    const toWorld = (x, y) => ({ x: pos.x + x * cos - y * sin, y: pos.y + x * sin + y * cos });
-    const f = Math.sqrt(area / fr.hullArea);
-    const discs = interiorStorey == null
-      ? fr.discs
-      : fr.discs.filter((d) => interiorStoreyOf(d.s) === interiorStorey);
-    if (!discs.length) return [];
-    const seeds = discs.map((d) => {
-      let p = toWorld((d.x - fr.hc.x) * f, (d.y - fr.hc.y) * f);
-      if (!pointInPolygon(boundary, p)) {
-        const cp = closestPointOnPolygon(boundary, p);
-        p = { x: cp.x + (pos.x - cp.x) * 0.05, y: cp.y + (pos.y - cp.y) * 0.05 };
-      }
-      return { x: p.x, y: p.y, s: d.s, i: d.i };
+    const seeds = interiorSeeds({
+      frame: fr, boundary, origin: pos, area,
+      storey: interiorStorey, storeyOf: interiorStoreyOf,
     });
+    if (!seeds.length) return [];
+    // No weight cache on the sheet: this runs once per export, off persisted
+    // data, so it always balances from scratch.
     const targets = seeds.map((sd) => Math.max(leafEa(sd.s), 0.1));
     const weights = balanceCellWeights(seeds, boundary, targets);
-    const cells = powerCells(seeds.map((sd, ix) => ({ ...sd, w: weights[ix] })), boundary);
-    const circ = circOf(c);
+    const cells = interiorCells({ seeds, boundary, weights, circ: circOf(c), netAreaOf: areaUnits });
     const out = [];
-    seeds.forEach((sd, ix) => {
-      let cell = cells[ix];
-      if (!cell) return;
-      if (circ > 0) {
-        const k = Math.min(1, Math.sqrt(areaUnits(sd.s) / (polygonArea(cell) || 1)));
-        if (k < 1) cell = cell.map((p) => ({ x: sd.x + (p.x - sd.x) * k, y: sd.y + (p.y - sd.y) * k }));
-      }
+    for (const cell of cells) {
+      if (!cell) continue;
+      const { seed: sd, cell: poly } = cell;
       out.push({
-        poly: cell,
-        r: Math.sqrt(Math.abs(polygonArea(cell)) / Math.PI), // equivalent radius, for label sizing
+        poly,
+        r: Math.sqrt(Math.abs(polygonArea(poly)) / Math.PI), // equivalent radius, for label sizing
         color: colorOf(sd.s),
         label: `${sd.s.name}${Math.max(1, sd.s.count || 1) > 1 ? ` ${sd.i + 1}` : ''}`,
         sublabel: fmtArea(leafEa(sd.s), units),
       });
-    });
+    }
     return out;
   }
 

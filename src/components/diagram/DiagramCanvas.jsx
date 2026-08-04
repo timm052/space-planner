@@ -5,6 +5,7 @@ import { hullOfDiscs, smoothHullPath, filterCss, polygonPath, polyBounds, polygo
 import { darkHex, labelInk } from '../../viz.js';
 import { fitLabel, measureText } from '../../textfit.js';
 import { TickLayer } from '../../hooks/useTick.js';
+import { boxExtents } from './scenes.js';
 
 // three.js + react-three-fiber are the bulk of the main bundle; the 3-D view
 // is one floor mode, so load it on demand (same pattern as pdfExport).
@@ -381,10 +382,7 @@ export default function DiagramCanvas({
                 if (!dir) return null;
                 const n = nodes.get(o.key);
                 if (!n) return null;
-                const target = areaUnits(o.s);
-                const aspect = n.w && n.h ? n.w / n.h : 1;
-                const bh = Math.sqrt(target / aspect);
-                const bw = aspect * bh;
+                const { w: bw, h: bh } = boxExtents(areaUnits(o.s), n);
                 return (
                   <g
                     key={`onion:${o.key}`}
@@ -648,10 +646,7 @@ export default function DiagramCanvas({
               // area edit re-locks the geometry automatically (like the poly lock).
               let bw = side, bh = side;
               if (box && n.w && n.h) {
-                const target = areaUnits(s);      // == side²
-                const aspect = n.w / n.h;
-                bh = Math.sqrt(target / aspect);
-                bw = aspect * bh;
+                ({ w: bw, h: bh } = boxExtents(areaUnits(s), n)); // target == side²
               }
               const editing = editShape === s.id && i === editAnchorInst(s);
               // Envelope with a live interior sketch: the cells carry the colour,

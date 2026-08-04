@@ -226,8 +226,40 @@ replacing anything.
   carry semantic state (`selected`, `dim`, `related`, `tight`), not colours —
   theming stays in CSS, where commit `e67e38b` showed it belongs.
 
-**Exit:** one scene definition per environment; canvas and PDF render from it;
-existing PNG/PDF exports byte-comparable or visually identical.
+### Result
+
+Started by looking for what the canvas and the PDF actually disagree about, and
+found the codebase already knew: `sheetInteriorCells` carried the comment
+*"the sheet twin of makeInterior"* — a hand-synced parallel implementation. Two
+duplications were unified, both now in `scenes.js` with tests:
+
+**Footprint geometry, 4 copies → 1.** The "rescale a box to its target area,
+honouring the authored aspect" math existed in `modes.footHalf`, `sheetBoxPoly`,
+and twice in `DiagramCanvas` (the onion-skin underlay and the room renderer).
+All four now call `boxExtents`. Added `boxCorners` and `polyAt` alongside it.
+
+**The interior sketch, 2 copies → 1.** `interiorSeeds` (concept-frame mapping,
+storey filter, out-of-envelope clamping) and `interiorCells` (power cells +
+circulation shrink) are shared. The two callers now differ only in what they
+legitimately own: the canvas honours a live seed drag through an `override`
+callback and caches balanced weights across frames; the sheet balances from
+scratch off persisted data.
+
+Tests 323 → 338. The 15 new ones cover geometry that had **no coverage at all**
+before — `pdfExport` and `buildSheetScene` had zero test files touching them.
+The one that matters most asserts the sheet and the snap resolver agree on the
+same footprint, which is the drift this phase exists to prevent.
+
+`BubbleTab` is 4,013 lines — finally below the 4,020 it started at, though
+that is a wash rather than a win, and the honest framing stays the same as
+Phase 2: this bought correctness and coverage, not volume.
+
+**Exit:** ✅ **Done** for the shared geometry, which was the phase's real
+argument. Deliberately **not** done: `DiagramCanvas` is not yet a dumb scene
+consumer, and there is still no single scene definition per environment —
+`buildSheetScene` remains an async closure inside `BubbleTab` rather than a
+pure builder in `scenes.js`. That last step is now much smaller than it was,
+because the geometry it would need is already extracted and tested.
 
 ---
 

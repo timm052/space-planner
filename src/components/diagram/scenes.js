@@ -5,6 +5,141 @@ import { ISO } from '../../floors.js';
 import { closestInstancePair } from '../../adjacency.js';
 import { instanceLabel } from '../../compute.js';
 import { W, H } from '../../hooks/useViewport.js';
+import { pointInPolygon, closestPointOnPolygon, powerCells, polygonArea } from '../../geometry.js';
+
+// ---------- shared footprint geometry ----------
+// One definition of "what shape does this room actually occupy", used by every
+// renderer: the live canvas, the onion-skin underlay, the snap resolver
+// (modes.footHalf) and the PDF sheet builder. It existed as four hand-synced
+// copies of the same three lines, which is precisely how an export drifts out
+// of agreement with the screen.
+
+/**
+ * A building box's rendered extents. The box carries an AUTHORED aspect ratio
+ * (from its stored w/h) but its area is re-locked to the room's live target on
+ * every render — so editing an area re-fits the geometry automatically, the
+ * same way the area-locked polygon does.
+ *
+ * @param {number} target Target area in diagram units².
+ * @param {{w?: number, h?: number}|null} node Authored box, for its aspect only.
+ * @returns {{ w: number, h: number }} Full width and height in diagram units.
+ */
+export function boxExtents(target, node) {
+  const aspect = node && node.w && node.h ? node.w / node.h : 1;
+  const h = Math.sqrt(target / aspect);
+  return { w: aspect * h, h };
+}
+
+/**
+ * The four corners of a box of `area`, placed and rotated at `pos`.
+ * @param {number} area
+ * @param {{x: number, y: number, w?: number, h?: number, rot?: number}} pos
+ * @returns {Array<{x: number, y: number}>}
+ */
+export function boxCorners(area, pos) {
+  const { w, h } = boxExtents(area, pos);
+  const a = ((pos.rot || 0) * Math.PI) / 180;
+  const c = Math.cos(a);
+  const s = Math.sin(a);
+  return [[-w / 2, -h / 2], [w / 2, -h / 2], [w / 2, h / 2], [-w / 2, h / 2]].map(([x, y]) => ({
+    x: pos.x + x * c - y * s,
+    y: pos.y + x * s + y * c,
+  }));
+}
+
+/**
+ * An authored outline rescaled to `area` and placed/rotated at `pos`.
+ * @param {Array<{x:number,y:number}>} pts Normalized outline points.
+ * @param {number} area
+ * @param {{x:number, y:number, rot?:number}} pos
+ * @param {(pts:Array)=>number} areaOf Polygon-area helper (geometry.polygonArea).
+ */
+// ---------- interior sketch ----------
+// The Voronoi/power-cell interior of a placed envelope. The live canvas and the
+// PDF sheet used to compute this twice — `sheetInteriorCells` was commented in
+// the source as "the sheet twin of makeInterior", i.e. a hand-synced copy. Both
+// now share these two functions; they differ only in where positions come from
+// (live nodes + drag overrides vs persisted pins) and how the result is
+// decorated, which is what each caller still owns.
+
+/**
+ * Map the concept-frame disc layout into a drawn envelope to get one seed per
+ * room. Seeds landing outside the envelope (an unmatched hexagon, a reshaped
+ * outline) are clamped to the boundary and nudged 5% inward, so their cell
+ * cannot degenerate to zero width.
+ *
+ * @param {object} p
+ * @param {{discs: Array, hc: {x:number,y:number}, hullArea: number}} p.frame Concept-frame layout.
+ * @param {Array<{x:number,y:number}>} p.boundary Envelope outline in world coords.
+ * @param {{x:number, y:number, rot?:number}} p.origin Envelope placement.
+ * @param {number} p.area Envelope area in diagram units².
+ * @param {string|null} p.storey Only seed this storey's rooms (null = all).
+ * @param {(space:object)=>string|null} p.storeyOf
+ * @param {(key:string)=>{x:number,y:number}|undefined} [p.override] Live seed drags.
+ * @returns {Array<{x:number,y:number,s:object,i:number,key:string}>}
+ */
+export function interiorSeeds({ frame, boundary, origin, area, storey, storeyOf, override }) {
+  const rad = ((origin.rot || 0) * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const toWorld = (x, y) => ({ x: origin.x + x * cos - y * sin, y: origin.y + x * sin + y * cos });
+  // The mapping frame stays the WHOLE building's hull even when one storey is
+  // shown, so seeds don't jump as you switch storeys.
+  const f = Math.sqrt(area / frame.hullArea);
+  const discs = storey == null ? frame.discs : frame.discs.filter((d) => storeyOf(d.s) === storey);
+  return discs.map((d) => {
+    const key = `${d.s.id}:${d.i}`;
+    let p = override?.(key) ?? toWorld((d.x - frame.hc.x) * f, (d.y - frame.hc.y) * f);
+    if (!pointInPolygon(boundary, p)) {
+      const cp = closestPointOnPolygon(boundary, p);
+      p = { x: cp.x + (origin.x - cp.x) * 0.05, y: cp.y + (origin.y - cp.y) * 0.05 };
+    }
+    return { x: p.x, y: p.y, s: d.s, i: d.i, key };
+  });
+}
+
+/**
+ * Area-true cells for a set of seeds: a power diagram whose weights have been
+ * balanced so each cell's share of the envelope matches its room's share of the
+ * programme — so the sketch reads as a plan rather than as proximity luck.
+ *
+ * With circulation on, each cell then shrinks toward its own seed until it
+ * holds the room's NET area; the interstitial band left over is what the canvas
+ * hatches as circulation.
+ *
+ * @param {object} p
+ * @param {Array} p.seeds From interiorSeeds.
+ * @param {Array<{x:number,y:number}>} p.boundary
+ * @param {number[]} p.weights Balanced weights, one per seed (caller owns caching).
+ * @param {number} p.circ Circulation fraction; 0 = cells fill the envelope.
+ * @param {(space:object)=>number} p.netAreaOf Net target area of a room, diagram units².
+ * @returns {Array<{seed:object, cell:Array<{x:number,y:number}>}|null>} Aligned with `seeds`.
+ */
+export function interiorCells({ seeds, boundary, weights, circ, netAreaOf }) {
+  const raw = powerCells(seeds.map((sd, ix) => ({ ...sd, w: weights[ix] })), boundary);
+  return seeds.map((sd, ix) => {
+    let cell = raw[ix];
+    if (!cell) return null;
+    if (circ > 0) {
+      const k = Math.min(1, Math.sqrt(netAreaOf(sd.s) / (polygonArea(cell) || 1)));
+      if (k < 1) cell = cell.map((p) => ({ x: sd.x + (p.x - sd.x) * k, y: sd.y + (p.y - sd.y) * k }));
+    }
+    return { seed: sd, cell };
+  });
+}
+
+export function polyAt(pts, area, pos, areaOf) {
+  const k = areaOf(pts) || 1;
+  const f = Math.sqrt(area / k);
+  const a = ((pos.rot || 0) * Math.PI) / 180;
+  const c = Math.cos(a);
+  const s = Math.sin(a);
+  return pts.map((p) => {
+    const x = p.x * f;
+    const y = p.y * f;
+    return { x: pos.x + x * c - y * s, y: pos.y + x * s + y * c };
+  });
+}
 
 /**
  * Build the stacked axonometric scene — a fixed isometric camera (the WebGL
