@@ -9,7 +9,10 @@ import { pinsOf, filterCss, parsePoly, regularPolygon, rectanglePolygon, outline
 import { pinPatch } from '../pins.js';
 import { edgeGap, adjacencyScore, linkSatisfied, closestInstancePair, aggregateByRoot, linkKey, CONCEPT_THRESHOLDS_U } from '../adjacency.js';
 import { orderedLevels, levelRankMap } from '../floors.js';
-import { buildStackScene, build3DScene, boxCorners, polyAt, interiorSeeds, interiorCells } from './diagram/scenes.js';
+import {
+  buildStackScene, build3DScene, boxCorners, polyAt, interiorSeeds, interiorCells,
+  trueScaleRadius, relativeRadius, sceneBounds,
+} from './diagram/scenes.js';
 import * as selection from './diagram/selection.js';
 import * as linking from './diagram/linking.js';
 import * as layerTools from './diagram/layerTools.js';
@@ -590,8 +593,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     // Concept is scale-free: bubble radius stays RELATIVE to the largest room, so
     // a project's calibrated scale never sizes the relationship diagram. Master
     // plan / Building are metric (radius derived from the real area at scale).
-    if (effScale && !isConcept) return Math.max(7, Math.sqrt(areaToM2(ea(s), units) / Math.PI) / effScale);
-    return 16 + 50 * Math.sqrt(ea(s) / maxEach);
+    // Both rules live in scenes.js — the PDF sheet uses the same two.
+    if (effScale && !isConcept) return trueScaleRadius(areaToM2(ea(s), units), effScale);
+    return relativeRadius(ea(s), maxEach);
   };
 
   useEffect(() => () => Object.values(debouncers.current).forEach(clearTimeout), []);
@@ -1031,7 +1035,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
   function conceptDiscsOf(c, { placeMissing = false } = {}) {
     const cache = layoutCache.get(cacheKeyFor('concept'));
     const maxLeaf = Math.max(...leaves.map(leafEa), 1);
-    const rOf = (s) => 16 + 50 * Math.sqrt(leafEa(s) / maxLeaf); // concept (relative) radius
+    const rOf = (s) => relativeRadius(leafEa(s), maxLeaf); // concept (relative) radius
     const discs = [];
     const missing = [];
     for (const l of leaves) {
@@ -2725,9 +2729,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     const objects = sheetObjects(kind, floor);
     const metric = kind !== 'concept' && !!effScale;
     const maxRel = Math.max(...objects.map(ea), 1);
+    // Same two rules the canvas uses (scenes.js) — that is what keeps the
+    // exported sheet the same size as what is on screen.
     const radius = (s) => (metric
-      ? Math.max(7, Math.sqrt(areaToM2(ea(s), units) / Math.PI) / effScale)
-      : 16 + 50 * Math.sqrt(ea(s) / maxRel));
+      ? trueScaleRadius(areaToM2(ea(s), units), effScale)
+      : relativeRadius(ea(s), maxRel));
     const bubbles = [];
     const cells = [];
     // The interior sketch exports with the master plan sheet exactly as shown:
@@ -2763,23 +2769,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
       }
     }
     if (bubbles.length === 0) return null;
-
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const b of bubbles) {
-      if (b.poly) {
-        for (const p of b.poly) {
-          minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
-          minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
-        }
-      } else {
-        minX = Math.min(minX, b.x - b.r);
-        minY = Math.min(minY, b.y - b.r);
-        maxX = Math.max(maxX, b.x + b.r);
-        maxY = Math.max(maxY, b.y + b.r);
-      }
-    }
-    const pad = 40;
-    const bounds = { minX: minX - pad, minY: minY - pad, maxX: maxX + pad, maxY: maxY + pad };
+    const bounds = sceneBounds(bubbles);
 
     // Site image layers belong to the master plan sheet only.
     const sceneLayers = [];

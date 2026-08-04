@@ -2,9 +2,73 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildStackScene, build3DScene, boxExtents, boxCorners, polyAt, interiorSeeds, interiorCells,
+  trueScaleRadius, relativeRadius, sceneBounds, MIN_TRUE_RADIUS, REL_BASE, REL_SPAN,
 } from '../src/components/diagram/scenes.js';
 import { footHalf } from '../src/components/diagram/modes.js';
 import { polygonArea, pointInPolygon } from '../src/geometry.js';
+
+// ---------- bubble sizing ----------
+// Three copies before this was shared: canvas radiusOf, concept-frame rOf, and
+// the PDF sheet's own rule. A disagreement is a PDF that misses the screen.
+
+test('trueScaleRadius draws a circle of the room real area at the drawing scale', () => {
+  // 100 m2 at 1 m per unit → r = sqrt(100/pi) ≈ 5.64 units... but the floor bites.
+  assert.equal(trueScaleRadius(100, 1), MIN_TRUE_RADIUS, 'the minimum radius floors a small circle');
+  // At 0.1 m/unit the same room is 10x bigger on paper and clears the floor.
+  const r = trueScaleRadius(100, 0.1);
+  assert.ok(Math.abs(r - Math.sqrt(100 / Math.PI) / 0.1) < 1e-9);
+  assert.ok(r > MIN_TRUE_RADIUS);
+});
+
+test('trueScaleRadius area scales with the square root, so double area is not double radius', () => {
+  const a = trueScaleRadius(200, 0.05);
+  const b = trueScaleRadius(400, 0.05);
+  assert.ok(Math.abs(b / a - Math.SQRT2) < 1e-9, 'doubling the area multiplies the radius by sqrt(2)');
+});
+
+test('trueScaleRadius halving the scale doubles the drawn radius', () => {
+  assert.ok(Math.abs(trueScaleRadius(500, 0.05) / trueScaleRadius(500, 0.1) - 2) < 1e-9);
+});
+
+test('relativeRadius is scale-free: the largest room always draws the same size', () => {
+  // Whatever the absolute areas, the biggest room gets BASE + SPAN.
+  assert.equal(relativeRadius(80, 80), REL_BASE + REL_SPAN);
+  assert.equal(relativeRadius(9000, 9000), REL_BASE + REL_SPAN);
+  // And a zero-area room still gets a visible base radius.
+  assert.equal(relativeRadius(0, 500), REL_BASE);
+});
+
+test('relativeRadius depends only on the RATIO to the largest room', () => {
+  assert.ok(Math.abs(relativeRadius(25, 100) - relativeRadius(250, 1000)) < 1e-9);
+});
+
+test('relativeRadius survives a degenerate max without dividing by zero', () => {
+  assert.ok(Number.isFinite(relativeRadius(0, 0)));
+});
+
+// ---------- sceneBounds ----------
+
+test('sceneBounds pads a circle by its radius plus the margin', () => {
+  assert.deepEqual(sceneBounds([{ x: 100, y: 50, r: 10 }], 40), {
+    minX: 50, minY: 0, maxX: 150, maxY: 100,
+  });
+});
+
+test('sceneBounds measures a polygon by its vertices, not by its radius', () => {
+  // A long room: the radius would badly understate its extent in x.
+  const b = { x: 0, y: 0, r: 5, poly: [{ x: -80, y: -4 }, { x: 80, y: -4 }, { x: 80, y: 4 }, { x: -80, y: 4 }] };
+  assert.deepEqual(sceneBounds([b], 0), { minX: -80, minY: -4, maxX: 80, maxY: 4 });
+});
+
+test('sceneBounds spans every bubble', () => {
+  const bounds = sceneBounds([{ x: 0, y: 0, r: 10 }, { x: 200, y: 120, r: 5 }], 0);
+  assert.deepEqual(bounds, { minX: -10, minY: -10, maxX: 205, maxY: 125 });
+});
+
+test('sceneBounds returns null for an empty scene rather than an infinite box', () => {
+  assert.equal(sceneBounds([], 40), null);
+  assert.equal(sceneBounds(null, 40), null);
+});
 
 // ---------- shared footprint geometry ----------
 // These three back BOTH the live canvas and the PDF sheet builder. Before they

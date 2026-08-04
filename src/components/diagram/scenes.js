@@ -14,6 +14,74 @@ import { pointInPolygon, closestPointOnPolygon, powerCells, polygonArea } from '
 // copies of the same three lines, which is precisely how an export drifts out
 // of agreement with the screen.
 
+// ---------- bubble sizing ----------
+// The single most visible quantity in the app, and it had three copies: the
+// canvas radiusOf, the concept-frame rOf, and the PDF sheet's own radius rule.
+// A disagreement between them is a PDF that does not match the screen.
+
+/** Floor on a true-scale radius, so a tiny room stays clickable. */
+export const MIN_TRUE_RADIUS = 7;
+/** Relative sizing: the smallest bubble's radius, and the span added by area. */
+export const REL_BASE = 16;
+export const REL_SPAN = 50;
+
+/**
+ * True-scale radius: a circle whose real area is the room's, drawn at the
+ * project's scale. Used by Master plan and Building, where the drawing is
+ * dimensioned.
+ * @param {number} areaM2 Room area in SQUARE METRES (convert before calling).
+ * @param {number} metresPerUnit The effective scale (metres per diagram unit).
+ */
+export function trueScaleRadius(areaM2, metresPerUnit) {
+  return Math.max(MIN_TRUE_RADIUS, Math.sqrt(areaM2 / Math.PI) / metresPerUnit);
+}
+
+/**
+ * Relative radius: sized against the largest room, deliberately SCALE-FREE so a
+ * project's calibrated scale never sizes the Concept relationship diagram.
+ * @param {number} area Room area, project units.
+ * @param {number} maxArea The largest room's area in the same set.
+ */
+export function relativeRadius(area, maxArea) {
+  return REL_BASE + REL_SPAN * Math.sqrt(area / (maxArea || 1));
+}
+
+// ---------- sheet bounds ----------
+
+/**
+ * The drawn extent of a set of scene bubbles, padded. This is what picks the
+ * PDF page size, so getting it wrong means a clipped or over-sized sheet.
+ * Polygon bubbles are measured by their actual vertices, not by a radius that
+ * would over- or under-state a long or L-shaped room.
+ *
+ * @param {Array<{x:number,y:number,r:number,poly?:Array<{x:number,y:number}>}>} bubbles
+ * @param {number} pad Margin in diagram units.
+ * @returns {{minX:number,minY:number,maxX:number,maxY:number}|null} Null if empty.
+ */
+export function sceneBounds(bubbles, pad = 40) {
+  if (!bubbles || bubbles.length === 0) return null;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const b of bubbles) {
+    if (b.poly) {
+      for (const p of b.poly) {
+        minX = Math.min(minX, p.x);
+        maxX = Math.max(maxX, p.x);
+        minY = Math.min(minY, p.y);
+        maxY = Math.max(maxY, p.y);
+      }
+    } else {
+      minX = Math.min(minX, b.x - b.r);
+      minY = Math.min(minY, b.y - b.r);
+      maxX = Math.max(maxX, b.x + b.r);
+      maxY = Math.max(maxY, b.y + b.r);
+    }
+  }
+  return { minX: minX - pad, minY: minY - pad, maxX: maxX + pad, maxY: maxY + pad };
+}
+
 /**
  * A building box's rendered extents. The box carries an AUTHORED aspect ratio
  * (from its stored w/h) but its area is re-locked to the room's live target on
