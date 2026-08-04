@@ -98,6 +98,23 @@
 
 .two-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
 
+/* Compliance mix — segmented status bar + legend (shares the diagram's
+   colour-by-status palette and the stacking-rail segmented-bar vocabulary). */
+.status-mix { margin-bottom: 14px; }
+.status-bar {
+  display: flex;
+  height: 9px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+.status-bar > span { display: block; height: 100%; min-width: 2px; border-left: 1px solid var(--panel); }
+.status-bar > span:first-child { border-left: none; }
+.status-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.status-legend-item { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+.status-legend-item .mono { color: var(--faint); }
+
 /* Milestone cards + change schedule. */
 .ms-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 28px; }
 .ms-card { padding: 18px; }
@@ -137,8 +154,141 @@
 .brief-main { flex: 1; min-width: 0; }
 .brief-summary { width: 300px; flex: none; display: flex; flex-direction: column; gap: 14px; position: sticky; top: 0; }
 
-.brief-viewbar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+/* Wrap so the toggles/lens/search stack instead of clipping in narrow windows;
+   the segmented controls must never shrink (they truncated to "Buildi"/"Sc"). */
+.brief-viewbar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; row-gap: 10px; margin-bottom: 16px; }
+.brief-viewbar .seg, .brief-viewbar .seg-sm { flex: none; }
+.brief-viewbar .seg button, .brief-viewbar .seg-sm button { white-space: nowrap; }
 .brief-viewbar-hint { font-size: 11.5px; color: var(--faint); }
+/* Colour lens sits right after the Treemap/Schedule toggle; the search grows,
+   the hint pushes right. */
+.brief-lens { margin-left: 2px; }
+.brief-viewbar .brief-viewbar-hint { margin-left: 12px; white-space: nowrap; }
+
+/* Find-a-space search box. */
+.brief-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: 0 1 260px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel);
+  color: var(--muted);
+}
+.brief-search:focus-within { border-color: var(--accent); }
+.brief-search input {
+  flex: 1; min-width: 0;
+  border: none; background: none; outline: none;
+  color: var(--text); font-size: 13px; padding: 0;
+}
+.brief-search-clear { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 12px; padding: 0 2px; }
+.brief-search-clear:hover { color: var(--text); }
+
+/* Mode context strip — distinguishes the Brief tab from the Design tab. */
+.brief-context { font-size: 12px; color: var(--faint); margin: 0 0 10px; padding-left: 10px; border-left: 2px solid var(--border); }
+.brief-context.is-brief { border-left-color: var(--accent); }
+.brief-context.is-design { border-left-color: var(--accent2); }
+
+/* ƒ Formula reference popover. */
+.formula-help-wrap { position: relative; }
+.formula-help-btn { display: inline-flex; align-items: center; gap: 5px; padding: 5px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.formula-help-btn:hover, .formula-help-btn.on { color: var(--text); border-color: var(--accent); }
+.formula-help-btn .fx { color: var(--accent); font-family: 'JetBrains Mono', ui-monospace, monospace; font-style: italic; font-weight: 700; }
+.formula-help-pop { position: absolute; top: calc(100% + 6px); right: 0; z-index: 30; width: 280px; padding: 12px 14px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); font-size: 12px; color: var(--muted); }
+.fh-row { margin-bottom: 8px; line-height: 1.5; }
+.fh-sec { margin: 8px 0 3px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--faint); }
+.fh-item { padding: 1px 0; line-height: 1.5; }
+.formula-help-pop code { font-family: 'JetBrains Mono', ui-monospace, monospace; color: var(--accent); }
+
+.formula-cell.err { color: var(--bad); }
+.formula-cell.err .fx { color: var(--bad); }
+
+/* Formula-driven areas. Inputs accepting "=…" get a mono tint; a live preview
+   chip resolves the value or flags an error as you type. */
+input.is-formula { font-family: 'JetBrains Mono', ui-monospace, monospace; color: var(--accent); }
+.formula-hint { font-size: 11px; font-weight: 600; white-space: nowrap; align-self: center; }
+.formula-hint.ok { color: var(--good); }
+.formula-hint.err { color: var(--bad); }
+.formula-cell { display: inline-flex; align-items: baseline; gap: 4px; }
+.formula-cell .fx { color: var(--accent); font-family: 'JetBrains Mono', ui-monospace, monospace; font-style: italic; font-weight: 700; }
+
+/* Firm baseline (M·00) card. */
+.baseline-card { display: flex; flex-direction: column; gap: 8px; border-left: 3px solid var(--accent); }
+.baseline-card.locked { border-left-color: var(--good); }
+.baseline-state { margin-left: auto; font-size: 10.5px; color: var(--faint); font-family: 'JetBrains Mono', ui-monospace, monospace; }
+.baseline-net { font-size: 22px; font-weight: 700; letter-spacing: -0.01em; }
+.baseline-net .unit { font-size: 12px; font-weight: 500; color: var(--muted); }
+.baseline-card .btn { align-self: flex-start; }
+.baseline-note { margin: 0; font-size: 11px; color: var(--faint); line-height: 1.4; }
+
+/* Variables card (B·04). */
+.vars-card { display: flex; flex-direction: column; gap: 7px; }
+.vars-empty { margin: 0; font-size: 11.5px; color: var(--faint); line-height: 1.4; }
+.vars-empty code, .var-name { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+.var-row { display: flex; align-items: center; gap: 8px; }
+.var-name { flex: 1; font-size: 12.5px; color: var(--accent); }
+.var-val { width: 74px; padding: 3px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--text); font-size: 12px; text-align: right; }
+.var-add { display: flex; gap: 6px; margin-top: 2px; }
+.var-add input { min-width: 0; flex: 1; padding: 4px 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--text); font-size: 12px; }
+.var-add input:first-child { flex: 1.2; }
+
+/* Brief-tab program actions (Start from design / Milestone / Overwrite). */
+.brief-program-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+
+/* Brief dialogs (overwrite preview, milestone, seed). Reuse .modal-overlay. */
+.modal-card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; width: 100%; max-width: 540px; max-height: 86vh; overflow-y: auto; box-shadow: var(--shadow); }
+.modal-card .modal-head h3 { margin: 0; font-size: 16px; }
+.modal-body { padding: 16px 22px 4px; margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.modal-note { padding: 4px 22px 0; margin: 0; color: var(--faint); font-size: 11.5px; line-height: 1.45; }
+.modal-error { padding: 8px 22px 0; margin: 0; color: var(--bad); font-size: 12.5px; }
+.modal-warn { margin: 10px 22px 0; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--warn) 12%, transparent); color: var(--text); font-size: 12.5px; }
+
+/* Category area stack — one horizontal bar of net area by category. */
+.cat-stack { display: flex; width: 100%; height: 26px; border-radius: 8px; overflow: hidden; margin-bottom: 12px; border: 1px solid var(--border); }
+.cat-stack-seg { position: relative; border: none; padding: 0 4px; cursor: pointer; font: inherit; min-width: 3px; transition: filter 0.12s, opacity 0.12s; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.cat-stack-seg + .cat-stack-seg { border-left: 1px solid rgba(0, 0, 0, 0.18); }
+.cat-stack-seg:hover { filter: brightness(1.08); }
+.cat-stack-seg.active { box-shadow: inset 0 0 0 2px var(--text); z-index: 1; }
+.cat-stack-seg.faded { opacity: 0.35; }
+.cat-stack-label { font-size: 10.5px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: 0.02em; }
+
+/* Empty-programme onboarding strip (Brief/Design schedule). */
+.brief-onboard { display: flex; align-items: center; gap: 14px; padding: 12px 16px; margin-bottom: 12px; border: 1px dashed var(--accent); border-radius: 12px; background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.brief-onboard-copy { flex: 1; font-size: 13px; }
+.brief-onboard-copy span { color: var(--muted); }
+
+/* "All fields" space-creation dialog. */
+.space-dialog-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; padding: 14px 22px 4px; }
+.space-dialog-grid label { display: flex; flex-direction: column; gap: 5px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--faint); }
+.space-dialog-grid label.span2 { grid-column: 1 / -1; }
+.space-dialog-grid input, .space-dialog-grid select, .space-dialog-grid textarea { padding: 7px 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel2); color: var(--text); font-size: 13px; font-weight: 400; letter-spacing: normal; text-transform: none; font-family: inherit; resize: vertical; }
+.space-dialog-grid .formula-input-wrap { display: block; }
+.space-dialog-grid .formula-input-wrap input { width: 100%; box-sizing: border-box; }
+.modal-fields { display: flex; gap: 12px; padding: 12px 22px; }
+.modal-fields .fld { display: flex; flex-direction: column; gap: 4px; flex: 1; }
+.modal-fields .fld span { font-size: 11px; color: var(--faint); text-transform: uppercase; letter-spacing: 0.06em; }
+.modal-fields input { padding: 7px 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel2); color: var(--text); font-size: 13px; }
+.modal-actions { display: flex; gap: 10px; padding: 14px 22px 20px; }
+.modal-note + .modal-actions { padding-top: 10px; }
+
+/* Overwrite preview diff. */
+.diff-list { padding: 8px 22px; display: flex; flex-direction: column; gap: 14px; }
+.diff-section { display: flex; flex-direction: column; gap: 3px; }
+.diff-head { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }
+.diff-head.good { color: var(--good); }
+.diff-head.warn { color: var(--warn); }
+.diff-head.bad { color: var(--bad); }
+.diff-row { display: flex; align-items: center; gap: 9px; font-size: 12.5px; padding: 3px 0; border-bottom: 1px dotted var(--border-soft); cursor: pointer; }
+.diff-row input[type="checkbox"] { flex: none; width: 15px; height: 15px; min-width: 0; margin: 0; }
+.diff-name { flex: 1; color: var(--text); }
+.diff-val { color: var(--muted); font-family: 'JetBrains Mono', ui-monospace, monospace; white-space: nowrap; }
+
+/* Compliance column — designed area + a Δ% chip in the shared status colours. */
+.brief-designed .delta-chip { margin-left: 8px; font-size: 11px; font-weight: 700; }
+.brief-noresults { text-align: center; color: var(--muted); padding: 22px !important; }
+.treemap-tile.dim { opacity: 0.16; }
 
 /* Segmented toggle (Treemap | Schedule). */
 .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 9px; overflow: hidden; }
@@ -217,6 +367,158 @@
 
 /* Shared-selection highlight on Brief schedule rows. */
 .brief-table tr.sel-row > td { background: var(--panel2); box-shadow: inset 2px 0 0 var(--accent); }
+
+/* Sortable column headers — click cycles ▲ / ▼ / manual order. */
+.brief-table th.th-sort { cursor: pointer; user-select: none; }
+.brief-table th.th-sort:hover { color: var(--text); }
+
+/* Category subtotal rows in the schedule footer. */
+.brief-table tfoot tr.cat-subtotal td {
+  padding: 5px 12px;
+  font-size: 12px;
+  color: var(--muted);
+  border-bottom: 1px dotted var(--border-soft);
+  font-weight: 500;
+}
+.brief-table tfoot tr.cat-subtotal .swatch { margin-right: 2px; }
+
+/* Formula autocomplete — @variable / [Space] suggestions under the input. */
+.formula-input-wrap { position: relative; display: inline-flex; flex: 1; min-width: 0; }
+.formula-input-wrap input { flex: 1; min-width: 0; }
+.formula-suggest {
+  position: absolute;
+  top: calc(100% + 3px);
+  left: 0;
+  z-index: 40;
+  min-width: 200px;
+  max-width: 320px;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  box-shadow: var(--shadow);
+}
+.formula-suggest li {
+  padding: 6px 9px;
+  border-radius: 6px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.formula-suggest li.hi { background: var(--accent); color: var(--accent-ink); }
+
+/* Milestone comparison picker (M·02). */
+.ms-compare { display: inline-flex; align-items: center; gap: 6px; }
+.ms-compare select {
+  padding: 4px 7px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel2);
+  color: var(--text);
+  font-size: 12px;
+  max-width: 170px;
+}
+
+/* Wide modal variant (import preview). */
+.modal-card.wide { max-width: 640px; }
+
+/* Select-all/none toggle in a diff section head. */
+.diff-all {
+  margin-left: 8px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  text-decoration: underline dotted;
+}
+.diff-all:hover { color: var(--text); }
+
+/* Import dialog. */
+.import-paste {
+  width: 100%;
+  resize: vertical;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel2);
+  color: var(--text);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.import-group { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); }
+.import-group input[type="checkbox"] { flex: none; width: 15px; height: 15px; min-width: 0; margin: 0; }
+.import-preview { padding: 0 22px; }
+.import-preview-head {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--good);
+  margin-bottom: 4px;
+}
+
+/* Brief sidebar cards: requirements, revisions, benchmarks. */
+.req-mark { flex: none; width: 16px; text-align: center; font-weight: 700; }
+.req-pair {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.req-add { display: flex; gap: 6px; margin-top: 8px; }
+.req-add select {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 7px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel2);
+  color: var(--text);
+  font-size: 12px;
+}
+.rev-meta { font-size: 10.5px; color: var(--faint); white-space: nowrap; }
+.bench-edit-row { display: grid; grid-template-columns: 1fr 52px 56px 70px 24px; gap: 5px; align-items: center; margin-top: 5px; }
+.bench-edit-row input { padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel2); color: var(--text); font-size: 11.5px; min-width: 0; }
+.bench-edit-actions { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+.bench-type {
+  margin-left: auto;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel2);
+  color: var(--text);
+  font-size: 11.5px;
+}
+
+/* Dashboard change log (D·08). */
+.history-card { margin-top: 18px; }
+.hist-date { flex: none; font-size: 10.5px; color: var(--faint); width: 112px; }
+.hist-tree {
+  flex: none;
+  font-size: 9.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  padding: 2px 7px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+.hist-tree.brief { color: var(--accent); border-color: var(--accent); }
+.hist-tree.design { color: var(--accent2); border-color: var(--accent2); }
 
 @media (max-width: 1000px) {
   .brief-layout { flex-direction: column; }

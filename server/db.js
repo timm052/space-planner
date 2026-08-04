@@ -50,8 +50,10 @@ db.exec(`
     project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     space_a INTEGER NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
     space_b INTEGER NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+    inst_a INTEGER NOT NULL DEFAULT 0,
+    inst_b INTEGER NOT NULL DEFAULT 0,
     strength TEXT DEFAULT 'desired',
-    UNIQUE (space_a, space_b)
+    UNIQUE (space_a, space_b, inst_a, inst_b)
   );
 
   CREATE TABLE IF NOT EXISTS snapshot_areas (
@@ -118,6 +120,7 @@ ensureColumn('projects', 'sat_visible', 'sat_visible INTEGER DEFAULT 1');
 ensureColumn('projects', 'sat_x', 'sat_x REAL DEFAULT 0');
 ensureColumn('projects', 'sat_y', 'sat_y REAL DEFAULT 0');
 ensureColumn('projects', 'north_deg', 'north_deg REAL DEFAULT 0'); // project north, clockwise from up
+ensureColumn('projects', 'north_locked', 'north_locked INTEGER DEFAULT 0'); // 1 = north frozen (rose + sat sync inert)
 ensureColumn('projects', 'category_colors', 'category_colors TEXT'); // JSON map: category/building label → custom colour
 ensureColumn('projects', 'images_migrated', 'images_migrated INTEGER DEFAULT 0'); // legacy bg_/sat_ → images rows done
 
@@ -151,6 +154,12 @@ ensureColumn('spaces', 'parent_id', 'parent_id INTEGER');
 ensureColumn('spaces', 'kind', "kind TEXT DEFAULT 'space'"); // 'space' | 'building' | 'group'
 ensureColumn('spaces', 'shape', "shape TEXT DEFAULT 'bubble'"); // 'bubble' | 'box' | 'poly'
 ensureColumn('spaces', 'shape_json', 'shape_json TEXT'); // freeform polygon: normalized verts [{x,y},…]
+// Master-plan placement, independent of the concept pin_json: per-instance
+// {"0":{x,y,rot},…}. Presence = "placed on the site". See diagram-environments-plan.md.
+ensureColumn('spaces', 'plan_json', 'plan_json TEXT');
+// Building placement, independent of concept/master-plan: per-instance
+// {"0":{x,y,w,h,rot},…} (level stays in spaces.level). See diagram-environments-plan.md.
+ensureColumn('spaces', 'block_json', 'block_json TEXT');
 ensureColumn('spaces', 'image', 'image TEXT'); // per-space reference image (data URL)
 // How a space relates to its children: 'group' = pure grouping container (sums
 // children, no own area, default/legacy), 'within' = a real space whose children
@@ -165,10 +174,146 @@ ensureColumn('images', 'filter', "filter TEXT DEFAULT ''");
 // Bubble rendering style: 'solid' (default) | 'outline' | 'sketch'.
 ensureColumn('projects', 'bubble_style', "bubble_style TEXT DEFAULT 'solid'");
 
+// Diagram environment: which geometry-specific workspace is active.
+// 'concept' (bubbles + relationships) | 'masterplan' (scaled site) | 'building'
+// (massing/floors). See docs/diagram-environments-plan.md.
+ensureColumn('projects', 'diagram_env', "diagram_env TEXT DEFAULT 'concept'");
+
+// Storey heights: JSON map { "<level label>": metres } (absent level → the
+// 3.5 m default). Per-space height_m optionally overrides its storey's clear
+// height (high ceilings / multi-floor volumes); null = inherit the floor's.
+ensureColumn('projects', 'level_heights', 'level_heights TEXT');
+ensureColumn('spaces', 'height_m', 'height_m REAL');
+// Circulation share of a BUILDING's gross footprint (0..0.6), stored on the
+// container row. null = project default (1 − grossing_target); 0 = off.
+ensureColumn('spaces', 'circ_pct', 'circ_pct REAL');
+
+// Instance-level adjacencies: a relationship targets a SPECIFIC instance of
+// each space (inst 0 = the first/only room; count=1 spaces are always 0). Old
+// DBs had UNIQUE(space_a, space_b) — one link per space pair — which can't hold
+// the multiple instance-pair links a count>1 space needs, so rebuild the table
+// with the wider key. Existing rows migrate to inst 0-0.
+function migrateAdjacencies() {
+  const cols = db.prepare('PRAGMA table_info(adjacencies)').all();
+  if (cols.some((c) => c.name === 'inst_a')) return; // already the new schema
+  db.exec(`
+    CREATE TABLE adjacencies_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      space_a INTEGER NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+      space_b INTEGER NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+      inst_a INTEGER NOT NULL DEFAULT 0,
+      inst_b INTEGER NOT NULL DEFAULT 0,
+      strength TEXT DEFAULT 'desired',
+      UNIQUE (space_a, space_b, inst_a, inst_b)
+    );
+    INSERT INTO adjacencies_new (id, project_id, space_a, space_b, inst_a, inst_b, strength)
+      SELECT id, project_id, space_a, space_b, 0, 0, strength FROM adjacencies;
+    DROP TABLE adjacencies;
+    ALTER TABLE adjacencies_new RENAME TO adjacencies;
+  `);
+}
+migrateAdjacencies();
+
+// Brief formulas (both room trees) and the independent Brief tree.
+// {spaces,brief_spaces}.area_formula: when set, target_area is DERIVED from this
+//   expression (resolved server-side into target_area; see server/brief.js).
+// projects.variables: JSON map { name: number } referenced by formulas as @name.
+ensureColumn('spaces', 'area_formula', 'area_formula TEXT');
+ensureColumn('projects', 'variables', 'variables TEXT');
+ensureColumn('snapshots', 'kind', "kind TEXT DEFAULT 'milestone'");
+
+// brief_spaces — the INDEPENDENT agreed programme (the "Brief" tab), a separate
+// room tree from the diagram's `spaces` (the "Design" tab). It carries only
+// programme fields (no diagram geometry): areas may be formula-driven, and the
+// tree can be reconciled onto the diagram or snapshotted as a milestone.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS brief_spaces (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    parent_id INTEGER,
+    kind TEXT DEFAULT 'space',
+    department TEXT DEFAULT 'General',
+    name TEXT NOT NULL,
+    count INTEGER DEFAULT 1,
+    target_area REAL NOT NULL DEFAULT 0,
+    area_formula TEXT,
+    child_mode TEXT DEFAULT 'group',
+    level TEXT DEFAULT '',
+    notes TEXT DEFAULT '',
+    image TEXT,
+    sort_order INTEGER DEFAULT 0
+  );
+`);
+
+// Circulation / grossing allowance: fraction of net added to estimate gross
+// (e.g. 0.35 → gross ≈ net × 1.35). Null = no estimate.
+ensureColumn('projects', 'circulation', 'circulation REAL');
+// Per-project benchmark library override (JSON [{type, items:[{label,m2,per,v}]}]);
+// null = the app-settings library, which itself falls back to the built-ins.
+ensureColumn('projects', 'benchmarks', 'benchmarks TEXT');
+
+// Brief revisions — dated, immutable copies of the whole Brief tree (Rev A/B/C
+// as the brief gets renegotiated). `data` is the serialized brief_spaces rows.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS brief_revisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    label TEXT NOT NULL,
+    taken_at TEXT NOT NULL,
+    room_count INTEGER DEFAULT 0,
+    net REAL DEFAULT 0,
+    data TEXT NOT NULL
+  );
+`);
+
+// Brief adjacency REQUIREMENTS ("Kitchen must adjoin Servery") — declared on
+// Brief rooms, scored against the diagram's actual adjacency links by path.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS brief_adjacencies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    a_id INTEGER NOT NULL REFERENCES brief_spaces(id) ON DELETE CASCADE,
+    b_id INTEGER NOT NULL REFERENCES brief_spaces(id) ON DELETE CASCADE,
+    strength TEXT DEFAULT 'required',
+    UNIQUE (a_id, b_id)
+  );
+`);
+
+// Change log — a lightweight audit trail of programme edits ("when did the
+// Foyer grow?"). Only programme fields are logged, never geometry.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS change_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    at TEXT DEFAULT (datetime('now')),
+    tree TEXT NOT NULL,
+    name TEXT NOT NULL,
+    field TEXT NOT NULL,
+    old TEXT,
+    new TEXT
+  );
+`);
+
+// Design options — named saves of the whole design (spaces + adjacencies) so
+// Option A/B schemes can be compared against one Brief and swapped in.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS design_options (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    room_count INTEGER DEFAULT 0,
+    net REAL DEFAULT 0,
+    data TEXT NOT NULL
+  );
+`);
+
 const DEFAULT_SETTINGS = {
   default_units: 'm2',
   default_tolerance: '5',
   default_grossing: '70',
+  default_circulation: '', // % circulation allowance for new projects; '' = unset
 };
 {
   const insert = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');

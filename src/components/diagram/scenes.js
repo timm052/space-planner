@@ -1,20 +1,230 @@
 // Pure scene builders for the stacked (axonometric SVG) and WebGL 3-D floor
 // views. No React, no refs — everything arrives as arguments, so both are
 // unit-testable and rebuild cheaply inside the canvas TickLayer each frame.
-import { ISO, CAMERAS } from '../../floors.js';
+import { ISO } from '../../floors.js';
 import { closestInstancePair } from '../../adjacency.js';
+import { instanceLabel } from '../../compute.js';
 import { W, H } from '../../hooks/useViewport.js';
+import { pointInPolygon, closestPointOnPolygon, powerCells, polygonArea } from '../../geometry.js';
+
+// ---------- shared footprint geometry ----------
+// One definition of "what shape does this room actually occupy", used by every
+// renderer: the live canvas, the onion-skin underlay, the snap resolver
+// (modes.footHalf) and the PDF sheet builder. It existed as four hand-synced
+// copies of the same three lines, which is precisely how an export drifts out
+// of agreement with the screen.
+
+// ---------- bubble sizing ----------
+// The single most visible quantity in the app, and it had three copies: the
+// canvas radiusOf, the concept-frame rOf, and the PDF sheet's own radius rule.
+// A disagreement between them is a PDF that does not match the screen.
+
+/** Floor on a true-scale radius, so a tiny room stays clickable. */
+export const MIN_TRUE_RADIUS = 7;
+/** Relative sizing: the smallest bubble's radius, and the span added by area. */
+export const REL_BASE = 16;
+export const REL_SPAN = 50;
 
 /**
- * Build the stacked axonometric scene using an orthographic camera.
+ * True-scale radius: a circle whose real area is the room's, drawn at the
+ * project's scale. Used by Master plan and Building, where the drawing is
+ * dimensioned.
+ * @param {number} areaM2 Room area in SQUARE METRES (convert before calling).
+ * @param {number} metresPerUnit The effective scale (metres per diagram unit).
+ */
+export function trueScaleRadius(areaM2, metresPerUnit) {
+  return Math.max(MIN_TRUE_RADIUS, Math.sqrt(areaM2 / Math.PI) / metresPerUnit);
+}
+
+/**
+ * Relative radius: sized against the largest room, deliberately SCALE-FREE so a
+ * project's calibrated scale never sizes the Concept relationship diagram.
+ * @param {number} area Room area, project units.
+ * @param {number} maxArea The largest room's area in the same set.
+ */
+export function relativeRadius(area, maxArea) {
+  return REL_BASE + REL_SPAN * Math.sqrt(area / (maxArea || 1));
+}
+
+// ---------- sheet bounds ----------
+
+/**
+ * The drawn extent of a set of scene bubbles, padded. This is what picks the
+ * PDF page size, so getting it wrong means a clipped or over-sized sheet.
+ * Polygon bubbles are measured by their actual vertices, not by a radius that
+ * would over- or under-state a long or L-shaped room.
+ *
+ * @param {Array<{x:number,y:number,r:number,poly?:Array<{x:number,y:number}>}>} bubbles
+ * @param {number} pad Margin in diagram units.
+ * @returns {{minX:number,minY:number,maxX:number,maxY:number}|null} Null if empty.
+ */
+export function sceneBounds(bubbles, pad = 40) {
+  if (!bubbles || bubbles.length === 0) return null;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const b of bubbles) {
+    if (b.poly) {
+      for (const p of b.poly) {
+        minX = Math.min(minX, p.x);
+        maxX = Math.max(maxX, p.x);
+        minY = Math.min(minY, p.y);
+        maxY = Math.max(maxY, p.y);
+      }
+    } else {
+      minX = Math.min(minX, b.x - b.r);
+      minY = Math.min(minY, b.y - b.r);
+      maxX = Math.max(maxX, b.x + b.r);
+      maxY = Math.max(maxY, b.y + b.r);
+    }
+  }
+  return { minX: minX - pad, minY: minY - pad, maxX: maxX + pad, maxY: maxY + pad };
+}
+
+/**
+ * A building box's rendered extents. The box carries an AUTHORED aspect ratio
+ * (from its stored w/h) but its area is re-locked to the room's live target on
+ * every render — so editing an area re-fits the geometry automatically, the
+ * same way the area-locked polygon does.
+ *
+ * @param {number} target Target area in diagram units².
+ * @param {{w?: number, h?: number}|null} node Authored box, for its aspect only.
+ * @returns {{ w: number, h: number }} Full width and height in diagram units.
+ */
+export function boxExtents(target, node) {
+  const aspect = node && node.w && node.h ? node.w / node.h : 1;
+  const h = Math.sqrt(target / aspect);
+  return { w: aspect * h, h };
+}
+
+/**
+ * The four corners of a box of `area`, placed and rotated at `pos`.
+ * @param {number} area
+ * @param {{x: number, y: number, w?: number, h?: number, rot?: number}} pos
+ * @returns {Array<{x: number, y: number}>}
+ */
+export function boxCorners(area, pos) {
+  const { w, h } = boxExtents(area, pos);
+  const a = ((pos.rot || 0) * Math.PI) / 180;
+  const c = Math.cos(a);
+  const s = Math.sin(a);
+  return [[-w / 2, -h / 2], [w / 2, -h / 2], [w / 2, h / 2], [-w / 2, h / 2]].map(([x, y]) => ({
+    x: pos.x + x * c - y * s,
+    y: pos.y + x * s + y * c,
+  }));
+}
+
+/**
+ * An authored outline rescaled to `area` and placed/rotated at `pos`.
+ * @param {Array<{x:number,y:number}>} pts Normalized outline points.
+ * @param {number} area
+ * @param {{x:number, y:number, rot?:number}} pos
+ * @param {(pts:Array)=>number} areaOf Polygon-area helper (geometry.polygonArea).
+ */
+// ---------- interior sketch ----------
+// The Voronoi/power-cell interior of a placed envelope. The live canvas and the
+// PDF sheet used to compute this twice — `sheetInteriorCells` was commented in
+// the source as "the sheet twin of makeInterior", i.e. a hand-synced copy. Both
+// now share these two functions; they differ only in where positions come from
+// (live nodes + drag overrides vs persisted pins) and how the result is
+// decorated, which is what each caller still owns.
+
+/**
+ * Map the concept-frame disc layout into a drawn envelope to get one seed per
+ * room. Seeds landing outside the envelope (an unmatched hexagon, a reshaped
+ * outline) are clamped to the boundary and nudged 5% inward, so their cell
+ * cannot degenerate to zero width.
+ *
+ * @param {object} p
+ * @param {{discs: Array, hc: {x:number,y:number}, hullArea: number}} p.frame Concept-frame layout.
+ * @param {Array<{x:number,y:number}>} p.boundary Envelope outline in world coords.
+ * @param {{x:number, y:number, rot?:number}} p.origin Envelope placement.
+ * @param {number} p.area Envelope area in diagram units².
+ * @param {string|null} p.storey Only seed this storey's rooms (null = all).
+ * @param {(space:object)=>string|null} p.storeyOf
+ * @param {(key:string)=>{x:number,y:number}|undefined} [p.override] Live seed drags.
+ * @returns {Array<{x:number,y:number,s:object,i:number,key:string}>}
+ */
+export function interiorSeeds({ frame, boundary, origin, area, storey, storeyOf, override }) {
+  const rad = ((origin.rot || 0) * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const toWorld = (x, y) => ({ x: origin.x + x * cos - y * sin, y: origin.y + x * sin + y * cos });
+  // The mapping frame stays the WHOLE building's hull even when one storey is
+  // shown, so seeds don't jump as you switch storeys.
+  const f = Math.sqrt(area / frame.hullArea);
+  const discs = storey == null ? frame.discs : frame.discs.filter((d) => storeyOf(d.s) === storey);
+  return discs.map((d) => {
+    const key = `${d.s.id}:${d.i}`;
+    let p = override?.(key) ?? toWorld((d.x - frame.hc.x) * f, (d.y - frame.hc.y) * f);
+    if (!pointInPolygon(boundary, p)) {
+      const cp = closestPointOnPolygon(boundary, p);
+      p = { x: cp.x + (origin.x - cp.x) * 0.05, y: cp.y + (origin.y - cp.y) * 0.05 };
+    }
+    return { x: p.x, y: p.y, s: d.s, i: d.i, key };
+  });
+}
+
+/**
+ * Area-true cells for a set of seeds: a power diagram whose weights have been
+ * balanced so each cell's share of the envelope matches its room's share of the
+ * programme — so the sketch reads as a plan rather than as proximity luck.
+ *
+ * With circulation on, each cell then shrinks toward its own seed until it
+ * holds the room's NET area; the interstitial band left over is what the canvas
+ * hatches as circulation.
+ *
+ * @param {object} p
+ * @param {Array} p.seeds From interiorSeeds.
+ * @param {Array<{x:number,y:number}>} p.boundary
+ * @param {number[]} p.weights Balanced weights, one per seed (caller owns caching).
+ * @param {number} p.circ Circulation fraction; 0 = cells fill the envelope.
+ * @param {(space:object)=>number} p.netAreaOf Net target area of a room, diagram units².
+ * @returns {Array<{seed:object, cell:Array<{x:number,y:number}>}|null>} Aligned with `seeds`.
+ */
+export function interiorCells({ seeds, boundary, weights, circ, netAreaOf }) {
+  const raw = powerCells(seeds.map((sd, ix) => ({ ...sd, w: weights[ix] })), boundary);
+  return seeds.map((sd, ix) => {
+    let cell = raw[ix];
+    if (!cell) return null;
+    if (circ > 0) {
+      const k = Math.min(1, Math.sqrt(netAreaOf(sd.s) / (polygonArea(cell) || 1)));
+      if (k < 1) cell = cell.map((p) => ({ x: sd.x + (p.x - sd.x) * k, y: sd.y + (p.y - sd.y) * k }));
+    }
+    return { seed: sd, cell };
+  });
+}
+
+export function polyAt(pts, area, pos, areaOf) {
+  const k = areaOf(pts) || 1;
+  const f = Math.sqrt(area / k);
+  const a = ((pos.rot || 0) * Math.PI) / 180;
+  const c = Math.cos(a);
+  const s = Math.sin(a);
+  return pts.map((p) => {
+    const x = p.x * f;
+    const y = p.y * f;
+    return { x: pos.x + x * c - y * s, y: pos.y + x * s + y * c };
+  });
+}
+
+/**
+ * Build the stacked axonometric scene — a fixed isometric camera (the WebGL
+ * 3-D view owns free cameras and elevations; this is THE clean axon diagram).
  *
  * World coordinate system: x/y = plan (same as the simulation), z = height
- * (z increases upward; z=0 = ground floor). The camera is parameterised by
- * azimuth (rotation around world-Z) and elevation (tilt above horizontal).
- * At elevation=0 we see a pure side elevation; at elevation=90 a plan view.
+ * (z increases upward; z=0 = ground floor).
  *
- * Camera centering: the mid-floor anchor (W/2, H/2) always maps to screen
- * centre regardless of the chosen camera angle.
+ * Because the camera is orthographic, every constant-z floor plane maps to
+ * the screen by ONE affine transform — each floor exposes it as
+ * `planeTransform` (an SVG matrix string), so plates and room footprints
+ * drawn in PLAN coordinates inside that group foreshorten exactly onto the
+ * plane: circles become ellipses, boxes parallelograms, outlines true plan
+ * shapes. Labels should stay OUTSIDE the group (screen space) — the shear
+ * would distort text.
+ *
+ * Camera centering: the mid-floor anchor (W/2, H/2) maps to screen centre.
  *
  * @param {object} p
  * @param {Map}      p.nodes      instance key → {x, y} (live sim positions)
@@ -25,11 +235,9 @@ import { W, H } from '../../hooks/useViewport.js';
  * @param {function} p.levelOf    (space) → its level label
  * @param {string}   p.floorMode  'offset' | 'overlaid'
  * @param {number}   p.floorGap   spacing as a fraction of plate height
- * @param {string}   p.stackCam   CAMERAS preset key
  * @param {string[]} p.palette    floor plate colours by rank
  */
-export function buildStackScene({ nodes, instances, levels, levelRank, radiusOf, levelOf, floorMode, floorGap, stackCam, palette }) {
-  const cam = CAMERAS[stackCam] ?? CAMERAS.iso;
+export function buildStackScene({ nodes, instances, levels, levelRank, radiusOf, levelOf, floorMode, floorGap, palette }) {
   const anchor = { x: W / 2, y: H / 2 };
 
   // Per-floor content bounding box (raw node coords).
@@ -61,40 +269,29 @@ export function buildStackScene({ nodes, instances, levels, levelRank, radiusOf,
     return { x: anchor.x - (b.minX + b.maxX) / 2, y: anchor.y - (b.minY + b.maxY) / 2 };
   };
 
-  // Projected footprint height in the ISO preset — drives the spacing slider
-  // (we keep it ISO-based so the slider feels the same regardless of camera).
+  // The classic isometric affine (the approved look): plan rotated 45° and
+  // vertically foreshortened, x' = kx·(x − y), y' = ky·(x + y) − z. It keeps
+  // the plan's orientation (larger plan y = nearer/lower on screen) — the
+  // previous azimuth/elevation camera drew the axon with plan-north flipped
+  // and warped the site image with DIFFERENT foreshortening constants, so
+  // images never sat true under the plates.
   const kx = ISO.kx, ky = ISO.ky;
-  const e_iso = anchor.x - kx * anchor.x + kx * anchor.y;
-  const f_iso = anchor.y - ky * anchor.x - ky * anchor.y;
-  const isoXY = (px, py) => ({ x: kx * px - kx * py + e_iso, y: ky * px + ky * py + f_iso });
-  const isoProjH = (() => {
-    const cs = [[foot.x, foot.y], [foot.x + foot.w, foot.y], [foot.x + foot.w, foot.y + foot.h], [foot.x, foot.y + foot.h]]
-      .map(([x, y]) => isoXY(x, y));
-    return Math.max(...cs.map((c) => c.y)) - Math.min(...cs.map((c) => c.y));
-  })();
+  const isoProjH = ky * (foot.w + foot.h); // projected footprint height
   const lift = floorMode === 'offset' ? Math.max(24, isoProjH * floorGap) : 0;
 
-  // World-Z per floor. Using lift directly as world units keeps scale=1 and
-  // makes the slider feel natural across all camera angles.
+  // Screen rise per floor, and the slab's visual thickness (screen px).
   const FLOOR_Z = lift;
   const SLAB_Z  = 14;
   const midZ = ((levels.length - 1) / 2) * FLOOR_Z;
 
-  // Orthographic projection: world (wx,wy,wz) → screen (sx,sy).
-  // Centre is computed so the anchor at mid-floor maps to the screen anchor.
-  const az = (cam.azimuth   * Math.PI) / 180;
-  const el = (cam.elevation * Math.PI) / 180;
-  const cosAz = Math.cos(az), sinAz = Math.sin(az);
-  const sinEl = Math.sin(el), cosEl = Math.cos(el);
-  const rx0 = anchor.x * cosAz - anchor.y * sinAz;
-  const ry0 = anchor.x * sinAz + anchor.y * cosAz;
-  const pcx = anchor.x - rx0;
-  const pcy = anchor.y + (ry0 * sinEl + midZ * cosEl);
-  const proj = (wx, wy, wz) => {
-    const rx = wx * cosAz - wy * sinAz;
-    const ry = wx * sinAz + wy * cosAz;
-    return { x: pcx + rx, y: pcy - (ry * sinEl + wz * cosEl) };
-  };
+  // Anchor at mid-floor maps to itself, keeping the scene centred.
+  const e0 = anchor.x - kx * (anchor.x - anchor.y);
+  const f0 = anchor.y - ky * (anchor.x + anchor.y) + midZ;
+  const proj = (wx, wy, wz) => ({ x: e0 + kx * (wx - wy), y: f0 + ky * (wx + wy) - wz });
+  // The same projection restricted to one floor plane (constant z), as an SVG
+  // affine — identical numbers to proj(), so screen-space overlays (links,
+  // labels, guides) line up exactly with the plane's content.
+  const planeMatrix = (z) => `matrix(${kx} ${ky} ${-kx} ${ky} ${e0} ${f0 - z})`;
 
   // Screen position of every instance.
   const screenPos = new Map();
@@ -131,6 +328,7 @@ export function buildStackScene({ nodes, instances, levels, levelRank, radiusOf,
       color: palette[k % palette.length],
       off: offOf(label),
       bubbles: instances.filter((o) => levelOf(o.s) === label),
+      planeTransform: planeMatrix(z),
       platePts:  ptsStr([TL, TR, BR, BL]),
       slabFront: ptsStr([BL, BR, BR_b, BL_b]),
       slabRight: ptsStr([BR, TR, TR_b, BR_b]),
@@ -151,12 +349,11 @@ export function buildStackScene({ nodes, instances, levels, levelRank, radiusOf,
       })
     : [];
 
-  // Ground image transform — only meaningful in ISO mode (affine in 2-D);
-  // null for elevation views.
+  // Ground image transform — warps the site image onto the ground plane with
+  // the SAME affine as the plates and rooms (the old ISO-constant warp used a
+  // different foreshortening, so the image sat misaligned under the plates).
   const groundOff = offOf(levels[0]);
-  const groundTransform = stackCam === 'iso'
-    ? `translate(0 ${((levels.length - 1) / 2) * lift}) matrix(${kx} ${ky} ${-kx} ${ky} ${e_iso} ${f_iso}) translate(${groundOff.x} ${groundOff.y})`
-    : null;
+  const groundTransform = `${planeMatrix(0)} translate(${groundOff.x} ${groundOff.y})`;
 
   const ordered = instances
     .filter((o) => levels.includes(levelOf(o.s)))
@@ -183,8 +380,32 @@ export function buildStackScene({ nodes, instances, levels, levelRank, radiusOf,
 export function build3DScene({
   nodes, instances, levels, levelRank, radiusOf, levelOf, palette,
   adjacencies, byId, rankOf, shapeOf, polyVertsOf, colorOf, groundImage,
+  envelopes = null, // [{ x, y, rot, verts, name, focused }] in world units
+  mToU = null, // metres → diagram units (1/effScale); null = no scale
+  levelHeightM = null, // (level label) → storey height in metres
+  roomHeightM = null, // (space) → clear height in metres (own or storey's)
 }) {
   const PAD = 36;
+  // Real storey heights, in DIAGRAM UNITS so they scale exactly like plan
+  // distances. Each level's base = the sum of the storeys below it, so the
+  // massing stacks contiguously; a room's own height can span several storeys.
+  // Without a calibrated scale there is no metre↔unit relation — `metric` is
+  // false and the 3-D view keeps its legacy uniform gap/slab heights.
+  const metric = !!(mToU && levelHeightM);
+  const levelHU = new Map(); // label → storey height (units)
+  const levelBaseU = new Map(); // label → base elevation (units)
+  if (metric) {
+    let base = 0;
+    for (const label of levels) { // ordered ground → up
+      const h = levelHeightM(label) * mToU;
+      levelHU.set(label, h);
+      levelBaseU.set(label, base);
+      base += h;
+    }
+  }
+  const baseOf = (s) => (metric ? levelBaseU.get(levelOf(s)) ?? 0 : 0);
+  const heightOf = (s) =>
+    metric ? (roomHeightM ? roomHeightM(s) : levelHeightM(levelOf(s))) * mToU : 0;
   // Per-floor bounding box + centre (raw node coords).
   const fb = new Map();
   for (const o of instances) {
@@ -213,30 +434,46 @@ export function build3DScene({
       const n = nodes.get(o.key);
       const c = centreOf(levelOf(o.s));
       const kind = shapeOf(o.s);
+      const r = radiusOf(o.s);
+      // Boxes keep their authored plan rectangle: the node's aspect rescaled
+      // to the room's live target area (same lock as the plan view), plus its
+      // 90° orientation — not the old equal-area square/cube.
+      let w = r * Math.sqrt(Math.PI), h = w;
+      if (kind === 'box' && n.w > 0 && n.h > 0) {
+        const aspect = n.w / n.h;
+        h = Math.sqrt((Math.PI * r * r) / aspect);
+        w = aspect * h;
+      }
       return {
         key: o.key,
         x: n.x - c.x, y: n.y - c.y, // re-centred onto the shared footprint
         rank: rankOf(o.s),
-        r: radiusOf(o.s),
+        r,
+        w, h, rot: n.rot || 0,
+        baseU: baseOf(o.s), hU: heightOf(o.s), // real elevation + clear height (units)
         box: kind === 'box',
         poly: kind === 'poly' ? polyVertsOf(o.s) : null, // scaled verts, centred at origin
         color: colorOf(o.s),
-        name: `${o.s.name}${Math.max(1, o.s.count || 1) > 1 ? ` ${o.i + 1}` : ''}`,
+        name: `${o.s.name}${Math.max(1, o.s.count || 1) > 1 ? ` ${instanceLabel(o.i)}` : ''}`,
       };
     });
 
+  // Only link rooms that are actually in the scene (instances may be a
+  // focused-building subset).
+  const inScene = new Set(instances.map((o) => o.s.id));
   const links = [];
   for (const l of adjacencies) {
     const sa = byId.get(l.space_a), sb = byId.get(l.space_b);
-    if (!sa || !sb || !levels.includes(levelOf(sa)) || !levels.includes(levelOf(sb))) continue;
+    if (!sa || !sb || !inScene.has(sa.id) || !inScene.has(sb.id)) continue;
+    if (!levels.includes(levelOf(sa)) || !levels.includes(levelOf(sb))) continue;
     const ca = centreOf(levelOf(sa)), cb = centreOf(levelOf(sb));
     const best = closestInstancePair(nodes, sa, sb);
     if (best) {
       const ra = radiusOf(sa), rb = radiusOf(sb);
       const boxA = shapeOf(sa) === 'box', boxB = shapeOf(sb) === 'box';
       links.push({
-        a: [best.a.x - ca.x, best.a.y - ca.y, rankOf(sa), ra, boxA],
-        b: [best.b.x - cb.x, best.b.y - cb.y, rankOf(sb), rb, boxB],
+        a: [best.a.x - ca.x, best.a.y - ca.y, rankOf(sa), ra, boxA, baseOf(sa), heightOf(sa)],
+        b: [best.b.x - cb.x, best.b.y - cb.y, rankOf(sb), rb, boxB, baseOf(sb), heightOf(sb)],
         strength: l.strength,
       });
     }
@@ -258,8 +495,30 @@ export function build3DScene({
     label,
     rank: levelRank.get(label),
     color: palette[levelRank.get(label) % palette.length],
+    baseU: metric ? levelBaseU.get(label) : 0,
+    heightU: metric ? levelHU.get(label) : 0,
     minX: foot.x0, minY: foot.y0, maxX: foot.x1, maxY: foot.y1,
   }));
 
-  return { center, foot, floors, rooms, links, image, floorCount: levels.length };
+  // Master-plan building envelopes as ground-plane outlines: each outline's
+  // verts rotated + translated to their site position, then re-centred like
+  // the ground image so they line up with the ground floor's rooms.
+  let envelopeLoops = null;
+  if (envelopes && envelopes.length) {
+    const c0 = centreOf(levels[0]);
+    envelopeLoops = envelopes.map((e) => {
+      const a = ((e.rot || 0) * Math.PI) / 180;
+      const cos = Math.cos(a), sin = Math.sin(a);
+      return {
+        name: e.name,
+        focused: !!e.focused,
+        pts: e.verts.map((p) => ({
+          x: e.x + p.x * cos - p.y * sin - c0.x,
+          y: e.y + p.x * sin + p.y * cos - c0.y,
+        })),
+      };
+    });
+  }
+
+  return { center, foot, floors, rooms, links, image, envelopes: envelopeLoops, floorCount: levels.length, metric };
 }

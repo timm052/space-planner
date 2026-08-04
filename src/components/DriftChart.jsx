@@ -4,12 +4,14 @@ import { statusColor } from '../viz.js';
 // Flat SVG line chart: designed net area per milestone vs. brief target band (± tolerance).
 // Drafting style — amber target line + faint ±tol band, dots colored by status,
 // mono value labels above each point and Space Grotesk milestone names below.
-export default function DriftChart({ project, spaces, snapshots }) {
+// `target` (optional) is the reference net — the Brief's when one exists;
+// defaults to the design tree's own targets.
+export default function DriftChart({ project, spaces, snapshots, target: targetProp = null }) {
   const W = 760;
   const H = 230;
   const PAD = { t: 22, r: 84, b: 40, l: 50 };
 
-  const target = briefNet(spaces);
+  const target = targetProp ?? briefNet(spaces);
   const tol = project.tolerance;
   const pts = snapshots.map((sn, i) => {
     const net = snapshotNet(sn, spaces);

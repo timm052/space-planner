@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react';
-import { CAMERAS } from '../../floors.js';
 
 /**
  * The diagram's chrome along the top and left edge: the responsive top bar
@@ -43,17 +42,38 @@ function AdjacencyBadge({ store, compute, dataKey, active, onToggle }) {
   );
 }
 
+// The environment switcher: which stage of the design pipeline is active.
+// Each segment carries a live progress sub-status (envStatus) so the switcher
+// reads as brief → site → massing progression, not three parallel tabs.
+const ENVS = [
+  ['concept', '◯ Concept', 'Bubbles & relationships — what relates to what'],
+  ['masterplan', '▱ Master plan', 'Building envelopes on the scaled site — what fits where'],
+  ['building', '▤ Building', 'Boxes, floors & massing — what stacks inside each building'],
+];
+
 export function StageTopbar({
+  env,
+  onEnv,
+  envStatus,
+  showLayers,
   hasBuildings,
+  showStatusColor = false,
   colorBy,
   setPref,
   hasLevels,
   floorMode,
   levels,
+  show3DToggle,
+  is3D,
+  onToggle3D,
+  showScale,
   scaleValue,
   presets,
   fitScale,
   onScaleSelect,
+  interiorLevels = null, // storey labels for the interior-sketch filter (null = hide)
+  interiorLevel = 'all',
+  onInteriorLevel,
   panel,
   setPanel,
   history,
@@ -63,20 +83,45 @@ export function StageTopbar({
   adjDataKey,
   highlightGaps,
   onToggleGaps,
-  onExportPng,
-  onExportPdf,
+  onFind,
   onHelp,
 }) {
   return (
     <div className="stage-topbar">
-      {/* Top-left control cluster (glass). */}
+      {/* Top-left control cluster (glass). The environment switcher is the
+          primary control and leads the cluster. */}
       <div className="stage-controls">
-        {hasBuildings && (
+        <div className="seg seg-env" role="tablist" aria-label="Diagram environment">
+          {ENVS.map(([value, label, title]) => (
+            <button
+              key={value}
+              role="tab"
+              aria-selected={env === value}
+              className={env === value ? 'active' : ''}
+              onClick={() => onEnv(value)}
+              title={envStatus?.[value] ? `${title} · ${envStatus[value]}` : title}
+            >
+              <span className="seg-env-label">{label}</span>
+              {envStatus?.[value] && <span className="seg-sub">{envStatus[value]}</span>}
+            </button>
+          ))}
+        </div>
+        <div className="ctrl-sep" />
+        {(hasBuildings || showStatusColor) && (
           <div className="ctrl-field">
             <span className="ctrl-label">Colour</span>
             <div className="seg seg-sm">
               <button className={colorBy === 'department' ? 'active' : ''} onClick={() => setPref('colorBy', 'department')}>Category</button>
-              <button className={colorBy === 'building' ? 'active' : ''} onClick={() => setPref('colorBy', 'building')}>Building</button>
+              {hasBuildings && (
+                <button className={colorBy === 'building' ? 'active' : ''} onClick={() => setPref('colorBy', 'building')}>Building</button>
+              )}
+              {showStatusColor && (
+                <button
+                  className={colorBy === 'status' ? 'active' : ''}
+                  onClick={() => setPref('colorBy', 'status')}
+                  title="Colour rooms by compliance with the latest milestone — over / on / under the brief target"
+                >Status</button>
+              )}
             </div>
           </div>
         )}
@@ -92,15 +137,42 @@ export function StageTopbar({
             </select>
           </label>
         )}
-        <label className="ctrl-field">
-          <span className="ctrl-label">Scale</span>
-          <select className="ctrl-select" value={scaleValue} onChange={(e) => onScaleSelect(e.target.value)}>
-            <option value="auto">{fitScale ? 'Auto' : 'Relative'}</option>
-            {presets.map(([r, label]) => <option key={r} value={r}>{label}</option>)}
-            {scaleValue !== 'auto' && !presets.some(([r]) => String(r) === scaleValue) && <option value={scaleValue}>≈ 1:{scaleValue}</option>}
-          </select>
-        </label>
-        <button className={`ctrl-btn ${panel === 'layers' ? 'active' : ''}`} onClick={() => setPanel(panel === 'layers' ? null : 'layers')} title="Image & satellite layers">⧉ Layers</button>
+        {/* Single-level programs get the 3-D massing view as its own toggle —
+            it isn't a floor-stacking mode, it's the model of the massing. */}
+        {show3DToggle && (
+          <button
+            className={`ctrl-btn ${is3D ? 'active' : ''}`}
+            onClick={onToggle3D}
+            aria-pressed={is3D}
+            title="3-D massing view — the blocked-up rooms extruded at their real heights"
+          >▲ 3-D</button>
+        )}
+        {/* Scale is a metric concern — it belongs to Master plan / Building.
+            Concept is scale-free (relative bubble sizes). */}
+        {showScale && (
+          <label className="ctrl-field">
+            <span className="ctrl-label">Scale</span>
+            <select className="ctrl-select" value={scaleValue} onChange={(e) => onScaleSelect(e.target.value)}>
+              <option value="auto">{fitScale ? 'Auto' : 'Relative'}</option>
+              {presets.map(([r, label]) => <option key={r} value={r}>{label}</option>)}
+              {scaleValue !== 'auto' && !presets.some(([r]) => String(r) === scaleValue) && <option value={scaleValue}>≈ 1:{scaleValue}</option>}
+            </select>
+          </label>
+        )}
+        {showLayers && (
+          <button className={`ctrl-btn ${panel === 'layers' ? 'active' : ''}`} onClick={() => setPanel(panel === 'layers' ? null : 'layers')} title="Image & satellite layers">⧉ Layers</button>
+        )}
+        {/* Which storey the envelope interior sketch shows. The envelope is ONE
+            floor plate, so the sketch always shows a single storey — there is
+            deliberately no "all floors" overlay. */}
+        {interiorLevels && (
+          <label className="ctrl-field" title="Which storey's rooms the interior sketch shows inside each envelope (unassigned rooms count as ground)">
+            <span className="ctrl-label">Interior</span>
+            <select className="ctrl-select" value={interiorLevel} onChange={(e) => onInteriorLevel(e.target.value)}>
+              {interiorLevels.map((l) => <option key={l} value={l}>{l}</option>)}
+            </select>
+          </label>
+        )}
         <button className={`ctrl-btn ${panel === 'more' ? 'active' : ''}`} onClick={() => setPanel(panel === 'more' ? null : 'more')} title="More options">⋯</button>
       </div>
 
@@ -117,8 +189,14 @@ export function StageTopbar({
             onToggle={onToggleGaps}
           />
         )}
-        <button className="act-btn wide" onClick={onExportPng} title="Export the current view as a PNG image (2×)">↓ PNG</button>
-        <button className="act-btn wide" onClick={onExportPdf} title="Export a scale-accurate PDF">↓ PDF</button>
+        <button
+          className={`act-btn wide ${panel === 'export' ? 'active' : ''}`}
+          onClick={() => setPanel(panel === 'export' ? null : 'export')}
+          title="Export — PNG image, PDF sheet or the full drawing set"
+        >⤓ Export</button>
+        {onFind && (
+          <button className="act-btn" onClick={onFind} title="Find a room or command (Ctrl+K)">⌕</button>
+        )}
         <button className="act-btn" onClick={onHelp} title="Shortcuts & help (?)">?</button>
       </div>
     </div>
@@ -127,14 +205,14 @@ export function StageTopbar({
 
 /** The ⋯ popover — the diagram extras (forces, style, hulls, floor cameras). */
 export function MorePopover({
+  onMatchHulls = null,
+  showForces = true,
   nodeForce,
   buildingForce,
   setPref,
   nudgeLayout,
   bubbleStyle,
   setBubbleStyle,
-  allBoxes,
-  convertAll,
   hulls,
   toggleHulls,
   hasBuildings,
@@ -150,24 +228,27 @@ export function MorePopover({
   is3D,
   cam3d,
   stackMode,
-  stackCam,
   stackImages,
   hasImages,
 }) {
   return (
     <div className="stage-popover more-popover">
-      <div className="more-section">Auto-layout forces</div>
-      <div className="more-row">
-        <span className="more-label">Rooms</span>
-        <input type="range" min="0" max="1.5" step="0.05" value={nodeForce} onChange={(e) => { setPref('nodeForce', Number(e.target.value)); nudgeLayout(); }} title="How strongly rooms push apart and pull toward their links" />
-        <span className="more-val mono">{Math.round(nodeForce * 100)}%</span>
-      </div>
-      <div className="more-row">
-        <span className="more-label">Buildings</span>
-        <input type="range" min="0" max="1.5" step="0.05" value={buildingForce} onChange={(e) => { setPref('buildingForce', Number(e.target.value)); nudgeLayout(); }} title="How strongly each building holds its shape and original position (0 = free to drift)" />
-        <span className="more-val mono">{Math.round(buildingForce * 100)}%</span>
-      </div>
-      <div className="more-divider" />
+      {showForces && (
+        <>
+          <div className="more-section">Auto-layout forces</div>
+          <div className="more-row">
+            <span className="more-label">Rooms</span>
+            <input type="range" min="0" max="1.5" step="0.05" value={nodeForce} onChange={(e) => { setPref('nodeForce', Number(e.target.value)); nudgeLayout(); }} title="How strongly rooms push apart and pull toward their links" />
+            <span className="more-val mono">{Math.round(nodeForce * 100)}%</span>
+          </div>
+          <div className="more-row">
+            <span className="more-label">Buildings</span>
+            <input type="range" min="0" max="1.5" step="0.05" value={buildingForce} onChange={(e) => { setPref('buildingForce', Number(e.target.value)); nudgeLayout(); }} title="How strongly each building holds its shape and original position (0 = free to drift)" />
+            <span className="more-val mono">{Math.round(buildingForce * 100)}%</span>
+          </div>
+          <div className="more-divider" />
+        </>
+      )}
       <div className="more-row">
         <span className="more-label">Style</span>
         <select className="ctrl-select" value={bubbleStyle} onChange={(e) => setBubbleStyle(e.target.value)}>
@@ -177,9 +258,6 @@ export function MorePopover({
         </select>
       </div>
       <div className="more-row">
-        <button className="btn small" onClick={() => convertAll(allBoxes ? 'bubble' : 'box')}>
-          {allBoxes ? '○ All bubbles' : '▢ All boxes'}
-        </button>
         <button className={`btn small ${hulls ? 'on' : ''}`} onClick={toggleHulls}>⬡ Category hulls</button>
       </div>
       {(hulls || hasBuildings) && (
@@ -192,7 +270,16 @@ export function MorePopover({
         <button className={`btn small ${showMatrix ? 'on' : ''}`} onClick={onShowMatrix}>▦ Adjacency matrix</button>
         <button className={`btn small ${split ? 'on' : ''}`} onClick={toggleSplit}>◫ Side panel</button>
       </div>
-      {hasLevels && (floorMode === 'offset' || floorMode === '3d') && (
+      {onMatchHulls && (
+        <div className="more-row">
+          <button
+            className="btn small"
+            onClick={onMatchHulls}
+            title="Reshape every building's envelope to match its hull in the Concept view (outlines stay area-locked; one undo step)"
+          >⬡ Envelopes from concept hulls</button>
+        </div>
+      )}
+      {((hasLevels && floorMode === 'offset') || is3D) && (
         <div className="more-row">
           <span className="more-label">Floor gap</span>
           <input type="range" min="0.2" max="1.3" step="0.05" value={floorGap} onChange={(e) => setPref('floorGap', Number(e.target.value))} />
@@ -211,14 +298,6 @@ export function MorePopover({
           </select>
         </div>
       )}
-      {stackMode && (
-        <div className="more-row">
-          <span className="more-label">Camera</span>
-          <select className="ctrl-select" value={stackCam} onChange={(e) => setPref('stackCam', e.target.value)}>
-            {Object.entries(CAMERAS).map(([k, c]) => <option key={k} value={k}>{c.label}</option>)}
-          </select>
-        </div>
-      )}
       {(stackMode || is3D) && hasImages && (
         <div className="more-row">
           <button className={`btn small ${stackImages ? 'on' : ''}`} onClick={() => setPref('stackImages', !stackImages)}>⊞ Site image on floors</button>
@@ -229,7 +308,7 @@ export function MorePopover({
 }
 
 /** The left tool dock: Select / Link, then Auto-layout and Recentre. */
-export function ToolDock({ tool, onTool, autoRunning, onAutoLayout, onRecentre }) {
+export function ToolDock({ tool, onTool, autoRunning, onAutoLayout, showAutoLayout = true, showSnap = false, snapEdges = true, snapGrid = true, onToggleSnapEdges, onToggleSnapGrid, showInterior = false, interior = true, onToggleInterior, showOnion = false, onion = false, onToggleOnion, onRecentre }) {
   return (
     <div className="tool-dock">
       <button
@@ -249,16 +328,80 @@ export function ToolDock({ tool, onTool, autoRunning, onAutoLayout, onRecentre }
         <span className="tool-key">L</span>
       </button>
       <div className="tool-dock-sep" />
-      <button
-        className={`tool-btn ${autoRunning ? 'active' : ''}`}
-        onClick={onAutoLayout}
-        title="Auto-layout — run a force pass (A)"
-      >
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="6" cy="6" r="2.5" /><circle cx="18" cy="6" r="2.5" /><circle cx="12" cy="17" r="2.5" /><line x1="7.5" y1="7.8" x2="10.5" y2="15" /><line x1="16.5" y1="7.8" x2="13.5" y2="15" /></svg>
-        <span className="tool-key">A</span>
-      </button>
+      {showAutoLayout && (
+        <button
+          className={`tool-btn ${autoRunning ? 'active' : ''}`}
+          onClick={onAutoLayout}
+          title="Auto-layout — run a force pass (A)"
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="6" cy="6" r="2.5" /><circle cx="18" cy="6" r="2.5" /><circle cx="12" cy="17" r="2.5" /><line x1="7.5" y1="7.8" x2="10.5" y2="15" /><line x1="16.5" y1="7.8" x2="13.5" y2="15" /></svg>
+          <span className="tool-key">A</span>
+        </button>
+      )}
+      {showSnap && (
+        <>
+          <button
+            className={`tool-btn ${snapEdges ? 'active' : ''}`}
+            onClick={onToggleSnapEdges}
+            title={snapEdges ? 'Snap to objects (edges & corners) — on' : 'Snap to objects — off'}
+            aria-pressed={snapEdges}
+          >
+            {/* magnet — object snap */}
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 4v7a6 6 0 0 0 12 0V4" /><line x1="6" y1="4" x2="10" y2="4" /><line x1="14" y1="4" x2="18" y2="4" /><line x1="8" y1="11" x2="8" y2="8" /><line x1="16" y1="11" x2="16" y2="8" /></svg>
+          </button>
+          <button
+            className={`tool-btn ${snapGrid ? 'active' : ''}`}
+            onClick={onToggleSnapGrid}
+            title={snapGrid ? 'Snap to grid — on' : 'Snap to grid — off'}
+            aria-pressed={snapGrid}
+          >
+            {/* grid — grid snap */}
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M3 9h18M3 15h18M9 3v18M15 3v18" /></svg>
+          </button>
+        </>
+      )}
+      {showInterior && (
+        <button
+          className={`tool-btn ${interior ? 'active' : ''}`}
+          onClick={onToggleInterior}
+          title={interior ? 'Interior sketch — rooms shown inside each envelope (from the Concept layout)' : 'Interior sketch — off'}
+          aria-pressed={interior}
+        >
+          {/* eye — interior visibility */}
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6z" /><circle cx="12" cy="12" r="2.5" /></svg>
+        </button>
+      )}
+      {showOnion && (
+        <button
+          className={`tool-btn ${onion ? 'active' : ''}`}
+          onClick={onToggleOnion}
+          title={onion ? 'Onion skin — the storeys above & below ghost under this floor' : 'Onion skin — off (ghost the adjacent storeys while editing a floor)'}
+          aria-pressed={onion}
+        >
+          {/* stacked outlines — onion skin */}
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l9 5-9 5-9-5z" /><path d="M3 13.5l9 5 9-5" strokeDasharray="2.5 2.5" /></svg>
+        </button>
+      )}
       <button className="tool-btn" onClick={onRecentre} title="Recentre view">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3" /><line x1="12" y1="2" x2="12" y2="6" strokeLinecap="round" /><line x1="12" y1="18" x2="12" y2="22" strokeLinecap="round" /><line x1="2" y1="12" x2="6" y2="12" strokeLinecap="round" /><line x1="18" y1="12" x2="22" y2="12" strokeLinecap="round" /></svg>
+      </button>
+    </div>
+  );
+}
+
+/** Bottom-right view navigation: zoom out / readout / zoom in / fit. The
+ *  readout doubles as "reset to 100%". Wheel and pinch zoom keep working —
+ *  this cluster just makes the view zoom visible and clickable. */
+export function ZoomControls({ zoom, min, max, onZoomIn, onZoomOut, onZoomReset, onFit }) {
+  return (
+    <div className="zoom-cluster" role="group" aria-label="View zoom">
+      <button className="zoom-btn" onClick={onZoomOut} disabled={zoom <= min + 1e-9} title="Zoom out (−)">−</button>
+      <button className="zoom-readout mono" onClick={onZoomReset} title="Reset zoom to 100%">
+        {Math.round(zoom * 100)}%
+      </button>
+      <button className="zoom-btn" onClick={onZoomIn} disabled={zoom >= max - 1e-9} title="Zoom in (+)">+</button>
+      <button className="zoom-btn" onClick={onFit} title="Fit the program in view (0)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>
       </button>
     </div>
   );

@@ -9,7 +9,9 @@ export default defineConfig({
     port: Number(process.env.PORT) || 5173,
     strictPort: false,
     proxy: {
-      '/api': 'http://localhost:3001',
+      // API_PORT lets a second dev instance run against its own API (the
+      // server honours the same variable — see server/index.js).
+      '/api': `http://localhost:${process.env.API_PORT || 3001}`,
     },
   },
   build: {

@@ -88,7 +88,7 @@ export function SatellitePanel({ satQuery, setSatQuery, satZoom, setSatZoom, sat
 }
 
 /** The calibration walkthrough: two clicks, then the real-world distance. */
-export function ScalePanel({ scalePoints, layerName, scaleDistance, units, onDistance, onApply, onCancel }) {
+export function ScalePanel({ scalePoints, layerName, scaleDistance, units, currentMeasure = null, onDistance, onApply, onCancel }) {
   return (
     <div className="stage-popover scale-panel">
       {scalePoints.length < 2 ? (
@@ -101,6 +101,9 @@ export function ScalePanel({ scalePoints, layerName, scaleDistance, units, onDis
           <span>Distance between the points:</span>
           <input type="number" min="0.1" step="any" autoFocus value={scaleDistance} onChange={(e) => onDistance(e.target.value)} placeholder={distUnit(units)} />
           <span>{distUnit(units)}</span>
+          {/* What the picked span measures at the CURRENT calibration — a
+              sanity check before overwriting it. */}
+          {currentMeasure && <span className="muted mono">now ≈ {currentMeasure}</span>}
           <button className="btn primary small" onClick={onApply}>
             Apply
           </button>

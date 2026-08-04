@@ -13,6 +13,7 @@ import Dashboard from '../src/components/Dashboard.jsx';
 import DriftChart from '../src/components/DriftChart.jsx';
 import ProjectList from '../src/components/ProjectList.jsx';
 import SnapshotsTab from '../src/components/SnapshotsTab.jsx';
+import BriefTab from '../src/components/BriefTab.jsx';
 
 // These are prop-driven, side-effect-free render functions, so static SSR
 // markup is enough to assert what the user sees. useEffect (e.g. ProjectList's
@@ -31,17 +32,31 @@ const snapB = { id: 11, label: 'SD', taken_at: '2026-03-01', gross_area: 250, ar
 
 // ---- Dashboard ----------------------------------------------------------
 
-test('Dashboard prompts to define the brief when there are no spaces', () => {
+test('Dashboard prompts to start in the Brief tab when there are no spaces', () => {
   const html = render(Dashboard, { project, spaces: [], snapshots: [] });
-  assert.match(html, /Define the brief first/);
+  assert.match(html, /No design yet/);
+  assert.match(html, /Brief tab/);
 });
 
-test('Dashboard shows the brief net target and designed net KPIs', () => {
+test('Dashboard falls back to design targets when no Brief exists', () => {
   const html = render(Dashboard, { project, spaces, snapshots: [snapB] });
-  assert.match(html, /Brief net target/);
+  assert.match(html, /Design net \(no Brief\)/);
   assert.match(html, /150/); // 100 + 50, in the KPI value
   assert.match(html, /Designed net/);
   assert.match(html, /180/); // 130 + 50
+});
+
+test('Dashboard measures against the Brief when one exists (matched by path)', () => {
+  // Brief: same building/room paths but Lobby agreed at 120 → brief net 170.
+  const briefSpaces = [
+    { id: 91, kind: 'building', name: 'Main', parent_id: null, target_area: 0, count: 1, department: 'Building' },
+    { id: 92, kind: 'space', name: 'Lobby', parent_id: 91, department: 'Public', count: 1, target_area: 120 },
+    { id: 93, kind: 'space', name: 'Office', parent_id: 91, department: 'Staff', count: 1, target_area: 50 },
+  ];
+  const html = render(Dashboard, { project, spaces, briefSpaces, snapshots: [snapB] });
+  assert.match(html, /Brief net target/);
+  assert.match(html, /170/); // the Brief's net, not the design's 150
+  assert.match(html, /spaces in the Brief/);
 });
 
 test('Dashboard flags variance over tolerance with the bad tone', () => {
@@ -67,6 +82,25 @@ test('Dashboard renders the by-category rollup', () => {
   assert.doesNotMatch(html, /Milestone comparison/);
 });
 
+test('Dashboard flagged rows are keyboard-operable jump-to-diagram buttons', () => {
+  const html = render(Dashboard, { project, spaces, snapshots: [snapB], onGoToDiagram() {} });
+  assert.match(html, /dl-row clickable/);
+  assert.match(html, /role="button"/);
+  assert.match(html, /Show Lobby on the diagram/);
+  assert.match(html, /click to locate/);
+});
+
+test('Dashboard renders the compliance status mix with the unified palette', () => {
+  const html = render(Dashboard, { project, spaces, snapshots: [snapB] });
+  assert.match(html, /status-bar/);
+  assert.match(html, /status-legend/);
+  assert.match(html, /Over target/); // Lobby is +30% over
+  assert.match(html, /On target/); // Office is on
+  // over target reads red (--bad), NOT the old amber (--warn)
+  assert.match(html, /var\(--bad\)/);
+  assert.doesNotMatch(html, /var\(--warn\)/);
+});
+
 // ---- Milestones (SnapshotsTab) -----------------------------------------
 
 test('Milestones renders a card per recorded snapshot', () => {
@@ -76,9 +110,9 @@ test('Milestones renders a card per recorded snapshot', () => {
   assert.match(html, /SD/);
 });
 
-test('Milestones shows a change schedule between the two latest snapshots', () => {
+test('Milestones shows a change schedule with a compare picker (defaults to the two latest)', () => {
   const html = render(SnapshotsTab, { project, spaces, snapshots: [snapA, snapB], onChanged() {} });
-  assert.match(html, /Change ·/);
+  assert.match(html, /ms-compare/); // any-two milestone picker
   assert.match(html, /Net change/);
   assert.match(html, /Lobby/); // grew 100 → 130
 });
@@ -98,6 +132,45 @@ test('DriftChart omits the connecting line for a single milestone', () => {
   const html = render(DriftChart, { project, spaces, snapshots: [snapA] });
   assert.doesNotMatch(html, /chart-line/);
   assert.equal((html.match(/chart-dot/g) || []).length, 1);
+});
+
+// ---- Brief compliance lens ---------------------------------------------
+
+test('Brief offers the Status colour lens only once a milestone exists', () => {
+  // The lens lives on the treemap view (the schedule is now the default view).
+  const withMs = render(BriefTab, { project, spaces, snapshots: [snapB], onChanged() {}, defaultView: 'treemap' });
+  assert.match(withMs, /brief-lens/);
+  assert.match(withMs, />Category</);
+  assert.match(withMs, />Status</);
+  // No milestone → no Status lens (nothing to grade against).
+  const noMs = render(BriefTab, { project, spaces, snapshots: [], onChanged() {}, defaultView: 'treemap' });
+  assert.doesNotMatch(noMs, />Status</);
+});
+
+test('Design schedule shows a vs-Brief variance column when a Brief exists', () => {
+  const briefSpaces = [
+    { id: 91, kind: 'building', name: 'Main', parent_id: null, target_area: 0, count: 1, department: 'Building' },
+    { id: 92, kind: 'space', name: 'Lobby', parent_id: 91, department: 'Public', count: 1, target_area: 120 },
+  ];
+  const html = render(BriefTab, { project, spaces, briefSpaces, snapshots: [], onChanged() {} });
+  assert.match(html, />vs Brief</); // the column header
+  assert.match(html, /No matching room in the Brief/); // Office has no Brief match
+  assert.match(html, /Brief target 120 m²/); // Lobby matched at 120
+  // No Brief → no column.
+  const noBrief = render(BriefTab, { project, spaces, snapshots: [], onChanged() {} });
+  assert.doesNotMatch(noBrief, />vs Brief</);
+});
+
+test('Schedule offers sortable headers and category subtotals', () => {
+  const html = render(BriefTab, { project, spaces, snapshots: [], onChanged() {} });
+  assert.match(html, /th-sort/);
+  assert.match(html, /cat-subtotal/);
+});
+
+test('Brief has a search box in the viewbar', () => {
+  const html = render(BriefTab, { project, spaces, snapshots: [], onChanged() {} });
+  assert.match(html, /brief-search/);
+  assert.match(html, /Find a space/);
 });
 
 // ---- ProjectList --------------------------------------------------------

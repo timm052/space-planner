@@ -13,6 +13,27 @@ export function darkHex(hex, amt) {
   return `rgb(${r},${g},${b})`;
 }
 
+// Lighten a hex color toward white by `amt` (0..1) → "rgb(r,g,b)".
+export function lightHex(hex, amt) {
+  const n = parseInt(hex.slice(1), 16);
+  let r = (n >> 16) & 255;
+  let g = (n >> 8) & 255;
+  let b = n & 255;
+  r = Math.round(r + (255 - r) * amt);
+  g = Math.round(g + (255 - g) * amt);
+  b = Math.round(b + (255 - b) * amt);
+  return `rgb(${r},${g},${b})`;
+}
+
+// Colour-tinted TEXT ink that stays readable against the theme background —
+// for labels that sit on the canvas, on floor plates or on translucent fills
+// (anything whose effective backdrop is ≈ the theme bg, NOT a solid colour
+// fill: text on solid fills keeps plain darkHex ink in both themes). Dark
+// theme pushes the hue toward white, light theme toward black.
+export function labelInk(hex, theme) {
+  return theme === 'light' ? darkHex(hex, 0.55) : lightHex(hex, 0.72);
+}
+
 // Squarified treemap (Bruls et al.). items: [{id, value>0}] → [{id,x,y,w,h}].
 // Pass items already sorted by value descending for best aspect ratios.
 export function squarify(items, W, H) {
@@ -90,13 +111,23 @@ export const BUILDING_COLORS = {
   'Community Pavilion': '#57c7d4',
 };
 
-// Status (drift / compliance) → CSS color variable.
-// On target green, over = amber warn, under = cyan, missing = faint.
+// Canonical compliance-status vocabulary — ONE source shared by the diagram's
+// colour-by-status lens (useCategoryColors), the Brief lens, the Dashboard,
+// the drift chart and the milestone cards. Over target reads RED (a designed
+// area exceeding the brief is the thing to flag), on target GREEN, under
+// target TEAL, no data MUTED. The hexes equal --bad / --good / --accent2 /
+// --muted so canvas code (which needs literal colours) and CSS-var code agree.
+export const STATUS_LABEL = { over: 'Over target', on: 'On target', under: 'Under target', missing: 'No milestone data' };
+export const STATUS_HEX = { over: '#e5675f', on: '#4cc38a', under: '#57c7d4', missing: '#8d96a8' };
+// Fixed display order (over → on → under → missing) for legends and swatches.
+export const STATUS_ORDER = ['over', 'on', 'under', 'missing'];
+
+// Status → CSS color variable (theme-adaptive form of STATUS_HEX).
 export const STATUS_COLOR = {
   on: 'var(--good)',
-  over: 'var(--warn)',
+  over: 'var(--bad)',
   under: 'var(--accent2)',
-  missing: 'var(--faint)',
+  missing: 'var(--muted)',
 };
 
 export function statusColor(status) {

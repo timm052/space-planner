@@ -166,7 +166,16 @@ test('linkClick arms, disarms on the same room, links on a second room', () => {
   assert.deepEqual(disarmed.fx, []);
   const linked = linkClick(armed.sel, 9);
   assert.equal(linked.sel.linkFrom, null);
-  assert.deepEqual(linked.fx, [{ type: 'maybeCreateLink', a: 4, b: 9, kind: 'desired' }]);
+  assert.deepEqual(linked.fx, [{ type: 'maybeCreateLink', a: 4, b: 9, ia: 0, ib: 0, kind: 'desired' }]);
+});
+
+test('linkClick carries the SPECIFIC instances clicked (count>1 spaces)', () => {
+  const armed = linkClick(sel({ tool: 'link' }), 4, 2); // room C of space 4
+  assert.equal(armed.sel.linkFrom, 4);
+  assert.equal(armed.sel.linkFromInst, 2);
+  const linked = linkClick(armed.sel, 9, 1); // → room B of space 9
+  assert.deepEqual(linked.fx, [{ type: 'maybeCreateLink', a: 4, b: 9, ia: 2, ib: 1, kind: 'desired' }]);
+  assert.equal(linked.sel.linkFromInst, 0);
 });
 
 test('linkClick uses the chosen link kind and drops a selected link', () => {
@@ -178,8 +187,8 @@ test('linkClick uses the chosen link kind and drops a selected link', () => {
 
 test('selectLink selects the link and clears room/multi/pending link', () => {
   const s = sel({ selected: 7, multi: new Set(['1:0']), linkFrom: 3 });
-  const r = selectLink(s, { id: 12, space_a: 1, space_b: 2, strength: 'desired' });
-  assert.deepEqual(r.sel.selLink, { space_a: 1, space_b: 2 });
+  const r = selectLink(s, { id: 12, space_a: 1, space_b: 2, inst_a: 0, inst_b: 2, strength: 'desired' });
+  assert.deepEqual(r.sel.selLink, { space_a: 1, space_b: 2, inst_a: 0, inst_b: 2 });
   assert.equal(r.sel.selected, null);
   assert.equal(r.sel.multi.size, 0);
   assert.equal(r.sel.linkFrom, null);

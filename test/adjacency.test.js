@@ -164,3 +164,81 @@ test('closestInstancePair returns null when either side has no placed instance',
   const positions = new Map([['1:0', { x: 0, y: 0 }]]);
   assert.equal(closestInstancePair(positions, { id: 1 }, { id: 9 }), null);
 });
+
+// ---- Concept (scale-free) thresholds ----------------------------------------
+
+import { CONCEPT_REST_GAP_U, CONCEPT_THRESHOLDS_U } from '../src/adjacency.js';
+
+test('Concept thresholds sit above the sim rest gaps, so a settled layout is met', () => {
+  // The Concept sim's springs rest links at these edge gaps and its collision
+  // force keeps ALL bubbles ~20u apart — a link sitting exactly where the sim
+  // put it must grade as met (the old touching-only threshold graded 0%).
+  assert.ok(CONCEPT_THRESHOLDS_U.required > CONCEPT_REST_GAP_U.required);
+  assert.ok(CONCEPT_THRESHOLDS_U.desired > CONCEPT_REST_GAP_U.desired);
+  assert.ok(linkSatisfied('required', CONCEPT_REST_GAP_U.required, CONCEPT_THRESHOLDS_U));
+  assert.ok(linkSatisfied('desired', CONCEPT_REST_GAP_U.desired, CONCEPT_THRESHOLDS_U));
+  // The collision pad alone (any two bubbles at rest) also counts as touching.
+  assert.ok(linkSatisfied('required', 20, CONCEPT_THRESHOLDS_U));
+});
+
+// ---- aggregateByRoot (envelope master plan) ---------------------------------
+
+import { aggregateByRoot } from '../src/adjacency.js';
+
+const aggWorld = () => {
+  // Buildings A (id 100) and B (id 200); rooms 1,2 ∈ A; 3 ∈ B; 9 floating.
+  const byId = new Map([
+    [1, { id: 1, root: 100 }],
+    [2, { id: 2, root: 100 }],
+    [3, { id: 3, root: 200 }],
+    [9, { id: 9, root: null }],
+  ]);
+  const rootIdOf = (s) => s.root ?? s.id; // floating rooms stand for themselves
+  return { byId, rootIdOf };
+};
+
+test('aggregateByRoot rolls cross-building room links into one building link', () => {
+  const { byId, rootIdOf } = aggWorld();
+  const out = aggregateByRoot(
+    [
+      { id: 'l1', space_a: 1, space_b: 3, strength: 'desired' },
+      { id: 'l2', space_a: 2, space_b: 3, strength: 'required' },
+    ],
+    byId,
+    rootIdOf
+  );
+  assert.equal(out.length, 1);
+  assert.equal(out[0].space_a, 100);
+  assert.equal(out[0].space_b, 200);
+  assert.equal(out[0].count, 2);
+  assert.equal(out[0].strength, 'required'); // strongest member wins
+  assert.ok(String(out[0].id).startsWith('agg:')); // marked read-only
+});
+
+test('aggregateByRoot drops same-building links (an interior concern)', () => {
+  const { byId, rootIdOf } = aggWorld();
+  const out = aggregateByRoot([{ id: 'l1', space_a: 1, space_b: 2, strength: 'required' }], byId, rootIdOf);
+  assert.equal(out.length, 0);
+});
+
+test('aggregateByRoot keeps floating-room links under their own ids', () => {
+  const { byId, rootIdOf } = aggWorld();
+  const out = aggregateByRoot([{ id: 'l1', space_a: 9, space_b: 3, strength: 'desired' }], byId, rootIdOf);
+  assert.equal(out.length, 1);
+  assert.deepEqual([out[0].space_a, out[0].space_b].sort((a, b) => a - b), [9, 200]);
+});
+
+test('aggregateByRoot canonicalises pair order and skips unknown spaces', () => {
+  const { byId, rootIdOf } = aggWorld();
+  const out = aggregateByRoot(
+    [
+      { id: 'l1', space_a: 3, space_b: 1, strength: 'desired' }, // reversed
+      { id: 'l2', space_a: 1, space_b: 777, strength: 'required' }, // 777 missing
+    ],
+    byId,
+    rootIdOf
+  );
+  assert.equal(out.length, 1);
+  assert.ok(out[0].space_a < out[0].space_b);
+  assert.equal(out[0].count, 1);
+});

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { closestInstancePair, DEFAULT_THRESHOLDS_M } from '../adjacency.js';
+import { CONCEPT_REST_GAP_U } from '../adjacency.js';
 
 /**
  * Runs the force-directed bubble simulation in a requestAnimationFrame loop.
@@ -29,7 +29,6 @@ import { closestInstancePair, DEFAULT_THRESHOLDS_M } from '../adjacency.js';
  * @param {Map}           params.byId        - Map<spaceId, space> for adjacency lookup.
  * @param {React.MutableRefObject} params.autoRunRef - True while a momentary auto-layout pass is active.
  * @param {function}      params.setAutoRunning - Clears the button's active state when the pass settles.
- * @param {number|null}   params.effScale    - Metres per diagram unit; affects collision gap.
  * @param {React.MutableRefObject} params.nodesRef   - The node-position map.
  * @param {React.MutableRefObject} params.alphaRef   - Simulation cooling parameter (0..1).
  * @param {React.MutableRefObject} params.dragRef    - Current drag state (null when idle).
@@ -39,13 +38,13 @@ import { closestInstancePair, DEFAULT_THRESHOLDS_M } from '../adjacency.js';
  * @param {function}      params.setTick     - Re-render trigger.
  */
 export function useSimulation({
+  enabled = true, // false in authored environments (Master plan) — no drift
   instances,
   leaves,
   adjacencies,
   byId,
   autoRunRef,
   setAutoRunning,
-  effScale,
   nodesRef,
   alphaRef,
   dragRef,
@@ -57,6 +56,7 @@ export function useSimulation({
   nodeForce = 1,
   buildingForce = 0.5,
   setTick,
+  onSettle = null, // fired when an auto pass or post-drop relaxation completes
 }) {
   // Wrap the render-frequency callbacks in refs so the RAF loop always reads
   // fresh values without those functions being in the effect dep array.
@@ -74,6 +74,12 @@ export function useSimulation({
   nodeForceRef.current = nodeForce;
   const buildingForceRef = useRef(buildingForce);
   buildingForceRef.current = buildingForce;
+  // Whether the sim runs at all — read fresh in the RAF loop so toggling the
+  // active environment doesn't restart the loop.
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
+  const onSettleRef = useRef(onSettle);
+  onSettleRef.current = onSettle;
   // Captured "home" centroid per cluster — buildings are gently restored toward
   // it so they hold their position instead of drifting off-screen.
   const clusterHomeRef = useRef(new Map());
@@ -87,20 +93,12 @@ export function useSimulation({
     };
     const fixedInst = (o) => held(o.key) || !!instPinRef.current(o.s, o.i);
 
-    // Closest instance pair between two spaces (for adjacency springs).
-    const closestPair = (sa, sb) => closestInstancePair(nodesRef.current, sa, sb);
-
-    // Adjacency spring rest GAP (edge to edge, diagram units). With a real
-    // scale the springs aim at the same metre thresholds the compliance score
-    // grades against (see adjacency.js), so auto-layout optimises exactly what
-    // the badge measures; without a scale, fall back to the classic px gaps.
-    const restGapUnits = (strength) => {
-      if (effScale) {
-        const t = DEFAULT_THRESHOLDS_M[strength] ?? DEFAULT_THRESHOLDS_M.desired;
-        return Math.min(240, t / effScale);
-      }
-      return strength === 'required' ? 20 : 90;
-    };
+    // Adjacency spring rest GAP (edge to edge, diagram units). The sim only
+    // runs in the scale-free Concept environment, so these are the shared
+    // Concept constants the compliance score also grades against (see
+    // adjacency.js) — auto-layout optimises exactly what the badge measures.
+    const restGapUnits = (strength) =>
+      CONCEPT_REST_GAP_U[strength] ?? CONCEPT_REST_GAP_U.desired;
 
     // One physics pass. `collideOnly` skips every layout force and resolves
     // hard overlaps only — used briefly after a drop so neighbours step aside
@@ -133,7 +131,7 @@ export function useSimulation({
             let dy = b.n.y - a.n.y;
             let d = Math.hypot(dx, dy);
             if (d === 0) ((dx = Math.random() - 0.5), (dy = Math.random() - 0.5), (d = Math.hypot(dx, dy)));
-            const minD = a.r + b.r + (effScale ? 14 : 20);
+            const minD = a.r + b.r + 20;
             if (d >= minD) continue;
             const aF = fixedInst(a) || !!holdKeys?.has(a.key);
             const bF = fixedInst(b) || !!holdKeys?.has(b.key);
@@ -205,19 +203,24 @@ export function useSimulation({
         const sa = byId.get(l.space_a);
         const sb = byId.get(l.space_b);
         if (!sa || !sb) continue;
-        const pair = closestPair(sa, sb);
-        if (!pair) continue;
+        // A link targets SPECIFIC instances (inst_a/inst_b) — pull exactly those
+        // rooms together, so a count>1 space's copies settle where their own
+        // relationships want them (not just the nearest pair).
+        const ai = l.inst_a ?? 0, bi = l.inst_b ?? 0;
+        const a = nodesRef.current.get(`${sa.id}:${ai}`);
+        const b = nodesRef.current.get(`${sb.id}:${bi}`);
+        if (!a || !b) continue;
         const rest = radiusOfRef.current(sa) + radiusOfRef.current(sb) + restGapUnits(l.strength);
-        const unmetBoost = pair.d > rest ? 1.5 : 1;
-        const k = (l.strength === 'required' ? 0.05 : 0.016) * nf * unmetBoost;
-        const dx = pair.b.x - pair.a.x;
-        const dy = pair.b.y - pair.a.y;
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
         const d = Math.hypot(dx, dy) || 0.01;
+        const unmetBoost = d > rest ? 1.5 : 1;
+        const k = (l.strength === 'required' ? 0.05 : 0.016) * nf * unmetBoost;
         const f = ((d - rest) / d) * k * alpha;
-        if (!held(`${sa.id}:${pair.ai}`) && !instPinRef.current(sa, pair.ai))
-          ((pair.a.vx += dx * f), (pair.a.vy += dy * f));
-        if (!held(`${sb.id}:${pair.bi}`) && !instPinRef.current(sb, pair.bi))
-          ((pair.b.vx -= dx * f), (pair.b.vy -= dy * f));
+        if (!held(`${sa.id}:${ai}`) && !instPinRef.current(sa, ai))
+          ((a.vx += dx * f), (a.vy += dy * f));
+        if (!held(`${sb.id}:${bi}`) && !instPinRef.current(sb, bi))
+          ((b.vx -= dx * f), (b.vy -= dy * f));
       }
 
       // 4. Collision separation
@@ -229,7 +232,7 @@ export function useSimulation({
           let dy = b.n.y - a.n.y;
           let d = Math.hypot(dx, dy);
           if (d === 0) ((dx = Math.random() - 0.5), (dy = Math.random() - 0.5), (d = Math.hypot(dx, dy)));
-          const minD = a.r + b.r + (effScale ? 14 : 20);
+          const minD = a.r + b.r + 20;
           const aF = fixedInst(a);
           const bF = fixedInst(b);
           if (aF && bF) continue;
@@ -274,6 +277,12 @@ export function useSimulation({
     let calmFrames = 0; // consecutive near-still frames during an auto pass
 
     const step = () => {
+      // Authored environments (Master plan) never simulate — positions are
+      // fixed until the user moves them, so the loop just idles.
+      if (!enabledRef.current) {
+        raf = requestAnimationFrame(step);
+        return;
+      }
       const dragging = !!dragRef.current;
       // Momentary auto-layout: simulate only while a pass is active and still
       // warm. Dragging during a pass keeps reflowing neighbours (held nodes
@@ -291,6 +300,7 @@ export function useSimulation({
           autoRunRef.current = false;
           setAutoRunning(false);
           calmFrames = 0;
+          onSettleRef.current?.();
         }
       } else if (relaxRef.current && relaxRef.current.frames > 0 && !dragging) {
         // Post-drop relaxation (primed by onUp): resolve hard overlaps only,
@@ -301,11 +311,15 @@ export function useSimulation({
         const maxMove = simulate(1, true, relax.hold);
         relax.frames = maxMove < 0.05 ? 0 : relax.frames - 1;
         if (maxMove > 0) setTick((t) => t + 1);
+        if (relax.frames <= 0) {
+          relaxRef.current = null;
+          onSettleRef.current?.();
+        }
       }
       raf = requestAnimationFrame(step);
     };
     raf = requestAnimationFrame(step);
     return () => cancelAnimationFrame(raf);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [instances, adjacencies, effScale]);
+  }, [instances, adjacencies]);
 }

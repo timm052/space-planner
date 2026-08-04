@@ -21,14 +21,17 @@ function BrandLogo() {
 }
 
 function ThemeToggle() {
-  const { theme, setTheme } = useTheme();
+  const { mode, setMode } = useTheme();
   return (
     <div className="theme-toggle" role="group" aria-label="Color theme">
-      <button className={theme === 'dark' ? 'active' : ''} onClick={() => setTheme('dark')}>
+      <button className={mode === 'dark' ? 'active' : ''} onClick={() => setMode('dark')}>
         Dark
       </button>
-      <button className={theme === 'light' ? 'active' : ''} onClick={() => setTheme('light')}>
+      <button className={mode === 'light' ? 'active' : ''} onClick={() => setMode('light')}>
         Light
+      </button>
+      <button className={mode === 'auto' ? 'active' : ''} onClick={() => setMode('auto')} title="Follow the system theme">
+        Auto
       </button>
     </div>
   );

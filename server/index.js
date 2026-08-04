@@ -2,6 +2,9 @@ import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { seedIfEmpty } from './db.js';
+import { ensureAllResolved } from './brief.js';
+import briefSpacesRouter from './routes/brief_spaces.js';
+import programRouter from './routes/program.js';
 import projectsRouter from './routes/projects.js';
 import spacesRouter from './routes/spaces.js';
 import adjacenciesRouter from './routes/adjacencies.js';
@@ -16,12 +19,15 @@ const app = express();
 app.use(express.json({ limit: '25mb' })); // background images arrive as data URLs
 
 seedIfEmpty();
+ensureAllResolved(); // resolve formula-driven areas in both room trees
 
 // Mount all API routes under /api.
 // projects router uses relative '/' and '/:id' so mount at /api/projects.
 // All other routers include the full resource path so they mount at /api.
 app.use('/api/projects', projectsRouter);
 app.use('/api', spacesRouter);
+app.use('/api', briefSpacesRouter);
+app.use('/api', programRouter);
 app.use('/api', adjacenciesRouter);
 app.use('/api', snapshotsRouter);
 app.use('/api', imagesRouter);

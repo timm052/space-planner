@@ -23,6 +23,8 @@ import {
   fmtArea,
   fmtPct,
   buildCsv,
+  pathKeyMap,
+  briefTargetsFor,
   M2_PER_FT2,
   M_PER_FT,
 } from '../src/compute.js';
@@ -303,4 +305,60 @@ test('distUnit returns m2/ft2 for area-unit labels', () => {
 test('metersToDist converts m→ft and passes m through', () => {
   assert.ok(Math.abs(metersToDist(1, 'ft2') - 1 / 0.3048) < 0.001);
   assert.strictEqual(metersToDist(5, 'm2'), 5);
+});
+
+// ---- Path keys (Brief ↔ Design matching) ----------------------------------
+
+test('pathKeyMap builds lowercase ancestor paths', () => {
+  const wing = space({ name: 'West Wing', kind: 'group' });
+  const store = space({ name: ' Store ', parent_id: wing.id });
+  const keys = pathKeyMap([wing, store]);
+  assert.equal(keys.get(wing.id), 'west wing');
+  assert.equal(keys.get(store.id), 'west wing / store');
+});
+
+test('pathKeyMap disambiguates duplicate siblings by sort order', () => {
+  const zone = space({ name: 'Teen Zone', kind: 'group' });
+  const a = space({ name: 'Book Storage Copy', parent_id: zone.id, sort_order: 1 });
+  const b = space({ name: 'Book Storage Copy', parent_id: zone.id, sort_order: 2 });
+  const c = space({ name: 'book storage copy', parent_id: zone.id, sort_order: 3 });
+  // Shuffled input — order comes from sort_order, not array position.
+  const keys = pathKeyMap([c, zone, b, a]);
+  assert.equal(keys.get(a.id), 'teen zone / book storage copy');
+  assert.equal(keys.get(b.id), 'teen zone / book storage copy #2');
+  assert.equal(keys.get(c.id), 'teen zone / book storage copy #3');
+  // Every key is unique.
+  assert.equal(new Set(keys.values()).size, 4);
+});
+
+test('pathKeyMap: children under duplicate parents inherit the disambiguated prefix', () => {
+  const wing1 = space({ name: 'Wing', kind: 'group', sort_order: 0 });
+  const wing2 = space({ name: 'Wing', kind: 'group', sort_order: 1 });
+  const r1 = space({ name: 'Store', parent_id: wing1.id });
+  const r2 = space({ name: 'Store', parent_id: wing2.id });
+  const keys = pathKeyMap([wing1, wing2, r1, r2]);
+  assert.equal(keys.get(r1.id), 'wing / store');
+  assert.equal(keys.get(r2.id), 'wing #2 / store');
+});
+
+test('pathKeyMap: a literal "#2" name never collides with a generated one', () => {
+  const a = space({ name: 'Room #2', sort_order: 0 });
+  const b = space({ name: 'Room', sort_order: 1 });
+  const c = space({ name: 'Room', sort_order: 2 });
+  const keys = pathKeyMap([a, b, c]);
+  assert.equal(new Set(keys.values()).size, 3);
+  assert.equal(keys.get(b.id), 'room');
+  // 'room #2' is taken by the literal name, so the duplicate skips to #3.
+  assert.equal(keys.get(a.id), 'room #2');
+  assert.equal(keys.get(c.id), 'room #3');
+});
+
+test('briefTargetsFor pairs duplicate rooms one-to-one, in order', () => {
+  const d1 = space({ name: 'Store', target_area: 10, sort_order: 0 });
+  const d2 = space({ name: 'Store', target_area: 20, sort_order: 1 });
+  const b1 = space({ name: 'Store', target_area: 40, sort_order: 0 });
+  const b2 = space({ name: 'Store', target_area: 60, sort_order: 1 });
+  const targets = briefTargetsFor([d1, d2], [b1, b2]);
+  assert.equal(targets.get(d1.id), 40);
+  assert.equal(targets.get(d2.id), 60);
 });

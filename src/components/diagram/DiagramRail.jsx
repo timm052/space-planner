@@ -1,5 +1,6 @@
 import { api } from '../../api.js';
-import { fmtArea } from '../../compute.js';
+import { fmtArea, instanceLabel } from '../../compute.js';
+import { linkKey } from '../../adjacency.js';
 import { Empty } from '../ui.jsx';
 
 /**
@@ -15,8 +16,16 @@ export default function DiagramRail({
   groups,
   groupKey,
   areaTree,
-  areaMode,
-  setAreaMode,
+  grouping, // 'category' | 'building' — follows the topbar Colour control
+  stackData,
+  stackLevels,
+  levelHeightOf,
+  onLevelHeight,
+  onRenameFloor,
+  floorMode,
+  onPickFloor,
+  focusBuilding,
+  onFocusBuilding,
   collapsed,
   toggleCollapse,
   colorForLabel,
@@ -32,6 +41,9 @@ export default function DiagramRail({
   relList,
   reqCount,
   desCount,
+  linkStates, // Map "loId:hiId" → 'met' | 'unmet' (null when ungradable)
+  onJumpLink, // pan the canvas to the pair + select the link
+  isContainerId, // container spaces get the 🏢 prefix so they read as buildings
   onChanged,
   toggleSplit,
   startRailResize,
@@ -59,15 +71,12 @@ export default function DiagramRail({
             <span className="sec-tag">A·01</span>
             <span className="sec-title">Areas</span>
           </div>
-          {hasBuildings && (
-            <div className="seg small">
-              <button className={`seg-btn ${areaMode === 'category' ? 'active' : ''}`} onClick={() => setAreaMode('category')}>Category</button>
-              <button className={`seg-btn ${areaMode === 'building' ? 'active' : ''}`} onClick={() => setAreaMode('building')}>Building</button>
-            </div>
-          )}
+          {/* Grouping follows the topbar Colour control — one switch drives
+              both the canvas colouring and this schedule's grouping. */}
+          {hasBuildings && <span className="muted mono rail-head-count">by {grouping}</span>}
         </div>
         <div className="split-rows">
-          {areaMode === 'building' && hasBuildings
+          {grouping === 'building' && hasBuildings
             ? [...areaTree.entries()].map(([b, levels]) => {
                 const bKey = `b:${b}`;
                 const open = !collapsed.has(bKey);
@@ -123,10 +132,115 @@ export default function DiagramRail({
         </div>
       </section>
 
+      {stackData && stackData.length > 0 && (
+        <section className="rail-section stacking">
+          <div className="rail-head">
+            <div className="sec-head">
+              <span className="sec-tag">A·02</span>
+              <span className="sec-title">Stacking</span>
+            </div>
+            <span className="muted mono rail-head-count">gross / floor</span>
+          </div>
+          {/* Storey heights — project-wide per level label (all buildings).
+              Feeds the 3-D massing; a space's own height overrides its
+              storey's (set it in the Brief). */}
+          {stackLevels && stackLevels.length > 0 && onLevelHeight && (
+            <div className="stack-heights">
+              {stackLevels.map((lv) => (
+                <label key={lv} className="stack-height" title={`Floor-to-floor height of “${lv}” in metres — applies across buildings`}>
+                  {onRenameFloor ? (
+                    <input
+                      className="stack-height-rename"
+                      defaultValue={lv}
+                      title="Rename this floor — applies to every space on it (Enter to apply)"
+                      onKeyDown={(e) => { if (e.key === 'Enter') e.target.blur(); }}
+                      onBlur={(e) => {
+                        const v = e.target.value.trim();
+                        if (v && v !== lv) onRenameFloor(lv, v);
+                        else e.target.value = lv;
+                      }}
+                    />
+                  ) : (
+                    <span className="stack-height-name">{lv}</span>
+                  )}
+                  <input
+                    type="number"
+                    min="2"
+                    max="20"
+                    step="0.1"
+                    defaultValue={levelHeightOf(lv)}
+                    onChange={(e) => onLevelHeight(lv, e.target.value)}
+                  />
+                  <span className="stack-height-unit muted">m</span>
+                </label>
+              ))}
+            </div>
+          )}
+          {stackData.map(({ building, rootId, rows, total, envelope }) => {
+            const max = Math.max(...rows.map((r) => r.area), 1);
+            const focused = focusBuilding != null && focusBuilding === rootId;
+            return (
+              <div key={building} className={`stack-building ${focused ? 'focused' : ''}`}>
+                <button
+                  className="stack-b-head"
+                  onClick={() => rootId != null && onFocusBuilding?.(rootId)}
+                  title={focused ? 'Unfocus — show every building' : 'Focus this building on the canvas'}
+                >
+                  <span className="stack-b-name">{focused ? '◉' : '🏢'} {building}</span>
+                  {envelope && (
+                    <span
+                      className={`stack-env mono ${envelope.over ? 'bad' : ''}`}
+                      title={envelope.over
+                        ? 'The biggest storey (plus circulation) exceeds the master-plan envelope — enlarge the envelope or move rooms up/down'
+                        : 'Master-plan envelope footprint'}
+                    >
+                      ▱ {fmtArea(envelope.drawn, units)}
+                    </span>
+                  )}
+                  {envelope && envelope.circ > 0 && (
+                    <span
+                      className="stack-env stack-circ mono"
+                      title={`Circulation — ${Math.round(envelope.circ * 100)}% of gross, ≈ ${fmtArea(envelope.drawn * envelope.circ, units)} of this envelope. Set per building in the Master plan's action bar.`}
+                    >
+                      ⤨ {fmtArea(envelope.drawn * envelope.circ, units)}
+                    </span>
+                  )}
+                  <span className="stack-b-total">{fmtArea(total, units)}</span>
+                </button>
+                <div className="stack-levels">
+                  {rows.map((r) => (
+                    <button
+                      key={r.lvl}
+                      className={`stack-level ${floorMode === r.raw ? 'active' : ''}`}
+                      onClick={() => onPickFloor(r.raw)}
+                      title={`Edit ${r.lvl}`}
+                    >
+                      <span className="stack-level-name" title={r.lvl}>{r.lvl}</span>
+                      <span className="stack-bar-wrap">
+                        {(r.segs ?? [{ area: r.area, color: undefined, label: null }]).map((sg, si) => (
+                          <span
+                            key={si}
+                            className="stack-bar"
+                            style={{ width: `${(sg.area / max) * 100}%`, background: sg.color }}
+                            title={sg.label ? `${sg.label} — ${fmtArea(sg.area, units)}` : undefined}
+                          />
+                        ))}
+                      </span>
+                      <span className="stack-level-area mono">{fmtArea(r.area, units)}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </section>
+      )}
+
       <section className="rail-section rel">
         <div className="rail-head">
           <div className="sec-head">
-            <span className="sec-tag t-accent2">A·02</span>
+            {/* Numbered after Stacking when that section is present. */}
+            <span className="sec-tag t-accent2">{stackData && stackData.length > 0 ? 'A·03' : 'A·02'}</span>
             <span className="sec-title">Adjacency</span>
           </div>
           <span className="muted mono rail-head-count">
@@ -144,35 +258,55 @@ export default function DiagramRail({
         ) : (
           <table className="rail-rel">
             <tbody>
-              {relList.map((l) => {
-                const a = byId.get(l.space_a);
-                const b = byId.get(l.space_b);
-                if (!a || !b) return null;
-                return (
-                  <tr key={l.id}>
-                    <td className="rel-glyph">
-                      <svg width="22" height="10" viewBox="0 0 22 10" aria-hidden="true">
-                        <line x1="2" y1="5" x2="20" y2="5" stroke="var(--text)" strokeWidth={l.strength === 'required' ? 1.6 : 1.2} strokeDasharray={l.strength === 'required' ? undefined : '1 3'} strokeLinecap="round" />
-                        {l.strength === 'required' && <><circle cx="2" cy="5" r="1.8" fill="var(--text)" /><circle cx="20" cy="5" r="1.8" fill="var(--text)" /></>}
-                      </svg>
-                    </td>
-                    <td className="rel-pair">
-                      <b>{a.name}</b> ↔ <b>{b.name}</b>
-                    </td>
-                    <td className="rel-strength">
-                      <select value={l.strength} onChange={async (e) => ((await api.updateAdjacency(l.id, { strength: e.target.value })), onChanged())} className="strength-select">
-                        <option value="required">Required</option>
-                        <option value="desired">Desired</option>
-                      </select>
-                    </td>
-                    <td className="row-actions rel-remove">
-                      <button className="btn small ghost danger" onClick={async () => ((await api.deleteAdjacency(l.id)), onChanged())}>
-                        ✕
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
+              {(() => {
+                const stateOf = (l) => {
+                  if (!linkStates) return null;
+                  return linkStates.get(linkKey(l.space_a, l.inst_a, l.space_b, l.inst_b)) ?? null;
+                };
+                // Unmet first — the schedule doubles as the fix-it list.
+                const rank = (l) => (stateOf(l) === 'unmet' ? 0 : stateOf(l) === 'met' ? 1 : 2);
+                const rows = [...relList].sort((a, b) => rank(a) - rank(b));
+                return rows.map((l) => {
+                  const a = byId.get(l.space_a);
+                  const b = byId.get(l.space_b);
+                  if (!a || !b) return null;
+                  const state = stateOf(l);
+                  // Instance-aware label: count>1 spaces show the specific room's
+                  // letter (Meeting Rooms B); containers get the 🏢 prefix.
+                  const nameOf = (s, inst) =>
+                    `${isContainerId?.(s.id) ? '🏢 ' : ''}${s.name}${Math.max(1, s.count || 1) > 1 ? ` ${instanceLabel(inst ?? 0)}` : ''}`;
+                  return (
+                    <tr key={l.id} className={state ? `rel-${state}` : ''}>
+                      <td className="rel-glyph">
+                        <span
+                          className={`rel-dot ${state ?? 'ungraded'}`}
+                          title={state === 'met' ? 'Satisfied in the current layout' : state === 'unmet' ? 'Not satisfied in the current layout' : 'Not graded — set a scale (or arrange the Concept view)'}
+                        />
+                        <svg width="22" height="10" viewBox="0 0 22 10" aria-hidden="true">
+                          <line x1="2" y1="5" x2="20" y2="5" stroke="var(--text)" strokeWidth={l.strength === 'required' ? 1.6 : 1.2} strokeDasharray={l.strength === 'required' ? undefined : '1 3'} strokeLinecap="round" />
+                          {l.strength === 'required' && <><circle cx="2" cy="5" r="1.8" fill="var(--text)" /><circle cx="20" cy="5" r="1.8" fill="var(--text)" /></>}
+                        </svg>
+                      </td>
+                      <td className="rel-pair">
+                        <button className="rel-jump" onClick={() => onJumpLink?.(l)} title="Go to this pair on the diagram">
+                          <b>{nameOf(a, l.inst_a)}</b> ↔ <b>{nameOf(b, l.inst_b)}</b>
+                        </button>
+                      </td>
+                      <td className="rel-strength">
+                        <select value={l.strength} onChange={async (e) => ((await api.updateAdjacency(l.id, { strength: e.target.value })), onChanged())} className="strength-select">
+                          <option value="required">Required</option>
+                          <option value="desired">Desired</option>
+                        </select>
+                      </td>
+                      <td className="row-actions rel-remove">
+                        <button className="btn small ghost danger" onClick={async () => ((await api.deleteAdjacency(l.id)), onChanged())}>
+                          ✕
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                });
+              })()}
             </tbody>
           </table>
         )}

@@ -28,11 +28,16 @@ function imageFormat(dataUrl) {
 
 // scene = {
 //   bounds:{minX,minY,maxX,maxY}, layers:[{dataUrl,x,y,w,h,opacity}],
-//   links:[{x1,y1,x2,y2,strength}], bubbles:[{x,y,r,color,opacity,label,sublabel}],
+//   links:[{x1,y1,x2,y2,strength}],
+//   bubbles:[{x,y,r,color,opacity,label,sublabel,poly?,labelAbove?}],
+//   cells:[{poly,r,color,label,sublabel}] — interior room cells (master plan),
 //   scale:{ratioLabel, scaleBar:{lenUnits,label}}|null, north:{deg}|null,
-//   title:{name,client,stage,scaleLabel,date}
+//   title:{name,client,stage,sheet,scaleLabel,date}
 // }   — all geometry in diagram units.
-export function exportDiagramPdf(scene) {
+
+// Pick the page + mm-per-unit for one sheet: the smallest ISO page that holds
+// the content at true scale (or, in relative/NTS mode, fit the content to A3).
+function layoutSheet(scene) {
   const { bounds } = scene;
   const contentWUnits = Math.max(1, bounds.maxX - bounds.minX);
   const contentHUnits = Math.max(1, bounds.maxY - bounds.minY);
@@ -40,9 +45,6 @@ export function exportDiagramPdf(scene) {
   const toScale = !!scene.scale;
   let mmPerUnit = MM_PER_UNIT;
   let reduced = null;
-
-  // Choose the smallest page that holds the content at true scale (or, in
-  // relative mode, fit the content to A3).
   let page = null;
   if (toScale) {
     const needW = contentWUnits * mmPerUnit + 2 * MARGIN;
@@ -63,8 +65,35 @@ export function exportDiagramPdf(scene) {
     const availH = page.h - 2 * MARGIN - TITLE_H;
     mmPerUnit = Math.min(availW / contentWUnits, availH / contentHUnits);
   }
+  return { page, mmPerUnit, reduced };
+}
 
-  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: [page.w, page.h] });
+// One environment's drawing as a single sheet.
+export function exportDiagramPdf(scene) {
+  const layout = layoutSheet(scene);
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: [layout.page.w, layout.page.h] });
+  renderSheet(doc, scene, layout);
+  const safe = (scene.title.name || 'diagram').replace(/[^\w-]+/g, '_');
+  doc.save(`${safe}_bubble_diagram.pdf`);
+}
+
+// The drawing set: several sheets (concept · master plan · one per floor) in
+// one PDF, each page sized for its own content and scale.
+export function exportDrawingSet({ sheets, fileName = 'drawing_set.pdf' }) {
+  if (!sheets.length) return;
+  const layouts = sheets.map(layoutSheet);
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: [layouts[0].page.w, layouts[0].page.h] });
+  sheets.forEach((scene, i) => {
+    if (i > 0) doc.addPage([layouts[i].page.w, layouts[i].page.h], 'landscape');
+    renderSheet(doc, scene, layouts[i]);
+  });
+  doc.save(fileName);
+}
+
+function renderSheet(doc, scene, { page, mmPerUnit, reduced }) {
+  const { bounds } = scene;
+  const contentWUnits = Math.max(1, bounds.maxX - bounds.minX);
+  const contentHUnits = Math.max(1, bounds.maxY - bounds.minY);
 
   // Centre the drawing in the area above the title block.
   const drawW = contentWUnits * mmPerUnit;
@@ -105,6 +134,42 @@ export function exportDiagramPdf(scene) {
   }
   doc.setLineDashPattern([], 0);
 
+  // Interior room cells (master-plan sketch) — light area-true fills under
+  // the envelope outlines, each with a small name/area label.
+  const polyDeltas = (poly) => {
+    const deltas = [];
+    for (let i = 1; i < poly.length; i++)
+      deltas.push([X(poly[i].x) - X(poly[i - 1].x), Y(poly[i].y) - Y(poly[i - 1].y)]);
+    return deltas;
+  };
+  for (const c of scene.cells ?? []) {
+    const [r, g, bl] = hexToRgb(c.color);
+    doc.saveGraphicsState();
+    doc.setGState(new doc.GState({ opacity: 0.3 }));
+    doc.setFillColor(r, g, bl);
+    doc.lines(polyDeltas(c.poly), X(c.poly[0].x), Y(c.poly[0].y), [1, 1], 'F', true);
+    doc.restoreGraphicsState();
+    doc.setDrawColor(Math.round(r * 0.75), Math.round(g * 0.75), Math.round(bl * 0.75));
+    doc.setLineWidth(0.2);
+    doc.lines(polyDeltas(c.poly), X(c.poly[0].x), Y(c.poly[0].y), [1, 1], 'S', true);
+    // Label at the cell's centroid, sized to the cell like a small bubble.
+    let cx = 0, cy = 0;
+    for (const p of c.poly) { cx += p.x; cy += p.y; }
+    cx /= c.poly.length; cy /= c.poly.length;
+    const rmm = c.r * mmPerUnit;
+    if (rmm > 3.5) {
+      const pt = Math.max(4, Math.min(7, rmm * 0.7));
+      doc.setTextColor(30, 30, 30);
+      doc.setFontSize(pt);
+      doc.text(c.label, X(cx), Y(cy) - 0.3, { align: 'center', baseline: 'middle' });
+      if (c.sublabel && rmm > 5.5) {
+        doc.setFontSize(Math.max(3.5, pt * 0.8));
+        doc.setTextColor(70, 70, 70);
+        doc.text(c.sublabel, X(cx), Y(cy) + pt * 0.5, { align: 'center', baseline: 'middle' });
+      }
+    }
+  }
+
   // Bubbles (or boxes). Outline style draws stroke only, to match the viewport.
   const outline = scene.bubbleStyle === 'outline';
   for (const b of scene.bubbles) {
@@ -132,15 +197,25 @@ export function exportDiagramPdf(scene) {
     doc.setLineWidth(outline ? 0.4 : 0.25);
     drawShape('S');
 
-    // Label, scaled to the bubble but kept legible.
+    // Label, scaled to the bubble but kept legible. An envelope whose interior
+    // is sketched (labelAbove) wears its name above the outline instead —
+    // its centre belongs to the room cells.
     const pt = Math.max(4.5, Math.min(9, rmm * 0.9));
-    doc.setTextColor(30, 30, 30);
-    doc.setFontSize(pt);
-    doc.text(b.label, X(b.x), Y(b.y) - (b.sublabel ? 0.3 : -pt * 0.12), { align: 'center', baseline: 'middle' });
-    if (b.sublabel && rmm > 6) {
-      doc.setFontSize(Math.max(4, pt * 0.8));
+    if (b.labelAbove && b.poly) {
+      let topY = Infinity;
+      for (const p of b.poly) topY = Math.min(topY, p.y);
       doc.setTextColor(70, 70, 70);
-      doc.text(b.sublabel, X(b.x), Y(b.y) + pt * 0.5, { align: 'center', baseline: 'middle' });
+      doc.setFontSize(6.5);
+      doc.text(`${b.label} · ${b.sublabel}`, X(b.x), Y(topY) - 2, { align: 'center', baseline: 'bottom' });
+    } else {
+      doc.setTextColor(30, 30, 30);
+      doc.setFontSize(pt);
+      doc.text(b.label, X(b.x), Y(b.y) - (b.sublabel ? 0.3 : -pt * 0.12), { align: 'center', baseline: 'middle' });
+      if (b.sublabel && rmm > 6) {
+        doc.setFontSize(Math.max(4, pt * 0.8));
+        doc.setTextColor(70, 70, 70);
+        doc.text(b.sublabel, X(b.x), Y(b.y) + pt * 0.5, { align: 'center', baseline: 'middle' });
+      }
     }
   }
 
@@ -165,6 +240,24 @@ export function exportDiagramPdf(scene) {
     doc.setFontSize(7);
     doc.setTextColor(20, 20, 20);
     doc.text(sb.label, bx + lenMm + 3, by + 1);
+  }
+
+  // Colour legend (bottom-right inside the frame) — decodes the category
+  // colours on paper. Right-aligned so it never collides with the scale bar.
+  if (scene.legend?.length) {
+    const sw = 2.6; // swatch square (mm)
+    doc.setFontSize(6.5);
+    const entryW = (label) => sw + 1.4 + doc.getTextWidth(label) + 5;
+    let lx = MARGIN + availW - 5;
+    const ly = MARGIN + availH - 7.5;
+    for (const item of [...scene.legend].reverse()) {
+      lx -= entryW(item.label);
+      const [r, g, b] = hexToRgb(item.color);
+      doc.setFillColor(r, g, b);
+      doc.rect(lx, ly - sw + 0.6, sw, sw, 'F');
+      doc.setTextColor(50, 50, 50);
+      doc.text(item.label, lx + sw + 1.4, ly);
+    }
   }
 
   // North arrow (top-right inside the frame).
@@ -202,7 +295,7 @@ export function exportDiagramPdf(scene) {
   doc.text(meta, MARGIN + 4, ty + 14);
   doc.setFontSize(7);
   doc.setTextColor(90, 90, 90);
-  doc.text('Bubble diagram · BriefTrack', MARGIN + 4, ty + 19);
+  doc.text(`${t.sheet || 'Bubble diagram'} · BriefTrack`, MARGIN + 4, ty + 19);
 
   // Right side of title block: scale + date.
   doc.setTextColor(20, 20, 20);
@@ -217,7 +310,4 @@ export function exportDiagramPdf(scene) {
     doc.setTextColor(180, 60, 50);
     doc.text(`reduced ×${(1 / reduced).toFixed(2)} to fit`, MARGIN + availW - 4, ty + 19, { align: 'right' });
   }
-
-  const safe = (t.name || 'diagram').replace(/[^\w-]+/g, '_');
-  doc.save(`${safe}_bubble_diagram.pdf`);
 }
