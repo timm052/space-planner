@@ -266,6 +266,14 @@ export default function DiagramCanvas({
           <svg
             ref={svgRef}
             viewBox={`${originX} ${originY} ${vb.w} ${vb.h}`}
+            // toSvgCoords maps each axis LINEARLY across the client rect, which
+            // is only what the browser does under 'none'. The SVG default
+            // (xMidYMid meet) uniformly scales and letterboxes instead, so the
+            // two agree only while vb exactly matches the container — true once
+            // the ResizeObserver has fired, but NOT on the first render, where
+            // vb is still the 900x620 fallback. Declaring 'none' makes the
+            // mapping correct at all times; it is a no-op once vb has caught up.
+            preserveAspectRatio="none"
             role="application"
             aria-label="Space planning diagram — Tab cycles rooms once one is selected, arrows nudge, ? lists shortcuts"
             className={`bubble-svg ${scalePoints ? 'scaling' : ''} ${panActive || moveLayer || rotateLayer ? 'panning' : ''} ${tool === 'link' ? 'linking' : ''}`}
