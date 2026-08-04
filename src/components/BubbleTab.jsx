@@ -13,6 +13,7 @@ import { buildStackScene, build3DScene } from './diagram/scenes.js';
 import * as selection from './diagram/selection.js';
 import * as linking from './diagram/linking.js';
 import * as layerTools from './diagram/layerTools.js';
+import * as modes from './diagram/modes.js';
 import { useDiagramPrefs } from '../hooks/useDiagramPrefs.js';
 import { useViewport, W, H } from '../hooks/useViewport.js';
 import { useImageDims } from '../hooks/useImageDims.js';
@@ -384,65 +385,19 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     }
     return null;
   })();
-  // Snap a diagram-unit coordinate to the placement grid. Coarse (major cell) by
-  // default; `fine` (Alt held) snaps to the subdivision. Identity when off.
-  const snapToGrid = (v, fine) => {
-    if (!planGrid) return v;
-    const s = fine ? planGrid.minorStep : planGrid.step;
-    return Math.round(v / s) * s;
-  };
-  // World-space half-extents (x, y) of a footprint as RENDERED — the real box
-  // dimensions in the Building massing model (rescaled to the target area, with
-  // 90° orientation), else the circle radius. Snapping uses these so boxes align
-  // edge-to-edge and corner-to-corner, not by a phantom radius.
-  const footHalf = (s, n) => {
-    if (isBuilding) {
-      const target = areaUnits(s);
-      let hw, hh;
-      if (n && n.w && n.h) {
-        const aspect = n.w / n.h;
-        const bh = Math.sqrt(target / aspect);
-        hh = bh / 2;
-        hw = (aspect * bh) / 2;
-      } else {
-        hw = hh = Math.sqrt(target) / 2;
-      }
-      return Math.round((n?.rot || 0) / 90) % 2 ? { x: hh, y: hw } : { x: hw, y: hh };
-    }
-    const r = radiusOf(s);
-    return { x: r, y: r };
-  };
-  // Snap targets per axis: every other visible footprint's two edges + centre.
-  // Each candidate carries the neighbour's PERPENDICULAR centre + half-extent, so
-  // the guide can be drawn as a short segment spanning just the two boxes.
-  const SNAP_TOL = 8; // diagram units — the reach of an edge/corner grab
-  const neighbourEdges = (dragKey) => {
-    const x = [], y = [];
-    for (const o of instances) {
-      if (o.key === dragKey || !levelVisible(o.s)) continue;
-      const nn = nodesRef.current.get(o.key);
-      if (!nn) continue;
-      const h = footHalf(o.s, nn);
-      for (const at of [nn.x - h.x, nn.x, nn.x + h.x]) x.push({ at, c: nn.y, h: h.y });
-      for (const at of [nn.y - h.y, nn.y, nn.y + h.y]) y.push({ at, c: nn.x, h: h.x });
-    }
-    return { x, y };
-  };
-  // Resolve one axis. When object snap is on, try edge/corner alignment first (the
-  // dragged box's own left / centre / right land on a neighbour edge → returns the
-  // matched candidate). Otherwise, or when nothing aligns, fall back to the metric
-  // grid if grid snap is on. `half` is the dragged half-extent on this axis.
-  const resolveAxis = (center, half, cands, fine, useEdges, useGrid) => {
-    if (useEdges) {
-      let best = null;
-      for (const off of [-half, 0, half]) for (const cand of cands) {
-        const d = cand.at - (center + off);
-        if (Math.abs(d) <= SNAP_TOL && (!best || Math.abs(d) < Math.abs(best.d))) best = { d, cand };
-      }
-      if (best) return { val: center + best.d, cand: best.cand };
-    }
-    return { val: useGrid ? snapToGrid(center, fine) : center, cand: null };
-  };
+  // Snap geometry lives in diagram/modes.js (pure, tested). These thin bindings
+  // close over the React-side context each one needs; the math itself is there.
+  const snapToGrid = (v, fine) => modes.snapToGrid(v, fine, planGrid);
+  const footHalf = (s, n) => modes.footHalf(s, n, { isBuilding, areaUnits, radiusOf });
+  const neighbourEdges = (dragKey) =>
+    modes.neighbourEdges(dragKey, {
+      instances,
+      nodeOf: (k) => nodesRef.current.get(k),
+      levelVisible,
+      halfOf: footHalf,
+    });
+  const resolveAxis = (center, half, cands, fine, useEdges, useGrid) =>
+    modes.resolveAxis(center, half, cands, fine, useEdges, useGrid, planGrid);
 
 
 
@@ -1970,16 +1925,13 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     }
     if (layerPointerMove(e)) return; // move / rotate a layer — handled by useImageLayers
     if (panRef.current) {
-      if (Math.abs(e.clientX - panRef.current.sx) + Math.abs(e.clientY - panRef.current.sy) > 4) panRef.current.moved = true;
-      setView({
-        x: panRef.current.vx - ((e.clientX - panRef.current.sx) * vbz.w) / rect.width,
-        y: panRef.current.vy - ((e.clientY - panRef.current.sy) * vbz.h) / rect.height,
-      });
+      if (modes.panMoved(panRef.current, e)) panRef.current.moved = true;
+      setView(modes.panTo(panRef.current, e, vbz, rect));
       return;
     }
     if (marqueeRef.current) {
       const p = toSvgCoords(e);
-      const box = { ...marqueeRef.current.box, x1: p.x, y1: p.y };
+      const box = modes.marqueeBoxAt(marqueeRef.current.box, p);
       marqueeRef.current.box = box; // authoritative for the release
       setMarquee(box); // drives the visible rubber band
       return;
@@ -2009,21 +1961,22 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     const rawY = drag.offset ? y + drag.offset.y : y;
     let tx = rawX, ty = rawY;
     if (caps.snap && (snapEdges || snapGrid)) {
-      // Snap each axis to a neighbour's edge/centre when close (with a guide line),
-      // else to the metric grid — each snap type is independently toggleable. The
-      // dragged box's own half-extents are the offsets, so its EDGES and CORNERS
-      // latch onto neighbours (flush side-by-side, aligned, stacked).
-      const half = footHalf(byId.get(drag.spaceId), node);
-      const nb = neighbourEdges(drag.key);
-      const gx = resolveAxis(rawX, half.x, nb.x, e.altKey, snapEdges, snapGrid);
-      const gy = resolveAxis(rawY, half.y, nb.y, e.altKey, snapEdges, snapGrid);
-      tx = gx.val; ty = gy.val;
-      // Bounded guide segments: a vertical line at the aligned x spanning just the
-      // dragged box and its matched neighbour (and likewise horizontally).
-      const guides = [];
-      if (gx.cand) guides.push({ x: gx.cand.at, y0: Math.min(ty - half.y, gx.cand.c - gx.cand.h), y1: Math.max(ty + half.y, gx.cand.c + gx.cand.h) });
-      if (gy.cand) guides.push({ y: gy.cand.at, x0: Math.min(tx - half.x, gy.cand.c - gy.cand.h), x1: Math.max(tx + half.x, gy.cand.c + gy.cand.h) });
-      alignRef.current = guides;
+      // Snap each axis to a neighbour's edge/centre when close (with a bounded
+      // guide line), else to the metric grid — each snap type is independently
+      // toggleable. The dragged box's own half-extents are the offsets, so its
+      // EDGES and CORNERS latch onto neighbours. See diagram/modes.js.
+      const placed = modes.resolveDrag({
+        raw: { x: rawX, y: rawY },
+        half: footHalf(byId.get(drag.spaceId), node),
+        neighbours: neighbourEdges(drag.key),
+        fine: e.altKey,
+        useEdges: snapEdges,
+        useGrid: snapGrid,
+        grid: planGrid,
+      });
+      tx = placed.x;
+      ty = placed.y;
+      alignRef.current = placed.guides;
     }
     drag.moved += Math.hypot(tx - node.x, ty - node.y);
     node.x = tx;

@@ -168,8 +168,41 @@ before any scene or renderer work.
 **Risk:** highest in the plan. Pointer behaviour is subtle and currently
 under-tested. Mitigated entirely by doing the tests first — do not skip that.
 
-**Exit:** `modes.js` unit-tested in isolation; `BubbleTab` materially smaller;
-no behavioural change observable in the preview.
+### Result
+
+`src/components/diagram/modes.js` (220 lines) now owns the snap geometry that
+was trapped in `BubbleTab` closures: `snapToGrid`, `footHalf`, `neighbourEdges`,
+`resolveAxis`, plus a new `resolveDrag` that does the whole raw-cursor → placed
+position + bounded alignment guides step, and `panTo` / `panMoved` /
+`marqueeBoxAt`. `MODE_ORDER` documents the arbitration precedence as data.
+
+Tests went 297 → 323. One characterization test (group drag translating the
+whole selection by one delta) was written **before** the move to prove it
+behaviour-preserving; 23 unit tests then cover the extracted math directly —
+corner latching, edge-vs-centre snapping, guide bounds, Alt-fine grid, rotation
+swapping the half-extents. None of that was reachable before without driving a
+full pointer gesture against a mounted diagram.
+
+Writing those tests immediately found that my own expectation of a corner latch
+was wrong: with a half-extent of 5 and a snap line at 97, the near **edge**
+latches and the centre lands at 102 — it does not put the centre on the line.
+That is correct and is the entire point of edge snapping, but it is not obvious,
+and it now has a test saying so.
+
+**Honest note on size:** `BubbleTab` is 4,053 lines, up 33 from the 4,020 it
+started at. Phase 1 added more infrastructure to it (~60 lines of rect cache and
+coalescing) than Phase 2 removed (~45). Phase 2 bought **testability, not
+volume**. The volume lives in the ~1,000 lines of derived geometry — interior
+cells, envelopes, hulls — computed inline in the component, and that is exactly
+what Phase 3 targets. Do not expect this file to shrink until the scene layer
+lands.
+
+**Exit:** ✅ **Done** for the snap geometry. Deliberately **not** done: the
+dispatch ladder itself and the drag/link state still live inline, because they
+interleave with the hook-owned handlers (`usePolyEditing`, `useImageLayers`).
+Extracting those is worth revisiting after Phase 3, when less remains around
+them. JSDoc types are in place; compiler-enforced branding still needs
+TypeScript added to the project, which stays deferred.
 
 ---
 

@@ -182,6 +182,40 @@ test('marquee over the canvas multi-selects the enclosed rooms', async () => {
   }
 });
 
+// Characterization: group drag translates the WHOLE selection by one delta and
+// preserves its internal arrangement. Untested before the mode-machine
+// extraction, and exactly the behaviour a refactor could quietly break.
+test('dragging one room of a multi-selection moves them all by the same delta', async () => {
+  const { container, svg, unmount } = mount();
+  try {
+    const at = (id) => posOf(container.querySelector(`g.bubble[data-space-id="${id}"]`));
+    const before = { 2: at(2), 3: at(3), 4: at(4) };
+    const xs = Object.values(before).map((p) => p.x);
+    const ys = Object.values(before).map((p) => p.y);
+    const box = { x0: Math.min(...xs) - 80, y0: Math.min(...ys) - 80, x1: Math.max(...xs) + 80, y1: Math.max(...ys) + 80 };
+    // Marquee all three.
+    await act(async () => svg.dispatchEvent(ev('pointerdown', { clientX: box.x0, clientY: box.y0 })));
+    await act(async () => svg.dispatchEvent(ev('pointermove', { clientX: box.x1, clientY: box.y1 })));
+    await act(async () => svg.dispatchEvent(ev('pointerup', { clientX: box.x1, clientY: box.y1 })));
+    assert.equal(container.querySelectorAll('.multi-ring').length, 3, 'all three selected');
+    // Drag one of them; the other two must follow by the identical offset.
+    const grab = container.querySelector('g.bubble[data-space-id="3"]');
+    const from = at(3);
+    await act(async () => {
+      grab.dispatchEvent(ev('pointerdown', { clientX: from.x, clientY: from.y }));
+      svg.dispatchEvent(ev('pointermove', { clientX: from.x + 40, clientY: from.y - 25 }));
+      svg.dispatchEvent(ev('pointerup', { clientX: from.x + 40, clientY: from.y - 25 }));
+    });
+    for (const id of [2, 3, 4]) {
+      const d = { x: at(id).x - before[id].x, y: at(id).y - before[id].y };
+      assert.equal(Math.round(d.x), 40, `room ${id} moved by the group delta in x`);
+      assert.equal(Math.round(d.y), -25, `room ${id} moved by the group delta in y`);
+    }
+  } finally {
+    unmount();
+  }
+});
+
 test('a click-sized marquee on empty canvas clears the selection', async () => {
   const { container, svg, unmount } = mount();
   try {
