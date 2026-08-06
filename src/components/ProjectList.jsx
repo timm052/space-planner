@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { api } from '../api.js';
 import { fmtArea } from '../compute.js';
 import { Empty } from './ui.jsx';
+import { confirmDialog } from './ConfirmDialog.jsx';
 
 const STAGES = ['Concept', 'Schematic Design', 'Design Development', 'Construction Documents', 'On Site'];
 
@@ -48,7 +49,11 @@ export default function ProjectList({ projects, onOpen, onChanged }) {
   }
 
   async function remove(id, name) {
-    if (!window.confirm(`Delete project "${name}" and all its data?`)) return;
+    if (!(await confirmDialog({
+      title: `Delete project "${name}"?`,
+      body: 'The brief, design, diagram layouts, milestones and images are all permanently removed.',
+      confirmLabel: 'Delete project',
+    }))) return;
     await api.deleteProject(id);
     onChanged();
   }
@@ -146,8 +151,8 @@ export default function ProjectList({ projects, onOpen, onChanged }) {
               <div className="project-client">{p.client || 'No client set'}</div>
               <div className="chips">
                 <span className="chip">{p.stage}</span>
-                <span className="chip">{p.space_count} spaces</span>
-                <span className="chip">{p.snapshot_count} milestones</span>
+                <span className="chip">{p.space_count} space{p.space_count === 1 ? '' : 's'}</span>
+                <span className="chip">{p.snapshot_count} milestone{p.snapshot_count === 1 ? '' : 's'}</span>
               </div>
               <div className="project-net">
                 Brief net target: <strong>{p.target_net ? fmtArea(p.target_net, p.units) : '—'}</strong>

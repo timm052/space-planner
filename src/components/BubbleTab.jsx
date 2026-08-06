@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api.js';
 import { fmtArea, areaToM2, distToMeters, distUnit, leafSpaces, rootContainer, isContainerKind, spaceStatus, instanceName } from '../compute.js';
-import { STATUS_LABEL } from '../viz.js';
+import { STATUS_LABEL, CATEGORY_FALLBACK, categoryColorWarning } from '../viz.js';
 // pdfExport is lazy-loaded on demand — keeps jsPDF out of the initial bundle.
 import { useHistory } from '../useHistory.js';
 import { SCALE_PRESETS, ratioToScale, scaleToRatio, zoomAbout } from '../scale.js';
@@ -42,8 +42,15 @@ import CommandPalette from './diagram/CommandPalette.jsx';
 import { LayersPopover, SatellitePanel, ScalePanel } from './diagram/LayersPanel.jsx';
 import StagePopover from './diagram/StagePopover.jsx';
 import { Empty } from './ui.jsx';
+import { confirmDialog } from './ConfirmDialog.jsx';
 
-const PALETTE = ['#e8b04b', '#5b9dd9', '#4cc38a', '#c678dd', '#e5707a', '#56b6c2', '#d19a66', '#98c379', '#7aa2f7', '#f7768e'];
+// The diagram's category colours. This used to be a second, hardcoded palette
+// that had drifted from viz.js's CATEGORY_COLORS: the same department could be
+// #e8b04b here and #f0b53f in the Brief treemap, and this copy still paired a
+// blue (#5b9dd9) with a purple (#c678dd) — 3.3 ΔE apart under deuteranopia, so
+// Staff and Community rendered as one colour. One source, checked by
+// test/tokens.contrast.test.js.
+const PALETTE = CATEGORY_FALLBACK;
 
 // Floor-to-floor height assumed for any storey without an explicit entry in
 // projects.level_heights (metres).
@@ -106,7 +113,7 @@ const ZOOM_MAX = 6;
 // Colour-by-status legend labels (vs the latest milestone) — shared vocabulary.
 const STATUS_LABELS = STATUS_LABEL;
 
-export default function BubbleTab({ project, spaces, adjacencies, images = [], snapshots = [], onChanged, selectedSpaceId = null, onSelectSpace, onPullToBrief = null }) {
+export default function BubbleTab({ project, spaces, adjacencies, images = [], snapshots = [], onChanged, selectedSpaceId = null, onSelectSpace, onPullToBrief = null, onGoTab = null }) {
   // Selection + link-tool state lives in one pure state machine (see
   // diagram/selection.js and diagram/linking.js). Transitions are applied via
   // applySel() below; the destructure keeps every read site unchanged.
@@ -260,6 +267,28 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
   // Refs needed by hooks must be declared before those hooks.
   const svgRef = useRef(null);
   const stageRef = useRef(null);
+  // Measured height of the floating stage chrome. Canvas annotations (building
+  // hull labels) keep clear of it, and it is MEASURED rather than assumed
+  // because the toolbar wraps to a second row on narrow stages — a hard-coded
+  // band would be wrong at exactly the widths where the collision happens.
+  const chromeRef = useRef(null);
+  const [chromeH, setChromeH] = useState(112);
+  useEffect(() => {
+    const el = chromeRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    // Measure the TOOLBAR row, not the chrome column. `.stage-chrome` is a
+    // full-height flow container that is mostly transparent — using its height
+    // reserved ~311px of canvas for chrome that only occupies ~106px.
+    const measure = () => {
+      const bar = el.querySelector('.stage-topbar');
+      const h = bar ? Math.round(bar.getBoundingClientRect().height) + 12 : 112;
+      setChromeH((cur) => (Math.abs(cur - h) > 2 ? h : cur));
+    };
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    measure();
+    return () => ro.disconnect();
+  }, []);
 
   // Viewport: vb tracks the SVG container size; view is the pan offset;
   // zoom magnifies the view (vbz below is the zoomed visible world size).
@@ -2378,7 +2407,10 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
   async function multiDelete() {
     const ids = [...new Set(multiList().map((o) => o.id))];
     if (ids.length === 0) return;
-    if (!window.confirm(`Delete ${ids.length} space${ids.length > 1 ? 's' : ''} from the brief? Their recorded areas and links are removed too.`)) return;
+    if (!(await confirmDialog({
+      title: `Delete ${ids.length} room${ids.length > 1 ? 's' : ''} from the design?`,
+      body: 'Their recorded areas and links are removed too.',
+    }))) return;
     setError(null);
     try {
       for (const id of ids) await api.deleteSpace(id);
@@ -2389,10 +2421,13 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
       setError(e.message);
     }
   }
-  // Delete a single space from the brief (action-bar ⌫).
+  // Delete a single room from the design (action-bar ⌫).
   async function removeSpace(space) {
     if (!space) return;
-    if (!window.confirm(`Delete "${space.name}" from the brief? Its recorded areas and links are removed too.`)) return;
+    if (!(await confirmDialog({
+      title: `Delete "${space.name}" from the design?`,
+      body: 'Its recorded areas and links are removed too.',
+    }))) return;
     setError(null);
     try {
       await api.deleteSpace(space.id);
@@ -2879,9 +2914,21 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
 
   // ---------- derived render values ----------
   if (spaces.length === 0)
-    return <div className="stage-empty"><Empty>Define the brief first — the bubble diagram is drawn from its spaces.</Empty></div>;
+    return (
+      <div className="stage-empty">
+        <Empty action={onGoTab ? { label: 'Open the Brief', onClick: () => onGoTab('Brief') } : null}>
+          Nothing to draw yet — the diagram draws the Design schedule. Agree the Brief, then ⇄ Send to Design.
+        </Empty>
+      </div>
+    );
   if (leaves.length === 0)
-    return <div className="stage-empty"><Empty>This program only has containers. Add spaces inside them in the Brief tab.</Empty></div>;
+    return (
+      <div className="stage-empty">
+        <Empty action={onGoTab ? { label: 'Open the Design', onClick: () => onGoTab('Design') } : null}>
+          Only containers so far — add rooms inside them on the Design tab.
+        </Empty>
+      </div>
+    );
 
   const nodes = nodesRef.current;
   const presets = SCALE_PRESETS[units === 'ft2' ? 'ft2' : 'm2'];
@@ -3117,6 +3164,22 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
   // grades the rolled-up building-to-building links — hidden when every link
   // is internal to one building (nothing to grade between envelopes).
   const showScore = displayAdjacencies.length > 0 && (isConcept || !!effScale);
+  // Honest grading context. The badge grades different things per environment
+  // (rolled-up envelope links in Master plan, blocked rooms in Building), and
+  // the rail must explain WHY a row is ungraded — "set a scale" was shown even
+  // when a scale was already set.
+  const adjScopeNote = isConcept
+    ? ''
+    : isEnvelope
+      ? 'Here the badge grades the links between building envelopes — room-to-room links grade in ◯ Concept.'
+      : 'Only rooms blocked onto a floor are graded here.';
+  const gradeHint = !isConcept && !effScale
+    ? 'Not graded — set a scale to judge adjacency in metres'
+    : isConcept
+      ? 'Not graded — arrange these rooms on the canvas first'
+      : isEnvelope
+        ? 'Not graded in the Master plan — room-to-room links grade in ◯ Concept'
+        : 'Not graded — block both rooms onto a floor to grade this link';
 
   // ---- Floor view: all together / one level / stacked isometric planes ----
   // Each floor is a flat plane shown isometrically. 'offset' raises each storey
@@ -3355,7 +3418,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
           {/* Stage chrome: the topbar, its popovers and the under-bar row
               (tray · hint · north rose) stack in ONE flow column so they can
               never draw over each other, however narrow the stage gets. */}
-          <div className="stage-chrome">
+          <div className="stage-chrome" ref={chromeRef}>
           <StageTopbar
             env={env}
             onEnv={switchEnv}
@@ -3383,6 +3446,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
             setPanel={setPanel}
             history={history}
             showScore={showScore}
+            adjScopeNote={adjScopeNote}
             tickStore={tickStore}
             computeAdjacency={computeAdjacency}
             adjDataKey={`${env}:${adjacencies.length}:${spaces.length}:${effScale ?? 0}`}
@@ -3661,9 +3725,22 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
           </div>
 
           <div className="stage-legend">
-            {groups.map((g) => (
+            {groups.map((g) => {
+              // The default palette is guarded against colour-vision collisions
+              // by tests, but this picker let a user choose anything and get an
+              // unreadable diagram with no feedback. Warn on the swatch rather
+              // than block: it is their drawing, they may have a reason.
+              const clash = categoryColorWarning(
+                colorForLabel(g),
+                groups.filter((o) => o !== g).map((o) => ({ label: o, hex: colorForLabel(o) }))
+              );
+              return (
               <span key={g} className={`legend-item${spotlight ? (spotlight === g ? ' active' : ' faded') : ''}`}>
-                <label className="legend-swatch" style={{ background: colorForLabel(g) }} title={`Recolour “${g}”`}>
+                <label
+                  className={`legend-swatch${clash ? ' clash' : ''}`}
+                  style={{ background: colorForLabel(g) }}
+                  title={clash ? `Recolour “${g}” — ⚠ ${clash}` : `Recolour “${g}”`}
+                >
                   <input type="color" value={colorForLabel(g)} onChange={(e) => setCategoryColor(g, e.target.value)} />
                 </label>
                 <button
@@ -3673,7 +3750,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
                   title={spotlight === g ? 'Show every group again' : `Spotlight “${g}” — fade everything else`}
                 >{g}</button>
               </span>
-            ))}
+              );
+            })}
             {spotlight && (
               <button className="legend-clear" onClick={() => setSpotlight(null)} title="Show every group (Esc)">✕</button>
             )}
@@ -3698,6 +3776,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
           <DiagramCanvas
             tickStore={tickStore}
             theme={theme}
+            zoom={zoom}
+            chromeH={chromeH}
             stackMode={stackMode}
             is3D={is3D}
             floorMode={floorMode}
@@ -3998,7 +4078,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
           relList={relList}
           reqCount={reqCount}
           desCount={desCount}
-          linkStates={showScore ? matrixLinkStates() : null}
+          linkStates={matrixLinkStates()}
+          gradeHint={gradeHint}
           onJumpLink={(l) => {
             const pair = linkEnds(l);
             if (pair) animateViewTo({ x: (pair.a.x + pair.b.x) / 2 - W / 2, y: (pair.a.y + pair.b.y) / 2 - H / 2 });

@@ -15,10 +15,11 @@ import {
   fmtArea,
   fmtPct,
 } from '../compute.js';
-import { squarify, darkHex, categoryColor, BUILDING_COLORS, STATUS_HEX, STATUS_LABEL, STATUS_ORDER } from '../viz.js';
+import { squarify, darkHex, categoryColor, BUILDING_COLORS, STATUS_HEX, STATUS_LABEL, STATUS_ORDER, pocheInk } from '../viz.js';
 import { orderedLevels } from '../floors.js';
 import { evalFormula, referencedSpaces } from '../formula.js';
 import { Banner, Empty, Overlay } from './ui.jsx';
+import { confirmDialog } from './ConfirmDialog.jsx';
 
 const BUILDING_FALLBACK = ['#f0b53f', '#57c7d4', '#4cc38a', '#c678dd'];
 
@@ -102,8 +103,12 @@ function VariablesCard({ variables, onSave, usedVars = null }) {
     setName('');
     setVal('');
   };
-  const remove = (k) => {
-    if (usedVars?.has(k) && !window.confirm(`Formulas reference @${k} and will break without it. Remove anyway?`)) return;
+  const remove = async (k) => {
+    if (usedVars?.has(k) && !(await confirmDialog({
+      title: `Remove @${k}?`,
+      body: `Formulas reference @${k} and will break without it.`,
+      confirmLabel: 'Remove anyway',
+    }))) return;
     const next = { ...variables };
     delete next[k];
     onSave(next);
@@ -266,9 +271,20 @@ function AddSpaceDialog({
     }
   }
 
+  // Keyboard submit for rapid programme entry: Enter adds & closes,
+  // Ctrl/Cmd+Enter adds & keeps the dialog open for the next room. The
+  // formula suggestion list preventDefaults its own Enter (to apply the
+  // highlighted item), and the notes textarea keeps Enter for newlines.
+  function onDialogKey(e) {
+    if (e.key !== 'Enter' || e.defaultPrevented || busy) return;
+    if (e.target.tagName === 'TEXTAREA') return;
+    e.preventDefault();
+    submit(e.ctrlKey || e.metaKey);
+  }
+
   return (
     <Overlay title={isBrief ? 'Add to the Brief' : 'Add to the design'} onClose={onClose}>
-      <div className="space-dialog-grid">
+      <div className="space-dialog-grid" onKeyDown={onDialogKey}>
         <label>
           Kind
           <select value={f.kind} onChange={(e) => set('kind')(e.target.value)}>
@@ -340,10 +356,10 @@ function AddSpaceDialog({
       </div>
       {err && <p className="modal-error">{err}</p>}
       <div className="modal-actions">
-        <button className="btn primary" type="button" disabled={busy} onClick={() => submit(false)}>
+        <button className="btn primary" type="button" disabled={busy} title="Enter" onClick={() => submit(false)}>
           {busy ? 'Adding…' : '+ Add'}
         </button>
-        <button className="btn" type="button" disabled={busy} onClick={() => submit(true)}>
+        <button className="btn" type="button" disabled={busy} title="Ctrl+Enter" onClick={() => submit(true)}>
           + Add &amp; another
         </button>
         <button className="btn ghost" type="button" onClick={onClose}>Cancel</button>
@@ -389,7 +405,7 @@ function BriefTreemap({ spaces, units, selIds, onSelect, onClear, hexForSpace, l
           const sp = byId.get(c.id);
           if (!sp) return null;
           const color = hexForSpace(sp);
-          const ink = darkHex(color, 0.62);
+          const ink = pocheInk(color);
           const sel = selIds.includes(sp.id);
           const dim = dimUnmatched && !dimUnmatched(sp);
           const showName = c.w > 46 && c.h > 24;
@@ -600,7 +616,12 @@ export default function BriefTab({
       const created = await st.create(project.id, {
         kind: 'building', department: 'Building', name: 'Building A', count: 1, target_area: 0,
       });
-      if (created?.id) setAddParent(created.id);
+      if (created?.id) {
+        setAddParent(created.id);
+        // Open the new building's edit row with the placeholder name selected —
+        // naming it is always the very next thing the user wants to do.
+        startEdit(created);
+      }
       onChanged();
     } catch (err) {
       setError(err.message);
@@ -637,9 +658,12 @@ export default function BriefTab({
         (r) => r.id !== id && r.area_formula &&
           referencedSpaces(r.area_formula).some((n) => n.trim().toLowerCase() === oldLc)
       );
-      if (refs.length > 0 && window.confirm(
-        `${refs.length} formula${refs.length === 1 ? '' : 's'} reference [${orig.name}]. Update ${refs.length === 1 ? 'it' : 'them'} to [${newName}]?`
-      )) {
+      if (refs.length > 0 && await confirmDialog({
+        title: 'Update referencing formulas?',
+        body: `${refs.length} formula${refs.length === 1 ? '' : 's'} reference [${orig.name}]. Update ${refs.length === 1 ? 'it' : 'them'} to [${newName}]? Keeping the old reference breaks ${refs.length === 1 ? 'that formula' : 'those formulas'}.`,
+        confirmLabel: 'Update formulas',
+        danger: false,
+      })) {
         const pat = new RegExp(`\\[\\s*${orig.name.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\]`, 'gi');
         try {
           for (const r of refs) await st.update(r.id, { area_formula: r.area_formula.replace(pat, `[${newName}]`) });
@@ -670,10 +694,14 @@ export default function BriefTab({
 
   async function remove(s) {
     const kids = parents.has(s.id);
-    const msg = kids
-      ? `Delete "${s.name}" and everything inside it?`
-      : `Remove "${s.name}" from the brief? Recorded areas for it will be lost.`;
-    if (!window.confirm(msg)) return;
+    const tree = isBrief ? 'Brief' : 'design';
+    const ok = await confirmDialog({
+      title: kids ? `Delete "${s.name}" and its contents?` : `Delete "${s.name}"?`,
+      body: kids
+        ? `Everything nested inside it is removed from the ${tree} too.`
+        : `Removed from the ${tree}${isBrief ? '' : ' — recorded areas for it will be lost'}.`,
+    });
+    if (!ok) return;
     await st.remove(s.id);
     if (editingId === s.id) setEditingId(null);
     onChanged();
@@ -1174,7 +1202,7 @@ export default function BriefTab({
                   type="button"
                   key={key}
                   className={`cat-stack-seg${active ? ' active' : ''}${q && !active ? ' faded' : ''}`}
-                  style={{ width: `${pct}%`, background: color, color: darkHex(color, 0.62) }}
+                  style={{ width: `${pct}%`, background: color, color: pocheInk(color) }}
                   title={`${key} — ${fmtArea(area, project.units)} · ${Math.round(pct)}% of net · click to ${active ? 'clear the filter' : 'filter'}`}
                   onClick={() => setFilter(active ? '' : key)}
                 >
@@ -1311,7 +1339,16 @@ export default function BriefTab({
                         <div className="edit-grid">
                           <label className="fld wide">
                             <span>Name</span>
-                            <input autoFocus value={edit.name} onChange={(e) => setEdit({ ...edit, name: e.target.value })} />
+                            <input
+                              // Focus AND select on mount (a ref, not autoFocus —
+                              // autoFocus can land before the onFocus handler is
+                              // live, leaving the caret at the end): the name is
+                              // usually replaced wholesale, e.g. the fresh
+                              // "Building A" from ⊕ Start with a building.
+                              ref={(el) => { if (el && el.dataset.init !== '1') { el.dataset.init = '1'; el.focus(); el.select(); } }}
+                              value={edit.name}
+                              onChange={(e) => setEdit({ ...edit, name: e.target.value })}
+                            />
                           </label>
                           {edit.kind !== 'building' && (
                             <label className="fld">

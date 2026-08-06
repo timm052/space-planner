@@ -63,6 +63,9 @@ export default function ProjectView({ projectId, onBack }) {
     setTab('Bubble Diagram');
   }
 
+  // Empty states offer a way to the tab that fixes them ('Brief' | 'Design').
+  const goTab = (t) => setTab(t);
+
   // Copy one diagram room's programme into the Brief (the reverse of "overwrite").
   async function pullToBrief(spaceId) {
     try { await api.pullToBrief(project.id, spaceId); await refresh(); }
@@ -121,6 +124,7 @@ export default function ProjectView({ projectId, onBack }) {
             snapshots={snapshots}
             selectedSpaceId={selectedSpaceId}
             onGoToDiagram={goToDiagram}
+            onGoTab={goTab}
           />
         )}
         {isDiagram && (
@@ -134,6 +138,7 @@ export default function ProjectView({ projectId, onBack }) {
             selectedSpaceId={selectedSpaceId}
             onSelectSpace={setSelectedSpaceId}
             onPullToBrief={pullToBrief}
+            onGoTab={goTab}
           />
         )}
         {tab === 'Brief' && (
@@ -168,6 +173,7 @@ export default function ProjectView({ projectId, onBack }) {
             onChanged={refresh}
             selectedSpaceId={selectedSpaceId}
             onGoToDiagram={goToDiagram}
+            onGoTab={goTab}
           />
         )}
       </div>

@@ -9,8 +9,21 @@ export function Banner({ kind = 'error', children }) {
   );
 }
 
-export function Empty({ small = false, children }) {
-  return <div className={`empty${small ? ' small' : ''}`}>{children}</div>;
+// `action` = optional { label, onClick } — empty states should lead somewhere,
+// not dead-end on a sentence that names a button on another tab.
+export function Empty({ small = false, action = null, children }) {
+  return (
+    <div className={`empty${small ? ' small' : ''}`}>
+      {children}
+      {action && (
+        <div className="empty-action">
+          <button className="btn small primary" type="button" onClick={action.onClick}>
+            {action.label}
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 // Modal shell shared by the Brief/Design dialogs (overwrite preview, import,

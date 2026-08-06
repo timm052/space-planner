@@ -3,6 +3,7 @@ import { api } from '../api.js';
 import { briefNet, briefTargetsFor, effectiveTarget, snapshotNet, leafSpaces, targetTotal, fmtArea, fmtPct } from '../compute.js';
 import { categoryColor, statusColor } from '../viz.js';
 import { Banner, Empty } from './ui.jsx';
+import { confirmDialog } from './ConfirmDialog.jsx';
 
 const statusOf = (pct, tol) => (pct > tol ? 'over' : pct < -tol ? 'under' : 'on');
 const fmtNum = (v) => (v == null || Number.isNaN(v) ? '—' : Math.round(v).toLocaleString());
@@ -86,18 +87,25 @@ function ChangeSchedule({ project, spaces, snapshots, selectedSpaceId, onGoToDia
   );
 }
 
-export default function SnapshotsTab({ project, spaces, briefSpaces = [], snapshots, onChanged, selectedSpaceId = null, onGoToDiagram }) {
+export default function SnapshotsTab({ project, spaces, briefSpaces = [], snapshots, onChanged, selectedSpaceId = null, onGoToDiagram, onGoTab = null }) {
   const [editing, setEditing] = useState(null); // null | 'new' | snapshot id
   const [error, setError] = useState(null);
 
   async function remove(sn) {
-    if (!window.confirm(`Delete milestone "${sn.label}"?`)) return;
+    if (!(await confirmDialog({
+      title: `Delete milestone "${sn.label}"?`,
+      body: 'Its recorded areas are removed from the drift history.',
+    }))) return;
     await api.deleteSnapshot(sn.id);
     onChanged();
   }
 
   if (spaces.length === 0) {
-    return <Empty>No design yet — milestones record the design’s measured areas against the Brief. Start in the Brief tab.</Empty>;
+    return (
+      <Empty action={onGoTab ? { label: 'Open the Brief', onClick: () => onGoTab('Brief') } : null}>
+        No design yet — milestones record the design’s measured areas against the Brief.
+      </Empty>
+    );
   }
 
   // Measure against the Brief when one exists (rooms matched by path);
@@ -156,7 +164,10 @@ export default function SnapshotsTab({ project, spaces, briefSpaces = [], snapsh
               <div key={sn.id} className={`flat-card ms-card ${isLatest ? 'latest' : ''}`}>
                 <span className="accent-bar" style={{ background: sc }} />
                 <div className="ms-card-top">
-                  <span className="kpi-tag">M·0{i + 1}</span>
+                  {/* Plain ordinal — the M· prefix belongs to the SECTION tags
+                      (M·01 Recorded milestones / M·02 Change), which these
+                      cards were colliding with. Also fixes "M·010" at ten. */}
+                  <span className="kpi-tag">{String(i + 1).padStart(2, '0')}</span>
                   <span style={{ flex: 1 }} />
                   <span className="ms-var" style={{ color: sc }}>{fmtPct(variance)}</span>
                 </div>

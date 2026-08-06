@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api.js';
 import { Banner, Empty } from './ui.jsx';
+import { confirmDialog } from './ConfirmDialog.jsx';
 import { BENCHMARKS, parseBenchmarks } from '../benchmarks.js';
 
 // Deep copy so edits never mutate the shared built-in library.
@@ -69,14 +70,22 @@ export default function SettingsPage() {
     editLib((next) => next.push({ type: t, items: [{ label: '', m2: 10, per: 'unit', v: null }] }));
     setBenchType(t);
   };
-  const removeType = () => {
-    if (lib.length <= 1 || !window.confirm(`Remove the "${group.type}" benchmarks?`)) return;
+  const removeType = async () => {
+    if (lib.length <= 1 || !(await confirmDialog({
+      title: `Remove the "${group.type}" benchmarks?`,
+      body: 'Every allowance in this building type is removed from the library.',
+      confirmLabel: 'Remove',
+    }))) return;
     const remaining = lib.filter((g) => g.type !== group.type);
     editLib((next) => next.splice(next.findIndex((g) => g.type === group.type), 1));
     setBenchType(remaining[0].type);
   };
-  const resetLib = () => {
-    if (custom && !window.confirm('Discard the custom library and return to the built-in benchmarks?')) return;
+  const resetLib = async () => {
+    if (custom && !(await confirmDialog({
+      title: 'Return to the built-in benchmarks?',
+      body: 'The custom library is discarded.',
+      confirmLabel: 'Discard custom library',
+    }))) return;
     setLib(cloneLib(BENCHMARKS));
     setCustom(false);
     setBenchType(BENCHMARKS[0].type);

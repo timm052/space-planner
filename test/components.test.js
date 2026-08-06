@@ -35,7 +35,7 @@ const snapB = { id: 11, label: 'SD', taken_at: '2026-03-01', gross_area: 250, ar
 test('Dashboard prompts to start in the Brief tab when there are no spaces', () => {
   const html = render(Dashboard, { project, spaces: [], snapshots: [] });
   assert.match(html, /No design yet/);
-  assert.match(html, /Brief tab/);
+  assert.match(html, /Send to Design/);
 });
 
 test('Dashboard falls back to design targets when no Brief exists', () => {

@@ -27,15 +27,41 @@ hex in a component** — add a token.
 | --- | --- |
 | Surfaces | `--bg` `--bg2` `--panel` `--panel2` `--panel3` |
 | Lines | `--border` `--border-soft` `--contour` `--grid` `--grid-major` |
-| Text | `--text` `--muted` `--faint` |
-| Brand | `--accent` (amber) `--accent-ink` `--accent-soft` `--accent2` (cyan) |
-| Status | `--good` (on target) `--warn` (over) `--bad` (error / over-tolerance) |
+| Text | `--text` `--muted` (`--faint` is **not** text — see below) |
+| Brand | `--accent` (amber) `--accent-soft` `--accent2` (cyan) |
+| Semantic | `--good` (on target) `--warn` (over) `--bad` (error / over-tolerance) |
+| Text tier | `--accent-text` `--accent2-text` `--good-text` `--bad-text` `--warn-text` |
+| On-fill ink | `--accent-ink` `--bad-ink` |
 | Canvas | `--canvas-bg` `--footprint` `--ruler-bg` `--ruler-ink` |
 | Floating | `--glass` `--glass-border` `--shadow` `--focus` |
+| Shape & motion | `--r-sm/-md/-lg/-pill` · `--dur-fast/-base/-slow` · `--ease` `--ease-pop` |
+
+**Three colour families, and mixing them up is the easy mistake.** A brand or
+semantic hue at full chroma only has to clear **3:1** as a fill, border or
+swatch, but **4.5:1** as text — and the light theme's chroma cannot reach 4.5
+on paper. So:
+
+- `background` / `border-color` / `stroke` → `--accent`, `--good`, `--bad`, …
+- `color` → `--accent-text`, `--good-text`, `--bad-text`, … (dark theme aliases
+  these straight to the graphic token; light overrides each with a darker,
+  same-hue value)
+- text drawn **on top of** a filled `--accent` / `--bad` surface → `--accent-ink`
+  / `--bad-ink`
+
+`--faint` is a **non-text** token — hairlines, guides, decorative glyphs. It
+cannot reach 4.5:1 in either theme without collapsing onto `--muted`, so quiet
+text uses `--muted`. `test/tokens.contrast.test.js` enforces all of this
+arithmetically (no browser needed); if you add a token, add it there.
 
 Data colours are **not** tokens — categories, buildings and compliance statuses
 come from `src/viz.js` (`CATEGORY_COLORS`, `BUILDING_COLORS`, `STATUS_COLOR`,
 `labelInk`) and are user-overridable per project (`projects.category_colors`).
+Two rules govern that palette, both pinned by `test/tokens.contrast.test.js`:
+it must stay separable under **deuteranopia and protanopia** (≥20 ΔE — the old
+blue/purple pair measured 3.3), and no category colour may collide with a
+compliance-status colour, since they are two lenses over the same rooms. Four
+hues is the ceiling for hue-only encoding; past that, add hatch rather than
+another colour.
 
 ## Type
 
@@ -64,11 +90,24 @@ Reuse these devices rather than inventing new ones:
 6. **Glass overlays** — floating canvas furniture uses `--glass` +
    `--glass-border` + backdrop blur, so the drawing reads through it.
 
-Motion is minimal: `.12s` control transitions. **No entrance/keyframe animations
-on panels that re-render** — under frequent re-render they stick at
-`opacity: 0`; mount conditionally instead. View transitions use a hand-rolled
-tween that honours `prefers-reduced-motion` by snapping to the target, and any
-in-flight glide is cancelled the moment the user touches the canvas.
+Motion is minimal and runs on three duration tokens — `--dur-fast` (100ms,
+control tints and focus rings), `--dur-base` (160ms, popovers, panels, action
+bars) and `--dur-slow` (280ms, view glides and entrances) — with `--ease` for
+standard moves and `--ease-pop` where a slight overshoot is wanted. Use the
+tokens; a literal duration is drift.
+
+**No entrance/keyframe animations on panels that re-render** — under frequent
+re-render they stick at `opacity: 0`; mount conditionally instead. View
+transitions use a hand-rolled tween that honours `prefers-reduced-motion` by
+snapping to the target, and any in-flight glide is cancelled the moment the
+user touches the canvas.
+
+**`prefers-reduced-motion` needs handling in two places.** The global CSS
+override in `diagram.css` neutralises every transition and keyframe, but it
+cannot reach rAF-driven motion — so `useSimulation.js` checks the preference
+itself and solves the auto-layout straight to its settled result instead of
+animating the cooling curve. Same final layout, no travel. Any future
+JS-driven animation must do likewise.
 
 ## Screens
 
@@ -123,6 +162,26 @@ which controls exist where.
   `tight`), never colours. Theming stays in CSS.
 - **New colour or spacing becomes a token**, so SVG, WebGL and PDF stay
   consistent.
+- **Labels are decluttered, not just fitted.** A room too small to read is left
+  to its tooltip rather than labelled over its neighbours: rooms under ~18px
+  on screen drop their label, and interior-sketch cells claim label space
+  largest-first, skipping any that would collide with one already placed. At
+  1:1000 this is the difference between three readable names and seven
+  overlapping ones.
+- **Canvas annotations avoid the floating chrome.** The toolbar is HTML over
+  the SVG, so building hull labels clamp below the *measured* toolbar height
+  (it wraps on narrow stages — a hard-coded band is wrong exactly where the
+  collision happens).
+- **Every view states its scale.** A metric environment gets the scale bar;
+  Concept gets `NTS relative sizes`; 3-D gets an NTS note that distinguishes
+  perspective from axonometric. Silence would imply measurability.
+- **Pen weights and grab targets are screen-space, geometry is world-space.**
+  Rooms scale with the camera; the strokes that annotate them do not. Line
+  hierarchy carries `vector-effect: non-scaling-stroke`, and interactive
+  handles divide their radius by the view zoom so they hold ≥24px at any zoom.
+  Labels are fitted to a room's geometry, so they stay in world units but are
+  scaled back above 100% to cap their on-screen size. None of this touches the
+  PDF, which sets its own `doc.setLineWidth()` in mm.
 - **Both themes, every time.** The warm-paper light theme is the one used for
   printing — check contrast there too.
 - **Keep the a11y that exists**: `:focus-visible` rings, keyboard-operable

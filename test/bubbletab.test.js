@@ -6,6 +6,7 @@
 import './helpers/dom.js'; // MUST be first — sets up window/document for react-dom
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import React, { createElement as h } from 'react';
 import { createRoot } from 'react-dom/client';
 
@@ -288,20 +289,66 @@ test('area-true cells: a room with triple the target gets the bigger cell', asyn
   }
 });
 
-test('BubbleTab shows the empty state when the brief has no spaces', () => {
+test('BubbleTab shows the empty state when the design has no rooms', () => {
   const { container, unmount } = mount({ spaces: [] });
   try {
-    assert.match(container.textContent, /Define the brief first/);
+    assert.match(container.textContent, /Nothing to draw yet/);
     assert.ok(!container.querySelector('svg.bubble-svg'), 'no canvas without spaces');
   } finally {
     unmount();
   }
 });
 
-test('BubbleTab prompts for leaf spaces when the brief only has containers', () => {
+test('BubbleTab prompts for rooms when the design only has containers', () => {
   const { container, unmount } = mount({ spaces: [building] });
   try {
-    assert.match(container.textContent, /only has containers/);
+    assert.match(container.textContent, /Only containers so far/);
+  } finally {
+    unmount();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Canvas screen-space invariants (from the visual-design audit).
+//
+// Every stroke and handle on the canvas used to be authored in world units
+// with vector-effect:none, so the camera scaled them: measured across a
+// 0.899×–3.429× zoom range, the "required" adjacency line ran 1.80→6.86 screen
+// px and "desired" 1.26→4.80, leaving the two 0.54px apart when zoomed out —
+// indistinguishable at DPR 1. The line hierarchy is semantic, so it must not
+// depend on zoom. jsdom does not lay out SVG, so these assert the DECLARATIONS
+// that produce the behaviour rather than measured pixels.
+// ---------------------------------------------------------------------------
+
+test('adjacency links and room keylines hold a constant screen weight', () => {
+  const { container, unmount } = mount({});
+  try {
+    const link = container.querySelector('svg .link');
+    assert.ok(link, 'expected at least one adjacency link');
+    // The rule lives in diagram.css; jsdom does not apply it, so assert the
+    // stylesheet declares it for every class that carries line hierarchy.
+    const css = readFileSync(new URL('../src/styles/diagram.css', import.meta.url), 'utf8');
+    for (const sel of ['.link {', '.link-hitarea {', '.group-hull {', '.rotate-stem {', '.resize-handle {']) {
+      const i = css.indexOf(sel);
+      assert.ok(i >= 0, `missing rule ${sel}`);
+      const body = css.slice(i, css.indexOf('}', i));
+      assert.match(body, /vector-effect:\s*non-scaling-stroke/, `${sel} must not scale its stroke with the camera`);
+    }
+  } finally {
+    unmount();
+  }
+});
+
+test('the scale-free Concept view says so instead of showing nothing', () => {
+  // Concept sizes rooms RELATIVE to the largest, so a metric scale bar would be
+  // a lie — but silence left the user unable to tell whether the drawing could
+  // be measured. It carries an explicit NTS mark instead, matching the sheet.
+  const { container, unmount } = mount({});
+  try {
+    const nts = container.querySelector('.scale-bar.nts');
+    assert.ok(nts, 'Concept should carry an NTS mark in place of a scale bar');
+    assert.match(nts.textContent, /NTS/);
+    assert.ok(!container.querySelector('.scale-bar:not(.nts)'), 'no metric scale bar in a scale-free view');
   } finally {
     unmount();
   }

@@ -18,14 +18,14 @@
   font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
   font-weight: 600;
-  color: var(--accent);
+  color: var(--accent-text);
   border: 1px solid var(--border);
-  border-radius: 5px;
+  border-radius: var(--r-sm);
   padding: 1px 5px;
 }
-.sec-tag.t-accent2 { color: var(--accent2); }
-.sec-tag.t-bad { color: var(--bad); }
-.sec-tag.t-faint { color: var(--faint); }
+.sec-tag.t-accent2 { color: var(--accent2-text); }
+.sec-tag.t-bad { color: var(--bad-text); }
+.sec-tag.t-faint { color: var(--muted); }
 .sec-title {
   font-family: 'Space Grotesk', sans-serif;
   font-size: 13px;
@@ -43,7 +43,7 @@
   overflow: hidden;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 13px;
+  border-radius: var(--r-lg);
   padding: 18px 20px;
 }
 .flat-card .accent-bar { position: absolute; top: 0; left: 0; width: 100%; height: 3px; }
@@ -56,14 +56,14 @@
   font-family: 'JetBrains Mono', monospace;
   font-size: 9.5px;
   font-weight: 600;
-  color: var(--faint);
+  color: var(--muted);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--r-sm);
   padding: 1px 4px;
 }
 .kpi-label { font-size: 10.5px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
 .kpi-value { font-family: 'Space Grotesk', sans-serif; font-size: 32px; font-weight: 700; letter-spacing: -0.02em; line-height: 1; }
-.kpi-value .unit { font-size: 14px; color: var(--faint); font-weight: 500; }
+.kpi-value .unit { font-size: 14px; color: var(--muted); font-weight: 500; }
 .kpi-foot { font-size: 11px; color: var(--muted); margin-top: 7px; }
 
 /* Dotted-leader schedule row (flagged spaces, change schedule, brief summary). */
@@ -73,7 +73,7 @@
 .dl-row.clickable:hover { background: var(--panel2); }
 .dl-row.sel { background: var(--panel2); }
 .dl-name { font-size: 12.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dl-dept { font-size: 11px; color: var(--faint); }
+.dl-dept { font-size: 11px; color: var(--muted); }
 .dl-lead { flex: 1; min-width: 8px; border-bottom: 1px dotted var(--border); transform: translateY(-3px); }
 .dl-val { font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--muted); white-space: nowrap; }
 .dl-val.strong { font-weight: 700; }
@@ -87,7 +87,7 @@
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: var(--faint);
+  color: var(--muted);
   font-weight: 600;
 }
 .rollup-head .r { text-align: right; }
@@ -105,7 +105,7 @@
   display: flex;
   height: 9px;
   border: 1px solid var(--border);
-  border-radius: 3px;
+  border-radius: var(--r-sm);
   overflow: hidden;
   margin-bottom: 8px;
 }
@@ -113,7 +113,7 @@
 .status-bar > span:first-child { border-left: none; }
 .status-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; }
 .status-legend-item { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
-.status-legend-item .mono { color: var(--faint); }
+.status-legend-item .mono { color: var(--muted); }
 
 /* Milestone cards + change schedule. */
 .ms-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 28px; }
@@ -124,9 +124,9 @@
 .ms-label { font-family: 'Space Grotesk', sans-serif; font-size: 16px; font-weight: 600; color: var(--text); margin-bottom: 2px; }
 .ms-date { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--muted); margin-bottom: 14px; }
 .ms-net { font-family: 'Space Grotesk', sans-serif; font-size: 30px; font-weight: 700; letter-spacing: -0.02em; line-height: 1; }
-.ms-net .unit { font-size: 13px; color: var(--faint); font-weight: 500; }
+.ms-net .unit { font-size: 13px; color: var(--muted); font-weight: 500; }
 .ms-ministats { display: flex; gap: 16px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border-soft); }
-.ms-ministat-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--faint); }
+.ms-ministat-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
 .ms-ministat-val { font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--text); margin-top: 2px; }
 
 /* Flat SVG drift chart. */
@@ -159,7 +159,7 @@
 .brief-viewbar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; row-gap: 10px; margin-bottom: 16px; }
 .brief-viewbar .seg, .brief-viewbar .seg-sm { flex: none; }
 .brief-viewbar .seg button, .brief-viewbar .seg-sm button { white-space: nowrap; }
-.brief-viewbar-hint { font-size: 11.5px; color: var(--faint); }
+.brief-viewbar-hint { font-size: 11.5px; color: var(--muted); }
 /* Colour lens sits right after the Treemap/Schedule toggle; the search grows,
    the hint pushes right. */
 .brief-lens { margin-left: 2px; }
@@ -173,7 +173,7 @@
   flex: 0 1 260px;
   padding: 5px 10px;
   border: 1px solid var(--border);
-  border-radius: 9px;
+  border-radius: var(--r-md);
   background: var(--panel);
   color: var(--muted);
 }
@@ -187,67 +187,67 @@
 .brief-search-clear:hover { color: var(--text); }
 
 /* Mode context strip — distinguishes the Brief tab from the Design tab. */
-.brief-context { font-size: 12px; color: var(--faint); margin: 0 0 10px; padding-left: 10px; border-left: 2px solid var(--border); }
+.brief-context { font-size: 12px; color: var(--muted); margin: 0 0 10px; padding-left: 10px; border-left: 2px solid var(--border); }
 .brief-context.is-brief { border-left-color: var(--accent); }
 .brief-context.is-design { border-left-color: var(--accent2); }
 
 /* ƒ Formula reference popover. */
 .formula-help-wrap { position: relative; }
-.formula-help-btn { display: inline-flex; align-items: center; gap: 5px; padding: 5px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.formula-help-btn { display: inline-flex; align-items: center; gap: 5px; padding: 5px 10px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel); color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
 .formula-help-btn:hover, .formula-help-btn.on { color: var(--text); border-color: var(--accent); }
-.formula-help-btn .fx { color: var(--accent); font-family: 'JetBrains Mono', ui-monospace, monospace; font-style: italic; font-weight: 700; }
-.formula-help-pop { position: absolute; top: calc(100% + 6px); right: 0; z-index: 30; width: 280px; padding: 12px 14px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); font-size: 12px; color: var(--muted); }
+.formula-help-btn .fx { color: var(--accent-text); font-family: 'JetBrains Mono', ui-monospace, monospace; font-style: italic; font-weight: 700; }
+.formula-help-pop { position: absolute; top: calc(100% + 6px); right: 0; z-index: 30; width: 280px; padding: 12px 14px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-md); box-shadow: var(--shadow); font-size: 12px; color: var(--muted); }
 .fh-row { margin-bottom: 8px; line-height: 1.5; }
-.fh-sec { margin: 8px 0 3px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--faint); }
+.fh-sec { margin: 8px 0 3px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
 .fh-item { padding: 1px 0; line-height: 1.5; }
-.formula-help-pop code { font-family: 'JetBrains Mono', ui-monospace, monospace; color: var(--accent); }
+.formula-help-pop code { font-family: 'JetBrains Mono', ui-monospace, monospace; color: var(--accent-text); }
 
-.formula-cell.err { color: var(--bad); }
-.formula-cell.err .fx { color: var(--bad); }
+.formula-cell.err { color: var(--bad-text); }
+.formula-cell.err .fx { color: var(--bad-text); }
 
 /* Formula-driven areas. Inputs accepting "=…" get a mono tint; a live preview
    chip resolves the value or flags an error as you type. */
-input.is-formula { font-family: 'JetBrains Mono', ui-monospace, monospace; color: var(--accent); }
+input.is-formula { font-family: 'JetBrains Mono', ui-monospace, monospace; color: var(--accent-text); }
 .formula-hint { font-size: 11px; font-weight: 600; white-space: nowrap; align-self: center; }
-.formula-hint.ok { color: var(--good); }
-.formula-hint.err { color: var(--bad); }
+.formula-hint.ok { color: var(--good-text); }
+.formula-hint.err { color: var(--bad-text); }
 .formula-cell { display: inline-flex; align-items: baseline; gap: 4px; }
-.formula-cell .fx { color: var(--accent); font-family: 'JetBrains Mono', ui-monospace, monospace; font-style: italic; font-weight: 700; }
+.formula-cell .fx { color: var(--accent-text); font-family: 'JetBrains Mono', ui-monospace, monospace; font-style: italic; font-weight: 700; }
 
 /* Firm baseline (M·00) card. */
 .baseline-card { display: flex; flex-direction: column; gap: 8px; border-left: 3px solid var(--accent); }
 .baseline-card.locked { border-left-color: var(--good); }
-.baseline-state { margin-left: auto; font-size: 10.5px; color: var(--faint); font-family: 'JetBrains Mono', ui-monospace, monospace; }
+.baseline-state { margin-left: auto; font-size: 10.5px; color: var(--muted); font-family: 'JetBrains Mono', ui-monospace, monospace; }
 .baseline-net { font-size: 22px; font-weight: 700; letter-spacing: -0.01em; }
 .baseline-net .unit { font-size: 12px; font-weight: 500; color: var(--muted); }
 .baseline-card .btn { align-self: flex-start; }
-.baseline-note { margin: 0; font-size: 11px; color: var(--faint); line-height: 1.4; }
+.baseline-note { margin: 0; font-size: 11px; color: var(--muted); line-height: 1.4; }
 
 /* Variables card (B·04). */
 .vars-card { display: flex; flex-direction: column; gap: 7px; }
-.vars-empty { margin: 0; font-size: 11.5px; color: var(--faint); line-height: 1.4; }
+.vars-empty { margin: 0; font-size: 11.5px; color: var(--muted); line-height: 1.4; }
 .vars-empty code, .var-name { font-family: 'JetBrains Mono', ui-monospace, monospace; }
 .var-row { display: flex; align-items: center; gap: 8px; }
-.var-name { flex: 1; font-size: 12.5px; color: var(--accent); }
-.var-val { width: 74px; padding: 3px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--text); font-size: 12px; text-align: right; }
+.var-name { flex: 1; font-size: 12.5px; color: var(--accent-text); }
+.var-val { width: 74px; padding: 3px 6px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel); color: var(--text); font-size: 12px; text-align: right; }
 .var-add { display: flex; gap: 6px; margin-top: 2px; }
-.var-add input { min-width: 0; flex: 1; padding: 4px 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--text); font-size: 12px; }
+.var-add input { min-width: 0; flex: 1; padding: 4px 7px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel); color: var(--text); font-size: 12px; }
 .var-add input:first-child { flex: 1.2; }
 
 /* Brief-tab program actions (Start from design / Milestone / Overwrite). */
 .brief-program-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
 
 /* Brief dialogs (overwrite preview, milestone, seed). Reuse .modal-overlay. */
-.modal-card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; width: 100%; max-width: 540px; max-height: 86vh; overflow-y: auto; box-shadow: var(--shadow); }
+.modal-card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-lg); width: 100%; max-width: 540px; max-height: 86vh; overflow-y: auto; box-shadow: var(--shadow); }
 .modal-card .modal-head h3 { margin: 0; font-size: 16px; }
 .modal-body { padding: 16px 22px 4px; margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
-.modal-note { padding: 4px 22px 0; margin: 0; color: var(--faint); font-size: 11.5px; line-height: 1.45; }
-.modal-error { padding: 8px 22px 0; margin: 0; color: var(--bad); font-size: 12.5px; }
-.modal-warn { margin: 10px 22px 0; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--warn) 12%, transparent); color: var(--text); font-size: 12.5px; }
+.modal-note { padding: 4px 22px 0; margin: 0; color: var(--muted); font-size: 11.5px; line-height: 1.45; }
+.modal-error { padding: 8px 22px 0; margin: 0; color: var(--bad-text); font-size: 12.5px; }
+.modal-warn { margin: 10px 22px 0; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); border-radius: var(--r-md); background: color-mix(in srgb, var(--warn) 12%, transparent); color: var(--text); font-size: 12.5px; }
 
 /* Category area stack — one horizontal bar of net area by category. */
-.cat-stack { display: flex; width: 100%; height: 26px; border-radius: 8px; overflow: hidden; margin-bottom: 12px; border: 1px solid var(--border); }
-.cat-stack-seg { position: relative; border: none; padding: 0 4px; cursor: pointer; font: inherit; min-width: 3px; transition: filter 0.12s, opacity 0.12s; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.cat-stack { display: flex; width: 100%; height: 26px; border-radius: var(--r-md); overflow: hidden; margin-bottom: 12px; border: 1px solid var(--border); }
+.cat-stack-seg { position: relative; border: none; padding: 0 4px; cursor: pointer; font: inherit; min-width: 3px; transition: filter var(--dur-fast), opacity var(--dur-fast); display: flex; align-items: center; justify-content: center; overflow: hidden; }
 .cat-stack-seg + .cat-stack-seg { border-left: 1px solid rgba(0, 0, 0, 0.18); }
 .cat-stack-seg:hover { filter: brightness(1.08); }
 .cat-stack-seg.active { box-shadow: inset 0 0 0 2px var(--text); z-index: 1; }
@@ -255,21 +255,21 @@ input.is-formula { font-family: 'JetBrains Mono', ui-monospace, monospace; color
 .cat-stack-label { font-size: 10.5px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: 0.02em; }
 
 /* Empty-programme onboarding strip (Brief/Design schedule). */
-.brief-onboard { display: flex; align-items: center; gap: 14px; padding: 12px 16px; margin-bottom: 12px; border: 1px dashed var(--accent); border-radius: 12px; background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.brief-onboard { display: flex; align-items: center; gap: 14px; padding: 12px 16px; margin-bottom: 12px; border: 1px dashed var(--accent); border-radius: var(--r-lg); background: color-mix(in srgb, var(--accent) 7%, transparent); }
 .brief-onboard-copy { flex: 1; font-size: 13px; }
 .brief-onboard-copy span { color: var(--muted); }
 
 /* "All fields" space-creation dialog. */
 .space-dialog-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; padding: 14px 22px 4px; }
-.space-dialog-grid label { display: flex; flex-direction: column; gap: 5px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--faint); }
+.space-dialog-grid label { display: flex; flex-direction: column; gap: 5px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
 .space-dialog-grid label.span2 { grid-column: 1 / -1; }
-.space-dialog-grid input, .space-dialog-grid select, .space-dialog-grid textarea { padding: 7px 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel2); color: var(--text); font-size: 13px; font-weight: 400; letter-spacing: normal; text-transform: none; font-family: inherit; resize: vertical; }
+.space-dialog-grid input, .space-dialog-grid select, .space-dialog-grid textarea { padding: 7px 9px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel2); color: var(--text); font-size: 13px; font-weight: 400; letter-spacing: normal; text-transform: none; font-family: inherit; resize: vertical; }
 .space-dialog-grid .formula-input-wrap { display: block; }
 .space-dialog-grid .formula-input-wrap input { width: 100%; box-sizing: border-box; }
 .modal-fields { display: flex; gap: 12px; padding: 12px 22px; }
 .modal-fields .fld { display: flex; flex-direction: column; gap: 4px; flex: 1; }
-.modal-fields .fld span { font-size: 11px; color: var(--faint); text-transform: uppercase; letter-spacing: 0.06em; }
-.modal-fields input { padding: 7px 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel2); color: var(--text); font-size: 13px; }
+.modal-fields .fld span { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.modal-fields input { padding: 7px 9px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel2); color: var(--text); font-size: 13px; }
 .modal-actions { display: flex; gap: 10px; padding: 14px 22px 20px; }
 .modal-note + .modal-actions { padding-top: 10px; }
 
@@ -277,12 +277,13 @@ input.is-formula { font-family: 'JetBrains Mono', ui-monospace, monospace; color
 .diff-list { padding: 8px 22px; display: flex; flex-direction: column; gap: 14px; }
 .diff-section { display: flex; flex-direction: column; gap: 3px; }
 .diff-head { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }
-.diff-head.good { color: var(--good); }
-.diff-head.warn { color: var(--warn); }
-.diff-head.bad { color: var(--bad); }
+.diff-head.good { color: var(--good-text); }
+.diff-head.warn { color: var(--warn-text); }
+.diff-head.bad { color: var(--bad-text); }
 .diff-row { display: flex; align-items: center; gap: 9px; font-size: 12.5px; padding: 3px 0; border-bottom: 1px dotted var(--border-soft); cursor: pointer; }
 .diff-row input[type="checkbox"] { flex: none; width: 15px; height: 15px; min-width: 0; margin: 0; }
 .diff-name { flex: 1; color: var(--text); }
+.diff-move { margin-left: 7px; font-size: 10.5px; font-weight: 700; color: var(--warn-text); letter-spacing: 0.03em; cursor: help; }
 .diff-val { color: var(--muted); font-family: 'JetBrains Mono', ui-monospace, monospace; white-space: nowrap; }
 
 /* Compliance column — designed area + a Δ% chip in the shared status colours. */
@@ -291,7 +292,7 @@ input.is-formula { font-family: 'JetBrains Mono', ui-monospace, monospace; color
 .treemap-tile.dim { opacity: 0.16; }
 
 /* Segmented toggle (Treemap | Schedule). */
-.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 9px; overflow: hidden; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; }
 .seg button {
   background: var(--panel);
   border: none;
@@ -301,14 +302,14 @@ input.is-formula { font-family: 'JetBrains Mono', ui-monospace, monospace; color
   font-weight: 600;
   padding: 7px 14px;
   cursor: pointer;
-  transition: color 0.12s, background 0.12s;
+  transition: color var(--dur-fast), background var(--dur-fast);
 }
 .seg button:hover { color: var(--text); }
 .seg button.active { background: var(--accent); color: var(--accent-ink); }
 
 /* Treemap. */
 .treemap-card { padding: 14px; }
-.treemap-field { position: relative; width: 100%; background: var(--bg2); border-radius: 4px; overflow: hidden; }
+.treemap-field { position: relative; width: 100%; background: var(--bg2); border-radius: var(--r-sm); overflow: hidden; }
 .treemap-tile {
   position: absolute;
   box-sizing: border-box;
@@ -316,7 +317,7 @@ input.is-formula { font-family: 'JetBrains Mono', ui-monospace, monospace; color
   cursor: pointer;
   overflow: hidden;
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.16);
-  transition: filter 0.12s;
+  transition: filter var(--dur-fast);
 }
 .treemap-tile:hover { filter: brightness(1.07); }
 .treemap-tile.sel { box-shadow: inset 0 0 0 2.5px var(--text); }
@@ -335,7 +336,7 @@ input.is-formula { font-family: 'JetBrains Mono', ui-monospace, monospace; color
 .treemap-area { font-family: 'JetBrains Mono', monospace; font-size: 9.5px; opacity: 0.62; }
 .treemap-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 12px; align-items: center; }
 .treemap-legend-item { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
-.treemap-legend-total { margin-left: auto; font-size: 10.5px; color: var(--faint); }
+.treemap-legend-total { margin-left: auto; font-size: 10.5px; color: var(--muted); }
 
 /* Σ medallion with contour rings. */
 .medallion { padding: 20px; }
@@ -397,12 +398,12 @@ input.is-formula { font-family: 'JetBrains Mono', ui-monospace, monospace; color
   list-style: none;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 9px;
+  border-radius: var(--r-md);
   box-shadow: var(--shadow);
 }
 .formula-suggest li {
   padding: 6px 9px;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   font-size: 12px;
   color: var(--text);
@@ -418,7 +419,7 @@ input.is-formula { font-family: 'JetBrains Mono', ui-monospace, monospace; color
 .ms-compare select {
   padding: 4px 7px;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: var(--r-md);
   background: var(--panel2);
   color: var(--text);
   font-size: 12px;
@@ -448,7 +449,7 @@ input.is-formula { font-family: 'JetBrains Mono', ui-monospace, monospace; color
   resize: vertical;
   padding: 9px 11px;
   border: 1px solid var(--border);
-  border-radius: 9px;
+  border-radius: var(--r-md);
   background: var(--panel2);
   color: var(--text);
   font-family: 'JetBrains Mono', ui-monospace, monospace;
@@ -463,7 +464,7 @@ input.is-formula { font-family: 'JetBrains Mono', ui-monospace, monospace; color
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: var(--good);
+  color: var(--good-text);
   margin-bottom: 4px;
 }
 
@@ -484,20 +485,20 @@ input.is-formula { font-family: 'JetBrains Mono', ui-monospace, monospace; color
   min-width: 0;
   padding: 5px 7px;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: var(--r-md);
   background: var(--panel2);
   color: var(--text);
   font-size: 12px;
 }
-.rev-meta { font-size: 10.5px; color: var(--faint); white-space: nowrap; }
+.rev-meta { font-size: 10.5px; color: var(--muted); white-space: nowrap; }
 .bench-edit-row { display: grid; grid-template-columns: 1fr 52px 56px 70px 24px; gap: 5px; align-items: center; margin-top: 5px; }
-.bench-edit-row input { padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel2); color: var(--text); font-size: 11.5px; min-width: 0; }
+.bench-edit-row input { padding: 4px 6px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel2); color: var(--text); font-size: 11.5px; min-width: 0; }
 .bench-edit-actions { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
 .bench-type {
   margin-left: auto;
   padding: 3px 6px;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: var(--r-md);
   background: var(--panel2);
   color: var(--text);
   font-size: 11.5px;
@@ -505,7 +506,7 @@ input.is-formula { font-family: 'JetBrains Mono', ui-monospace, monospace; color
 
 /* Dashboard change log (D·08). */
 .history-card { margin-top: 18px; }
-.hist-date { flex: none; font-size: 10.5px; color: var(--faint); width: 112px; }
+.hist-date { flex: none; font-size: 10.5px; color: var(--muted); width: 112px; }
 .hist-tree {
   flex: none;
   font-size: 9.5px;
@@ -513,12 +514,12 @@ input.is-formula { font-family: 'JetBrains Mono', ui-monospace, monospace; color
   text-transform: uppercase;
   letter-spacing: 0.07em;
   padding: 2px 7px;
-  border-radius: 20px;
+  border-radius: var(--r-pill);
   border: 1px solid var(--border);
   color: var(--muted);
 }
-.hist-tree.brief { color: var(--accent); border-color: var(--accent); }
-.hist-tree.design { color: var(--accent2); border-color: var(--accent2); }
+.hist-tree.brief { color: var(--accent-text); border-color: var(--accent); }
+.hist-tree.design { color: var(--accent2-text); border-color: var(--accent2); }
 
 @media (max-width: 1000px) {
   .brief-layout { flex-direction: column; }
@@ -542,4 +543,4 @@ input.is-formula { font-family: 'JetBrains Mono', ui-monospace, monospace; color
 .chart-line { fill: none; stroke: var(--accent); stroke-width: 2.5; }
 .chart-dot { fill: var(--accent); stroke: var(--bg); stroke-width: 2; }
 .chart-label { fill: var(--muted); font-size: 11px; }
-.chart-label.dim { fill: var(--faint); font-size: 10px; }
+.chart-label.dim { fill: var(--muted); font-size: 10px; }

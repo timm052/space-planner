@@ -72,9 +72,13 @@ function HistoryCard({ project, spaces, briefSpaces }) {
   );
 }
 
-export default function Dashboard({ project, spaces, briefSpaces = [], snapshots, selectedSpaceId = null, onGoToDiagram }) {
+export default function Dashboard({ project, spaces, briefSpaces = [], snapshots, selectedSpaceId = null, onGoToDiagram, onGoTab = null }) {
   if (spaces.length === 0) {
-    return <Empty>No design yet — build the programme in the Brief tab, then use “⇄ Send to Design” to start the design.</Empty>;
+    return (
+      <Empty action={onGoTab ? { label: 'Open the Brief', onClick: () => onGoTab('Brief') } : null}>
+        No design yet — build the programme in the Brief, then ⇄ Send to Design.
+      </Empty>
+    );
   }
 
   const leaves = leafSpaces(spaces);

@@ -4,6 +4,7 @@ import { fmtArea, fmtPct, briefNet, leafSpaces, pathKeyMap, targetTotal } from '
 import { benchValue, benchFormula, effectiveBenchmarks, parseBenchmarks } from '../benchmarks.js';
 import BriefTab from './BriefTab.jsx';
 import { Overlay } from './ui.jsx';
+import { confirmDialog } from './ConfirmDialog.jsx';
 
 // The "Brief" tab: the independent agreed programme (its own room tree,
 // `brief_spaces`), reusing the schedule/treemap editor via a store adapter.
@@ -133,6 +134,16 @@ function OverwriteDialog({ project, designCount = 0, onDone, onClose }) {
   }, [project.id]);
 
   const unit = project.units;
+  // A room re-parented in the Brief surfaces as an unrelated add + delete
+  // (matching is by path). Ticking both would silently discard the room's
+  // diagram placement — flag the pairs so the user sees the trade before
+  // applying. Leaf-name match only; presentation, not reconciliation.
+  const leafOf = (p) => p.split(' / ').pop().replace(/ #\d+$/, '');
+  const moveLeafs = (() => {
+    if (!diff) return new Set();
+    const addLeafs = new Set(diff.adds.map((r) => leafOf(r.path)));
+    return new Set(diff.deletes.map((r) => leafOf(r.path)).filter((n) => addLeafs.has(n)));
+  })();
   const toggle = (group, key) => setSel((s) => {
     const next = new Set(s[group]);
     next.has(key) ? next.delete(key) : next.add(key);
@@ -167,7 +178,17 @@ function OverwriteDialog({ project, designCount = 0, onDone, onClose }) {
         {rows.map((r) => (
           <label className="diff-row" key={r.path}>
             <input type="checkbox" checked={sel[group].has(r.path)} onChange={() => toggle(group, r.path)} />
-            <span className="diff-name">{r.path}</span>
+            <span className="diff-name">
+              {r.path}
+              {(group === 'adds' || group === 'deletes') && moveLeafs.has(leafOf(r.path)) && (
+                <span
+                  className="diff-move"
+                  title="The same room name is being added elsewhere — if this is a move, applying the delete + add loses the room's diagram placement."
+                >
+                  ↷ move?
+                </span>
+              )}
+            </span>
             <span className="diff-val">{render(r)}</span>
           </label>
         ))}
@@ -202,6 +223,13 @@ function OverwriteDialog({ project, designCount = 0, onDone, onClose }) {
         <button className="btn ghost" type="button" onClick={onClose}>Cancel</button>
       </div>
       <p className="modal-note">Tick the changes to apply. Matched rooms keep their diagram placement; matching is by name and parent.</p>
+      {moveLeafs.size > 0 && (
+        <p className="modal-note">
+          ↷ Rows marked <em>move?</em> share a name across Add and Delete — a room re-parented in the
+          Brief reads as both. Applying the pair re-creates the room in its new position but loses its
+          diagram placement.
+        </p>
+      )}
     </Overlay>
   );
 }
@@ -379,6 +407,12 @@ function ImportDialog({ project, onDone, onClose }) {
             {parsed.good.length} room{parsed.good.length === 1 ? '' : 's'} ready
             {parsed.bad.length > 0 ? ` · ${parsed.bad.length} line${parsed.bad.length === 1 ? '' : 's'} skipped (no name or area)` : ''}
           </div>
+          {parsed.bad.length > 0 && (
+            <p className="modal-note" style={{ padding: '2px 0 4px' }}>
+              Skipped: {parsed.bad.slice(0, 4).map((r) => `line ${r.line}${r.name ? ` — ${r.name}` : ''}`).join(' · ')}
+              {parsed.bad.length > 4 ? ` · and ${parsed.bad.length - 4} more` : ''}
+            </p>
+          )}
           {parsed.good.slice(0, 8).map((r) => (
             <div className="diff-row" key={r.line} style={{ cursor: 'default' }}>
               <span className="diff-name">{r.name} <span className="muted">· {r.category}{r.count > 1 ? ` · ×${r.count}` : ''}</span></span>
@@ -559,7 +593,10 @@ function RevisionsCard({ project, briefSpaces, onDiff }) {
     setBusy(false);
   }
   async function remove(rev) {
-    if (!window.confirm(`Delete revision "${rev.label}"?`)) return;
+    if (!(await confirmDialog({
+      title: `Delete revision "${rev.label}"?`,
+      body: 'The dated copy of the Brief is removed and cannot be diffed against later.',
+    }))) return;
     setError(null);
     try { await api.deleteBriefRevision(rev.id); setRevs(await api.briefRevisions(project.id)); }
     catch (e) { setError(e.message); }
@@ -744,7 +781,11 @@ function BenchmarksCard({ project, onChanged }) {
     } finally { setBusy(false); }
   }
   async function clearOverride() {
-    if (!window.confirm('Remove this project’s custom benchmarks and use the application defaults?')) return;
+    if (!(await confirmDialog({
+      title: 'Remove the custom benchmarks?',
+      body: 'This project goes back to the application-wide benchmark library.',
+      confirmLabel: 'Remove',
+    }))) return;
     setBusy(true);
     try {
       await api.updateProject(project.id, { benchmarks: null });

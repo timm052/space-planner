@@ -42,6 +42,7 @@ export default function DiagramRail({
   reqCount,
   desCount,
   linkStates, // Map "loId:hiId" → 'met' | 'unmet' (null when ungradable)
+  gradeHint = 'Not graded here', // WHY an ungraded row is ungraded (per environment)
   onJumpLink, // pan the canvas to the pair + select the link
   isContainerId, // container spaces get the 🏢 prefix so they read as buildings
   onChanged,
@@ -280,7 +281,7 @@ export default function DiagramRail({
                       <td className="rel-glyph">
                         <span
                           className={`rel-dot ${state ?? 'ungraded'}`}
-                          title={state === 'met' ? 'Satisfied in the current layout' : state === 'unmet' ? 'Not satisfied in the current layout' : 'Not graded — set a scale (or arrange the Concept view)'}
+                          title={state === 'met' ? 'Satisfied in the current layout' : state === 'unmet' ? 'Not satisfied in the current layout' : gradeHint}
                         />
                         <svg width="22" height="10" viewBox="0 0 22 10" aria-hidden="true">
                           <line x1="2" y1="5" x2="20" y2="5" stroke="var(--text)" strokeWidth={l.strength === 'required' ? 1.6 : 1.2} strokeDasharray={l.strength === 'required' ? undefined : '1 3'} strokeLinecap="round" />

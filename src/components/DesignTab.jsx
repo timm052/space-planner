@@ -3,6 +3,7 @@ import { api } from '../api.js';
 import { fmtArea, fmtPct, briefNet } from '../compute.js';
 import BriefTab from './BriefTab.jsx';
 import { Overlay } from './ui.jsx';
+import { confirmDialog } from './ConfirmDialog.jsx';
 
 // The "Design" tab: the live areas that drive the diagram, plus design
 // OPTIONS — named saves of the whole design (rooms + links) so Option A/B
@@ -70,7 +71,10 @@ function OptionsDialog({ project, briefSpaces, onChanged, onClose }) {
     setBusy(false);
   }
   async function remove(opt) {
-    if (!window.confirm(`Delete option "${opt.name}"?`)) return;
+    if (!(await confirmDialog({
+      title: `Delete option "${opt.name}"?`,
+      body: 'The saved scheme is removed — the current design is not affected.',
+    }))) return;
     setError(null);
     try { await api.deleteOption(opt.id); await refresh(); }
     catch (e) { setError(e.message); }

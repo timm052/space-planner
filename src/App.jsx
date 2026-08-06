@@ -5,6 +5,7 @@ import ProjectList from './components/ProjectList.jsx';
 import ProjectView from './components/ProjectView.jsx';
 import SettingsPage from './components/SettingsPage.jsx';
 import { Banner } from './components/ui.jsx';
+import { ConfirmHost } from './components/ConfirmDialog.jsx';
 
 function BrandLogo() {
   // Amber rounded square holding a 4-cell drafting glyph (3 plates + a bubble).
@@ -109,6 +110,7 @@ export default function App() {
           </div>
         )}
       </main>
+      <ConfirmHost />
     </div>
   );
 }

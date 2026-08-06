@@ -43,14 +43,22 @@
   stroke-linejoin: round;
 }
 .bubble-area { fill: rgba(255,255,255,0.7); font-size: 10px; font-family: 'JetBrains Mono', monospace; pointer-events: none; }
-/* Flat drafting links: required = solid hairline, desired = fine dotted. */
-.link { stroke: var(--muted); pointer-events: none; }
+/* Flat drafting links: required = solid hairline, desired = fine dotted.
+   `vector-effect: non-scaling-stroke` keeps these weights in SCREEN pixels.
+   Without it the widths are user units and scale with the camera: measured
+   across a 0.899×–3.429× zoom range, required ran 1.80→6.86px and desired
+   1.26→4.80px, so zoomed out the two sat 0.54px apart (indistinguishable at
+   DPR 1) and zoomed in a "hairline" became a 7px rule. The line hierarchy is
+   semantic — required vs desired — so it must not depend on zoom.
+   This is screen-only: pdfExport.js sets its own doc.setLineWidth() in mm. */
+.link { stroke: var(--muted); pointer-events: none; vector-effect: non-scaling-stroke; }
 .link.required { stroke-width: 2; stroke: var(--text); }
 .link.desired { stroke-width: 1.4; stroke: var(--muted); stroke-dasharray: 1 5; stroke-linecap: round; }
 .link.connected, .link.selected { stroke: var(--accent2); stroke-width: 2.5; }
 /* An adjacency whose bubbles are too far apart, when gap-highlighting is on. */
 .link.unmet { stroke: var(--bad); stroke-width: 3; stroke-dasharray: 3 4; opacity: 0.95; }
-.link-hitarea { stroke: transparent; stroke-width: 16; cursor: pointer; }
+/* Also non-scaling, so the grab target stays 16px however far you zoom out. */
+.link-hitarea { stroke: transparent; stroke-width: 16; cursor: pointer; vector-effect: non-scaling-stroke; }
 
 /* ===== Diagram redesign — tool dock, contextual action bar, contours ===== */
 .bubble-svg.linking { cursor: crosshair; }
@@ -64,8 +72,8 @@
 /* Rotate handle for a placed Master-plan footprint. */
 .rotate-handle { cursor: grab; }
 .rotate-handle:active { cursor: grabbing; }
-.rotate-stem { stroke: var(--accent, #4c8bf5); stroke-width: 1.5; }
-.rotate-knob { fill: var(--panel, #fff); stroke: var(--accent, #4c8bf5); stroke-width: 2; }
+.rotate-stem { stroke: var(--accent, #4c8bf5); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.rotate-knob { fill: var(--panel, #fff); stroke: var(--accent, #4c8bf5); stroke-width: 2; vector-effect: non-scaling-stroke; }
 .rotate-knob:hover { fill: var(--accent, #4c8bf5); }
 
 /* Edge/corner-alignment guide shown while a footprint snaps to a neighbour — a
@@ -73,7 +81,7 @@
 .align-guide { stroke: #ff2d8b; stroke-width: 1; opacity: 0.85; pointer-events: none; vector-effect: non-scaling-stroke; }
 
 /* Area-lock resize handles + live dimension readout on a Building box. */
-.resize-handle { fill: var(--panel, #fff); stroke: var(--accent, #4c8bf5); stroke-width: 2; cursor: pointer; }
+.resize-handle { fill: var(--panel, #fff); stroke: var(--accent, #4c8bf5); stroke-width: 2; cursor: pointer; vector-effect: non-scaling-stroke; }
 .resize-handle:hover { fill: var(--accent, #4c8bf5); }
 .dim-badge {
   fill: var(--accent, #4c8bf5); font-size: 11px; font-family: 'JetBrains Mono', monospace; pointer-events: none;
@@ -97,7 +105,7 @@
 .stack-b-head {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   width: 100%; font-size: 12px; font-weight: 600; color: var(--text); padding: 2px 4px;
-  border: 1px solid transparent; border-radius: 6px; background: transparent;
+  border: 1px solid transparent; border-radius: var(--r-sm); background: transparent;
   font-family: inherit; text-align: left; cursor: pointer;
 }
 .stack-b-head:hover { background: var(--panel2); border-color: var(--border); }
@@ -120,14 +128,14 @@
 .stack-height-unit { font-size: 10.5px; }
 .stack-level {
   display: grid; grid-template-columns: 68px 1fr auto; align-items: center; gap: 8px;
-  width: 100%; padding: 4px 6px; border: 1px solid transparent; border-radius: 6px;
+  width: 100%; padding: 4px 6px; border: 1px solid transparent; border-radius: var(--r-sm);
   background: transparent; color: var(--text); font-size: 12px; text-align: left; cursor: pointer;
 }
 .stack-level:hover { background: var(--panel2); border-color: var(--border); }
 .stack-level.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .stack-level-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
 .stack-level.active .stack-level-name { color: var(--text); }
-.stack-bar-wrap { height: 10px; background: var(--panel3); border-radius: 3px; overflow: hidden; display: flex; }
+.stack-bar-wrap { height: 10px; background: var(--panel3); border-radius: var(--r-sm); overflow: hidden; display: flex; }
 .stack-bar { display: block; height: 100%; background: var(--accent); min-width: 2px; flex: none; }
 .stack-level-area { font-size: 10px; color: var(--muted); }
 
@@ -176,7 +184,7 @@
   stroke-opacity: 0.55;
   vector-effect: non-scaling-stroke;
   cursor: pointer;
-  transition: fill-opacity 0.12s ease-out;
+  transition: fill-opacity var(--dur-fast) ease-out;
 }
 .voronoi-fill:hover { fill-opacity: 0.48; }
 .voronoi-cell.selected .voronoi-fill {
@@ -226,7 +234,7 @@
 .voronoi-seed {
   stroke: var(--panel);
   stroke-width: 2;
-  transition: r 0.1s ease-out;
+  transition: r var(--dur-fast) ease-out;
   pointer-events: none; /* the hit ring takes the pointer */
 }
 .voronoi-seed-hit:hover ~ .voronoi-seed { r: 7; }
@@ -245,7 +253,7 @@
   gap: 10px;
   max-width: min(560px, calc(100% - 220px));
   padding: 9px 12px;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: color-mix(in srgb, var(--panel) 88%, transparent);
   border: 1px solid var(--border);
   backdrop-filter: blur(8px);
@@ -277,7 +285,7 @@
   flex-direction: column;
   gap: 6px;
   padding: 10px;
-  border-radius: 12px;
+  border-radius: var(--r-lg);
   background: color-mix(in srgb, var(--panel) 86%, transparent);
   border: 1px solid var(--border);
   backdrop-filter: blur(8px);
@@ -286,12 +294,12 @@
 }
 .place-tray-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .place-tray-title { font-size: 12px; font-weight: 600; color: var(--text); }
-.place-all { font-size: 11px; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel2); color: var(--muted); cursor: pointer; }
-.place-all:hover { color: var(--accent); border-color: var(--accent); }
+.place-all { font-size: 11px; padding: 2px 8px; border-radius: var(--r-sm); border: 1px solid var(--border); background: var(--panel2); color: var(--muted); cursor: pointer; }
+.place-all:hover { color: var(--accent-text); border-color: var(--accent); }
 .place-tray-list { display: flex; flex-direction: column; gap: 3px; overflow-y: auto; }
 .place-row {
   display: flex; align-items: center; gap: 7px;
-  padding: 5px 7px; border-radius: 7px;
+  padding: 5px 7px; border-radius: var(--r-md);
   border: 1px solid transparent; background: transparent;
   font-size: 12px; color: var(--text); text-align: left; cursor: pointer;
 }
@@ -299,7 +307,7 @@
 .place-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
 .place-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .place-cta { font-size: 10px; color: var(--muted); opacity: 0; }
-.place-row:hover .place-cta { opacity: 1; color: var(--accent); }
+.place-row:hover .place-cta { opacity: 1; color: var(--accent-text); }
 .place-tray-hint { font-size: 10px; color: var(--muted); text-align: center; }
 
 /* Left tool dock (glass). */
@@ -317,7 +325,7 @@
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   border: 1px solid var(--glass-border);
-  border-radius: 12px;
+  border-radius: var(--r-lg);
   box-shadow: var(--shadow);
 }
 .tool-btn {
@@ -328,11 +336,11 @@
   align-items: center;
   justify-content: center;
   border: 1px solid transparent;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: transparent;
   color: var(--muted);
   cursor: pointer;
-  transition: color 0.12s, background 0.12s, border-color 0.12s;
+  transition: color var(--dur-fast), background var(--dur-fast), border-color var(--dur-fast);
 }
 .tool-btn:hover { background: var(--panel2); color: var(--text); }
 .tool-btn.active { background: var(--accent); color: var(--accent-ink); }
@@ -376,12 +384,12 @@
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid var(--glass-border);
-  border-radius: 13px;
+  border-radius: var(--r-lg);
   box-shadow: var(--shadow);
 }
 .action-bar .action-name { font-size: 13px; font-weight: 600; color: var(--text); }
 .action-bar .action-area { font-size: 12px; color: var(--muted); }
-.action-bar .action-count { font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 700; color: var(--accent2); }
+.action-bar .action-count { font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 700; color: var(--accent2-text); }
 .action-glyph { display: inline-flex; }
 .action-btn {
   display: inline-flex;
@@ -389,19 +397,19 @@
   gap: 6px;
   background: var(--panel2);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--r-md);
   padding: 7px 11px;
   font: inherit;
   font-size: 12.5px;
   color: var(--text);
   cursor: pointer;
   white-space: nowrap;
-  transition: border-color 0.12s, color 0.12s, background 0.12s;
+  transition: border-color var(--dur-fast), color var(--dur-fast), background var(--dur-fast);
 }
 .action-btn:hover { border-color: var(--faint); }
-.action-btn.active { border-color: var(--accent); color: var(--accent); }
+.action-btn.active { border-color: var(--accent); color: var(--accent-text); }
 .action-btn.icon { padding: 7px 10px; color: var(--muted); }
-.action-btn.danger:hover { border-color: var(--bad); color: var(--bad); }
+.action-btn.danger:hover { border-color: var(--bad); color: var(--bad-text); }
 .action-cat { width: 130px; padding: 7px 10px; font-size: 12.5px; }
 /* Envelope form (a selected building in the master plan): editable drawn
    footprint + the required footprint it must cover. */
@@ -416,7 +424,7 @@
 .action-height input { width: 58px; padding: 7px 8px; font-size: 12.5px; font-family: 'JetBrains Mono', monospace; }
 
 /* Small segmented control (Desired | Required in the link form). */
-.seg-sm { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg-sm { display: inline-flex; border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; }
 .seg-sm button {
   background: var(--panel2);
   border: none;
@@ -431,7 +439,7 @@
 .seg-sm button.active { background: var(--accent); color: var(--accent-ink); }
 
 /* Environment switcher — the primary mode control leading the top bar. */
-.seg-env { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg-env { display: inline-flex; border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; }
 .seg-env button {
   background: var(--panel2);
   border: none;
@@ -466,7 +474,7 @@
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   border: 1px solid var(--glass-border);
-  border-radius: 10px;
+  border-radius: var(--r-md);
   padding: 7px 12px;
   box-shadow: var(--shadow);
 }
@@ -518,7 +526,7 @@
   flex-shrink: 0; /* keep the panel usable — the column may extend over the canvas instead */
   max-height: 46vh; /* a tall panel scrolls itself instead of reaching the bottom row */
   overflow-y: auto;
-  animation: popover-in 0.15s ease-out;
+  animation: popover-in var(--dur-base) ease-out;
 }
 .stage-chrome .more-popover { width: 280px; }
 .stage-underbar {
@@ -572,7 +580,7 @@
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   border: 1px solid var(--glass-border);
-  border-radius: 12px;
+  border-radius: var(--r-lg);
   box-shadow: var(--shadow);
 }
 /* On a shared row the actions sit at the right edge (space-between). When the
@@ -581,11 +589,11 @@
 .stage-actions { gap: 6px; }
 
 .ctrl-field { display: inline-flex; align-items: center; gap: 7px; }
-.ctrl-label { font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); font-weight: 600; }
+.ctrl-label { font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
 .ctrl-select {
   background: var(--panel2);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--r-md);
   padding: 6px 9px;
   font: inherit;
   font-size: 12.5px;
@@ -598,16 +606,16 @@
   gap: 6px;
   background: var(--panel2);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--r-md);
   padding: 6px 11px;
   font: inherit;
   font-size: 12.5px;
   color: var(--text);
   cursor: pointer;
-  transition: border-color 0.12s, color 0.12s, background 0.12s;
+  transition: border-color var(--dur-fast), color var(--dur-fast), background var(--dur-fast);
 }
 .ctrl-btn:hover { border-color: var(--faint); }
-.ctrl-btn.active { border-color: var(--accent); color: var(--accent); }
+.ctrl-btn.active { border-color: var(--accent); color: var(--accent-text); }
 
 .act-btn {
   display: inline-flex;
@@ -618,15 +626,15 @@
   padding: 0 8px;
   background: var(--panel2);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--r-md);
   font: inherit;
   font-size: 13px;
   color: var(--text);
   cursor: pointer;
-  transition: border-color 0.12s, color 0.12s;
+  transition: border-color var(--dur-fast), color var(--dur-fast);
 }
 .act-btn.wide { font-size: 12.5px; }
-.act-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.act-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-text); }
 .act-btn:disabled { opacity: 0.4; cursor: default; }
 .adj-badge {
   display: inline-flex;
@@ -634,15 +642,15 @@
   gap: 7px;
   background: var(--panel2);
   border: 1px solid rgba(232, 176, 75, 0.5);
-  border-radius: 8px;
+  border-radius: var(--r-md);
   padding: 6px 11px;
   font: inherit;
   font-size: 12.5px;
   font-weight: 600;
-  color: var(--warn);
+  color: var(--warn-text);
   cursor: pointer;
 }
-.adj-badge.active { border-color: var(--bad); color: var(--bad); }
+.adj-badge.active { border-color: var(--bad); color: var(--bad-text); }
 .adj-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex: none; }
 
 /* "More" extras popover. */
@@ -651,8 +659,8 @@
 .more-row .ctrl-select { flex: 1; }
 .more-row input[type='range'] { flex: 1; min-width: 80px; }
 .more-label { font-size: 11px; color: var(--muted); min-width: 58px; }
-.more-val { font-size: 11px; color: var(--faint); min-width: 34px; text-align: right; }
-.more-section { font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); font-weight: 600; }
+.more-val { font-size: 11px; color: var(--muted); min-width: 34px; text-align: right; }
+.more-section { font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
 .more-divider { height: 1px; background: var(--border-soft); margin: 2px 0; }
 .legend-item { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
 .legend-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
@@ -673,7 +681,7 @@
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   padding: 6px 16px;
   pointer-events: none;
 }
@@ -687,7 +695,7 @@
   background: rgba(20, 24, 32, 0.97);
   backdrop-filter: blur(8px);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--r-lg);
   padding: 14px 16px;
   box-shadow: var(--shadow);
 }
@@ -695,7 +703,7 @@
 /* Unified popover chrome (StagePopover component). */
 .popover-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
 .popover-head h3 { margin: 0; }
-.stage-popover.error { border-color: var(--bad); color: var(--bad); }
+.stage-popover.error { border-color: var(--bad); color: var(--bad-text); }
 .popover-close-inline { float: right; }
 .popover-hint { margin: 6px 2px 0; }
 
@@ -713,8 +721,8 @@
 .layer-row .switch { font-size: 13px; color: var(--text); flex: 1; min-width: 0; }
 .layer-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .layer-cal { font-size: 11px; white-space: nowrap; flex: none; }
-.layer-cal.ok { color: var(--good); }
-.layer-cal.warn { color: var(--warn); }
+.layer-cal.ok { color: var(--good-text); }
+.layer-cal.warn { color: var(--warn-text); }
 .layer-cal.muted { color: var(--muted); }
 .layer-del { flex: none; padding: 2px 6px; }
 .layer-ctrls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 5px; }
@@ -728,7 +736,7 @@
 .sat-panel input { flex: 1; min-width: 220px; }
 .sat-panel select { width: auto; }
 .scale-panel input { width: 110px; }
-.scale-panel { color: var(--warn); }
+.scale-panel { color: var(--warn-text); }
 
 .switch { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); cursor: pointer; white-space: nowrap; }
 .switch input { width: auto; accent-color: var(--accent); cursor: pointer; }
@@ -750,8 +758,12 @@
 .bubble.overlap circle,
 .bubble.overlap rect,
 .bubble.overlap .poly-shape { stroke: var(--bad); stroke-width: 2.5; stroke-dasharray: 5 3; }
-.scale-bar line { stroke: var(--text); stroke-width: 2; }
+.scale-bar line { stroke: var(--text); stroke-width: 2; vector-effect: non-scaling-stroke; }
 .scale-bar text { fill: var(--text); font-size: 12px; font-family: 'JetBrains Mono', monospace; }
+/* "NTS" stands in for the scale bar in the scale-free Concept environment. The
+   mark reads as a drawing annotation; the qualifier stays quiet. */
+.scale-bar.nts text { fill: var(--muted); font-size: 11px; }
+.scale-bar.nts .nts-mark { fill: var(--text); font-weight: 700; letter-spacing: 0.08em; }
 /* Theme-aware pill (was a hardcoded dark fill — the light theme drew its dark
    text on a dark pill). */
 .scale-bar-bg { fill: var(--panel); fill-opacity: 0.82; }
@@ -799,7 +811,19 @@
 .rose-bg { fill: var(--glass); stroke: var(--border); stroke-width: 1; }
 .rose-needle-n { fill: var(--bad); }
 .rose-needle-s { fill: var(--muted); }
-.rose-n { fill: var(--text); font-size: 7px; font-weight: 700; text-anchor: middle; }
+/* The N sits ON the red north needle, where plain --text measured 2.88:1.
+   Same halo idiom as .env-fit-chip: the glyph reads against --panel, not the
+   needle, so it clears AA whichever way the rose is rotated. */
+.rose-n {
+  fill: var(--text);
+  font-size: 7px;
+  font-weight: 700;
+  text-anchor: middle;
+  paint-order: stroke;
+  stroke: var(--panel);
+  stroke-width: 2px;
+  stroke-linejoin: round;
+}
 .rose-deg { font-size: 10px; color: var(--muted); font-family: 'JetBrains Mono', monospace; margin-top: -3px; }
 
 /* floating action buttons (right edge of the stage) */
@@ -829,7 +853,7 @@
   align-items: center;
   justify-content: center;
   box-shadow: var(--shadow);
-  transition: border-color 0.12s, background 0.12s, transform 0.1s;
+  transition: border-color var(--dur-fast), background var(--dur-fast), transform var(--dur-fast);
   line-height: 1;
 }
 .fab:hover:not(:disabled) { border-color: var(--accent); transform: scale(1.05); }
@@ -843,7 +867,7 @@
   max-width: 72px;
   text-align: center;
   background: rgba(20, 24, 32, 0.85);
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   padding: 2px 6px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -860,15 +884,15 @@
 
 .split-dept { display: flex; align-items: center; gap: 6px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin: 12px 0 4px; }
 .split-group:first-child .split-dept { margin-top: 0; }
-.split-row { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 6px; cursor: pointer; }
+.split-row { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: var(--r-sm); cursor: pointer; }
 .split-row:hover { background: var(--panel2); }
 .split-row.selected { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
-.split-row.selected .split-name { color: var(--accent); font-weight: 600; }
+.split-row.selected .split-name { color: var(--accent-text); font-weight: 600; }
 .split-row.selected .split-lead { border-bottom-color: var(--accent); opacity: 0.45; }
 .split-row .swatch { flex: none; }
 .split-lead { flex: 1; min-width: 10px; border-bottom: 1px dotted var(--border); transform: translateY(-3px); }
 .split-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; flex: none; max-width: 60%; }
-.split-pin { color: var(--accent); margin-right: 4px; font-size: 10px; }
+.split-pin { color: var(--accent-text); margin-right: 4px; font-size: 10px; }
 .split-row input { width: 64px; flex: none; padding: 3px 6px; text-align: right; font-family: 'JetBrains Mono', monospace; font-size: 12px; }
 .split-total { text-align: right; color: var(--muted); font-size: 11px; font-family: 'JetBrains Mono', monospace; white-space: nowrap; }
 .split-foot { display: flex; justify-content: space-between; border-top: 1px solid var(--border); margin-top: 12px; padding-top: 10px; font-size: 13px; }
@@ -888,7 +912,7 @@
 .rail-rel .rel-pair b { font-weight: 600; }
 
 /* ---------- floor view modes (per-level / stacked isometric) ---------- */
-.floors-active { color: var(--accent); }
+.floors-active { color: var(--accent-text); }
 .bubble.stacked { cursor: default; }
 /* Stacked axonometric: each floor is an iso plane; room footprints render
    INSIDE the plane's affine group so they foreshorten flat onto the plate.
@@ -922,13 +946,23 @@
   position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
   font-size: 12px; color: var(--muted); pointer-events: none;
   background: var(--glass); border: 1px solid var(--border);
-  border-radius: 999px; padding: 6px 14px;
+  border-radius: var(--r-pill); padding: 6px 14px;
 }
+/* Sits where the 2-D scale bar sits, so "what is the scale of this view?" is
+   answered in the same place whichever environment you are in. */
+.scale-note-3d {
+  position: absolute; bottom: 12px; left: 12px;
+  font-size: 11px; color: var(--muted); pointer-events: none;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  background: var(--glass); border: 1px solid var(--glass-border);
+  border-radius: var(--r-sm); padding: 5px 10px;
+}
+.scale-note-3d b { color: var(--text); font-weight: 700; letter-spacing: 0.08em; margin-right: 6px; }
 .r3f-floor-label {
   font-family: 'Space Grotesk', 'Inter', sans-serif;
   font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
   color: var(--text); white-space: nowrap; pointer-events: none; user-select: none;
-  background: var(--glass); border: 1px solid var(--glass-border); border-radius: 999px;
+  background: var(--glass); border: 1px solid var(--glass-border); border-radius: var(--r-pill);
   padding: 3px 10px; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
   box-shadow: var(--shadow);
 }
@@ -936,7 +970,7 @@
   font-family: 'Inter', sans-serif;
   font-size: 11px; font-weight: 600; color: var(--text); white-space: nowrap;
   pointer-events: none; user-select: none;
-  background: var(--glass); border: 1px solid var(--glass-border); border-radius: 999px;
+  background: var(--glass); border: 1px solid var(--glass-border); border-radius: var(--r-pill);
   padding: 2px 8px; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
 }
 /* Slab edge faces — give each floor plate a concrete-slab thickness in offset mode. */
@@ -949,7 +983,7 @@
 .gaps-list { display: flex; flex-direction: column; gap: 2px; max-height: 34vh; overflow-y: auto; }
 .gaps-row {
   display: flex; align-items: center; gap: 8px; width: 100%;
-  padding: 5px 8px; border: none; border-radius: 6px; background: none;
+  padding: 5px 8px; border: none; border-radius: var(--r-sm); background: none;
   color: var(--text); font-size: 12px; text-align: left; cursor: pointer;
 }
 .gaps-row:hover { background: var(--panel2); }
@@ -995,33 +1029,33 @@
   background: var(--glass);
   backdrop-filter: blur(6px);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--r-md);
   padding: 6px 12px;
   font-size: 13px;
   font-weight: 600;
-  color: var(--accent);
+  color: var(--accent-text);
   pointer-events: none;
 }
-.floor-caption-sub { font-size: 10px; font-weight: 400; color: var(--faint); text-transform: none; letter-spacing: 0; }
+.floor-caption-sub { font-size: 10px; font-weight: 400; color: var(--muted); text-transform: none; letter-spacing: 0; }
 
 /* adjacency compliance score badge (diagram toolbar) */
 .adj-score { font-variant-numeric: tabular-nums; }
-.adj-score.good { color: var(--good); border-color: rgba(76, 195, 138, 0.5); }
-.adj-score.warn { color: var(--warn); border-color: rgba(232, 176, 75, 0.5); }
-.adj-score.bad { color: var(--bad); border-color: rgba(229, 103, 95, 0.5); }
+.adj-score.good { color: var(--good-text); border-color: rgba(76, 195, 138, 0.5); }
+.adj-score.warn { color: var(--warn-text); border-color: rgba(232, 176, 75, 0.5); }
+.adj-score.bad { color: var(--bad-text); border-color: rgba(229, 103, 95, 0.5); }
 .adj-score.active { box-shadow: inset 0 0 0 1px currentColor; }
 
 /* segmented control */
 .card-head-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
 .card-head-row h3 { margin: 0; text-transform: capitalize; }
-.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; }
 .seg-btn { background: var(--panel2); border: none; color: var(--muted); font: inherit; font-size: 12px; padding: 5px 12px; cursor: pointer; }
 .seg-btn + .seg-btn { border-left: 1px solid var(--border); }
 .seg-btn.active { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
 
 /* ---------- modal / help ---------- */
 .modal-overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.62); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 24px; }
-.modal { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; max-width: 880px; width: 100%; max-height: 88vh; overflow-y: auto; box-shadow: var(--shadow); }
+.modal { background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-lg); max-width: 880px; width: 100%; max-height: 88vh; overflow-y: auto; box-shadow: var(--shadow); }
 .modal-head { display: flex; justify-content: space-between; align-items: center; padding: 18px 22px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--panel); }
 .modal-head h2 { margin: 0; font-size: 18px; }
 /* Two-column Mouse / Keyboard shortcuts block at the top of the diagram help. */
@@ -1031,7 +1065,7 @@
   font-size: 12px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--accent2);
+  color: var(--accent2-text);
   font-weight: 600;
   margin: 0 0 10px;
 }
@@ -1042,13 +1076,13 @@
 /* One column of collapsible sections — mixed-height details in a two-column
    grid read as a mess; a stack with clear separators reads like a document. */
 .help-grid { display: flex; flex-direction: column; padding: 4px 22px 18px; border-top: 1px solid var(--border-soft); }
-.help-section h3 { color: var(--accent); font-size: 13px; margin: 6px 0 8px; }
+.help-section h3 { color: var(--accent-text); font-size: 13px; margin: 6px 0 8px; }
 .help-here { color: var(--muted); font-size: 11px; font-weight: 500; }
 details.help-section { border-bottom: 1px solid var(--border-soft); padding: 2px 0 4px; }
 details.help-section:last-child { border-bottom: none; }
-details.help-section summary { color: var(--accent); font-size: 13px; font-weight: 600; padding: 9px 0; cursor: pointer; list-style: none; user-select: none; }
+details.help-section summary { color: var(--accent-text); font-size: 13px; font-weight: 600; padding: 9px 0; cursor: pointer; list-style: none; user-select: none; }
 details.help-section summary:hover { color: var(--text); }
-details.help-section summary::before { content: '▸'; display: inline-block; margin-right: 8px; color: var(--faint); transition: transform 0.12s ease; }
+details.help-section summary::before { content: '▸'; display: inline-block; margin-right: 8px; color: var(--muted); transition: transform var(--dur-fast) ease; }
 details.help-section[open] summary::before { transform: rotate(90deg); }
 details.help-section summary::-webkit-details-marker { display: none; }
 details.help-section dl { margin: 2px 0 8px; }
@@ -1057,7 +1091,7 @@ details.help-section .help-shortcuts { padding: 2px 0 8px; }
 /* Numbered workflow guide at the top of the help panel. */
 .help-workflow { list-style: none; margin: 0; padding: 16px 22px 14px; display: flex; flex-direction: column; gap: 8px; }
 .help-workflow li { display: grid; grid-template-columns: 24px 150px 1fr; gap: 10px; align-items: baseline; }
-.help-workflow li.here .hw-label { color: var(--accent); }
+.help-workflow li.here .hw-label { color: var(--accent-text); }
 .help-workflow li.here .hw-step { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .hw-step { width: 21px; height: 21px; border: 1px solid var(--border); border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; color: var(--muted); align-self: center; }
 .hw-label { font-weight: 600; font-size: 13px; }
@@ -1071,38 +1105,41 @@ details.help-section .help-shortcuts { padding: 2px 0 8px; }
 .settings-form { max-width: 760px; display: flex; flex-direction: column; gap: 18px; }
 .settings-form label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 600; }
 .settings-form .muted { font-weight: 400; }
-.settings-sec-title { margin: 6px 0 0; font-size: 12px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--faint); border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+.settings-sec-title { margin: 6px 0 0; font-size: 12px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--muted); border-bottom: 1px solid var(--border); padding-bottom: 6px; }
 .settings-sec-sub { margin: -8px 0 0; font-size: 12.5px; }
 .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px 22px; }
 .bench-editor { display: flex; flex-direction: column; gap: 6px; }
 .bench-editor-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
-.bench-editor-bar select { padding: 6px 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel2); color: var(--text); font-size: 13px; }
+.bench-editor-bar select { padding: 6px 9px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel2); color: var(--text); font-size: 13px; }
 .bench-editor-spacer { flex: 1; }
 .bench-editor-head,
 .bench-editor-row { display: grid; grid-template-columns: 1fr 84px 110px 130px 30px; gap: 8px; align-items: center; }
-.bench-editor-head span { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--faint); }
-.bench-editor-row input { padding: 6px 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel2); color: var(--text); font-size: 12.5px; min-width: 0; }
+.bench-editor-head span { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+.bench-editor-row input { padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel2); color: var(--text); font-size: 12.5px; min-width: 0; }
 .bench-add { align-self: flex-start; margin-top: 2px; }
 
 /* ---------- empty states ---------- */
-.empty { text-align: center; color: var(--muted); padding: 48px 20px; border: 1px dashed var(--border); border-radius: 12px; }
+.empty { text-align: center; color: var(--muted); padding: 48px 20px; border: 1px dashed var(--border); border-radius: var(--r-lg); }
 .empty.small { padding: 20px; border: none; }
+.empty .empty-action { margin-top: 12px; }
 .stage-empty { display: flex; align-items: center; justify-content: center; height: 100%; }
 
 .hint { color: var(--muted); font-size: 12px; }
 
 kbd {
   background: var(--panel3); border: 1px solid var(--border); border-bottom-width: 2px;
-  border-radius: 4px; padding: 0 5px; font-size: 11px; font-family: inherit; color: var(--text);
+  border-radius: var(--r-sm); padding: 0 5px; font-size: 11px; font-family: inherit; color: var(--text);
 }
 
-/* ---------- diagram: group hulls, multi-select, marquee ---------- */
-.group-hull { fill-opacity: 0.07; stroke-opacity: 0.32; stroke-width: 1.5; pointer-events: none; }
-.multi-ring { fill: none; stroke: var(--accent2); stroke-width: 2; stroke-dasharray: 4 3; pointer-events: none; }
-.marquee { fill: rgba(87, 199, 212, 0.1); stroke: var(--accent2); stroke-width: 1; stroke-dasharray: 5 4; pointer-events: none; }
+/* ---------- diagram: group hulls, multi-select, marquee ----------
+   All non-scaling: these are annotation weights, not drawn geometry, so they
+   read the same at every zoom (see the note on .link above). */
+.group-hull { fill-opacity: 0.07; stroke-opacity: 0.32; stroke-width: 1.5; pointer-events: none; vector-effect: non-scaling-stroke; }
+.multi-ring { fill: none; stroke: var(--accent2); stroke-width: 2; stroke-dasharray: 4 3; pointer-events: none; vector-effect: non-scaling-stroke; }
+.marquee { fill: rgba(87, 199, 212, 0.1); stroke: var(--accent2); stroke-width: 1; stroke-dasharray: 5 4; pointer-events: none; vector-effect: non-scaling-stroke; }
 
 /* Freeform polygon shapes — smooth, bubble-like, animated while dragging */
-.poly-shape { transition: d 0.09s ease-out; animation: poly-pop 0.28s cubic-bezier(0.34, 1.56, 0.64, 1); }
+.poly-shape { transition: d var(--dur-fast) ease-out; animation: poly-pop var(--dur-slow) cubic-bezier(0.34, 1.56, 0.64, 1); }
 /* While editing, the outline is solved per pointer frame (already smooth) —
    a transition here just makes the shape lag and rubber-band under the handle. */
 .poly-shape.editing { transition: none; }
@@ -1112,11 +1149,11 @@ kbd {
 .poly-edit { pointer-events: all; }
 /* Vertex handles — the glyph mirrors the corner style: circle = curve,
    rounded square = fillet, square = sharp. Right-click cycles the style. */
-.poly-handle { fill: var(--accent2); stroke: #fff; stroke-width: 1.5; cursor: grab; transition: r 0.12s ease, fill 0.12s ease; }
+.poly-handle { fill: var(--accent2); stroke: #fff; stroke-width: 1.5; cursor: grab; transition: r var(--dur-fast) ease, fill var(--dur-fast) ease; }
 .poly-handle:hover { fill: #fff; stroke: var(--accent2); r: 8; }
 .poly-handle:active { cursor: grabbing; fill: #fff; r: 8; }
 rect.poly-handle:hover, rect.poly-handle:active { transform: scale(1.2); transform-box: fill-box; transform-origin: center; }
-.poly-add { fill: rgba(87, 199, 212, 0.35); stroke: #fff; stroke-width: 1; cursor: copy; transition: r 0.12s ease, fill 0.12s ease; }
+.poly-add { fill: rgba(87, 199, 212, 0.35); stroke: #fff; stroke-width: 1; cursor: copy; transition: r var(--dur-fast) ease, fill var(--dur-fast) ease; }
 .poly-add:hover { fill: var(--accent2); r: 6; }
 .poly-area-badge {
   fill: var(--text); font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600;
@@ -1126,23 +1163,31 @@ rect.poly-handle:hover, rect.poly-handle:active { transform: scale(1.2); transfo
 .multi-bar {
   position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: center;
-  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-md);
   padding: 6px 10px; box-shadow: var(--shadow); z-index: 8; max-width: 92%;
 }
-.multi-count { font-size: 12px; font-weight: 600; color: var(--accent2); margin-right: 4px; }
+.multi-count { font-size: 12px; font-weight: 600; color: var(--accent2-text); margin-right: 4px; }
 .multi-sep { width: 1px; align-self: stretch; background: var(--border); margin: 0 2px; }
 .multi-cat {
   width: 120px; font-size: 12px; padding: 4px 8px;
-  background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 7px;
+  background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-md);
 }
 
 /* Clickable legend swatch = category colour picker */
 .legend-swatch {
-  display: inline-block; width: 11px; height: 11px; border-radius: 3px; cursor: pointer;
+  display: inline-block; width: 11px; height: 11px; border-radius: var(--r-sm); cursor: pointer;
   border: 1px solid rgba(255, 255, 255, 0.25); position: relative; overflow: hidden;
 }
 .legend-swatch:hover { transform: scale(1.18); }
 .legend-swatch input[type='color'] { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; padding: 0; border: none; cursor: pointer; }
+/* A category colour that collides with another category (including under
+   simulated colour-vision deficiency) or with a compliance-status colour.
+   Advisory, not a block — the tooltip says which, and why. */
+.legend-swatch.clash {
+  outline: 2px solid var(--warn);
+  outline-offset: 2px;
+  border-color: var(--warn);
+}
 
 /* ---------- adjacency matrix ---------- */
 .matrix-modal { max-width: 96vw; }
@@ -1161,10 +1206,10 @@ rect.poly-handle:hover, rect.poly-handle:active { transform: scale(1.2); transfo
   display: inline-block; writing-mode: vertical-rl; transform: rotate(180deg);
   color: var(--muted); font-weight: 500; max-height: 124px; overflow: hidden;
 }
-.matrix td.mcell { width: 26px; height: 26px; text-align: center; cursor: pointer; color: var(--accent); }
+.matrix td.mcell { width: 26px; height: 26px; text-align: center; cursor: pointer; color: var(--accent-text); }
 .matrix td.mcell:hover { background: rgba(240, 181, 63, 0.14); }
 .matrix td.mcell.required { font-weight: 700; }
-.matrix td.mcell.desired { color: var(--accent2); }
+.matrix td.mcell.desired { color: var(--accent2-text); }
 /* Layout audit: cells graded against the CURRENT layout override the
    strength colours — green when the pair is satisfied, red when not. */
 .matrix td.mcell.met { color: var(--good, #3fae6b); }
@@ -1179,8 +1224,8 @@ rect.poly-handle:hover, rect.poly-handle:active { transform: scale(1.2); transfo
 .diff-picker select { font-size: 12px; padding: 5px 8px; }
 .diff-arrow { color: var(--muted); }
 .diff-summary { color: var(--muted); font-size: 13px; margin: 4px 0 12px; }
-.diff-table .diff-bar-wrap { display: block; width: 120px; height: 8px; background: var(--panel2); border-radius: 4px; overflow: hidden; }
-.diff-bar { display: block; height: 100%; border-radius: 4px; }
+.diff-table .diff-bar-wrap { display: block; width: 120px; height: 8px; background: var(--panel2); border-radius: var(--r-sm); overflow: hidden; }
+.diff-bar { display: block; height: 100%; border-radius: var(--r-sm); }
 .diff-bar.grew { background: var(--bad); }
 .diff-bar.shrank { background: var(--good); }
 
@@ -1195,10 +1240,10 @@ rect.poly-handle:hover, rect.poly-handle:active { transform: scale(1.2); transfo
 .detail-label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 6px; }
 .detail-notes textarea {
   width: 100%; min-height: 72px; resize: vertical; font: inherit; font-size: 13px;
-  background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+  background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-md); padding: 8px 10px;
 }
 .detail-notes textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(240, 181, 63, 0.12); }
-.detail-thumb img { max-width: 100%; max-height: 130px; border-radius: 8px; border: 1px solid var(--border); display: block; margin-bottom: 8px; }
+.detail-thumb img { max-width: 100%; max-height: 130px; border-radius: var(--r-md); border: 1px solid var(--border); display: block; margin-bottom: 8px; }
 .detail-image .btn { cursor: pointer; }
 
 /* ---------- resizable rail ---------- */
@@ -1238,8 +1283,8 @@ rect.poly-handle:hover, rect.poly-handle:active { transform: scale(1.2); transfo
 .cat-select { max-width: 170px; }
 .cat-create { display: inline-flex; gap: 4px; align-items: center; }
 .cat-create input { width: 130px; }
-.kind-badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
-.kind-badge.building { background: rgba(240, 181, 63, 0.18); color: var(--accent); }
+.kind-badge { display: inline-block; padding: 1px 8px; border-radius: var(--r-pill); font-size: 11px; font-weight: 600; }
+.kind-badge.building { background: rgba(240, 181, 63, 0.18); color: var(--accent-text); }
 .kind-badge.group { background: var(--panel3); color: var(--muted); }
 .kind-badge.space { background: var(--panel3); color: var(--muted); }
 .brief-table .building-row td { background: rgba(240, 181, 63, 0.05); }
@@ -1257,16 +1302,16 @@ rect.poly-handle:hover, rect.poly-handle:active { transform: scale(1.2); transfo
 /* Category chip — unifies the column: leaves get a colour dot like the diagram,
    containers keep their Building/Zone badge. */
 .cat-chip { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--text); }
-.cat-chip .swatch { width: 9px; height: 9px; border-radius: 2px; flex: none; }
-.cell-empty { color: var(--faint); }
+.cat-chip .swatch { width: 9px; height: 9px; border-radius: var(--r-sm); flex: none; }
+.cell-empty { color: var(--muted); }
 .container-name { font-weight: 600; }
 .brief-table tr.drop-before td { box-shadow: inset 0 2px 0 var(--accent); }
 .brief-table tr.drop-after td { box-shadow: inset 0 -2px 0 var(--accent); }
 .brief-table tr.drop-inside td { background: rgba(240, 181, 63, 0.1); box-shadow: inset 0 0 0 1px var(--accent); }
 
 /* ---------- brief: nesting modes, levels, edit controls ---------- */
-.row-tag { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 999px; font-size: 10px; background: var(--panel3); color: var(--muted); vertical-align: middle; }
-.row-tag.mode { background: rgba(87, 199, 212, 0.16); color: var(--accent2); }
+.row-tag { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: var(--r-pill); font-size: 10px; background: var(--panel3); color: var(--muted); vertical-align: middle; }
+.row-tag.mode { background: rgba(87, 199, 212, 0.16); color: var(--accent2-text); }
 .edit-extra { display: flex; flex-direction: column; gap: 4px; align-items: stretch; }
 .edit-extra .mode-select, .edit-extra .level-input, .edit-extra .parent-select { font-size: 12px; width: 100%; }
 
@@ -1286,6 +1331,18 @@ rect.poly-handle:hover, rect.poly-handle:active { transform: scale(1.2); transfo
 
 @media (max-width: 1200px) {
   .diagram-layout { grid-template-columns: minmax(0, 1fr) 300px; }
+}
+
+/* Narrow stages: the floating chrome wrapped to a second row and ate a band of
+   canvas (measured at 1280px wide). Shedding the environment sub-status and
+   the "Colour" caption keeps it to one row — the information is still in the
+   rail and the tooltips. Canvas annotations avoid whatever height remains via
+   the measured chromeH, so this is about giving the drawing its space back,
+   not about correctness. */
+@media (max-width: 1400px) {
+  .stage-topbar .seg-sub { display: none; }
+  .ctrl-label { display: none; }
+  .stage-topbar { gap: 8px; }
 }
 @media (max-width: 980px) {
   .stat-row { grid-template-columns: repeat(2, 1fr); }
@@ -1323,7 +1380,7 @@ rect.poly-handle:hover, rect.poly-handle:active { transform: scale(1.2); transfo
 .legend-swatch:focus-within, .chip:focus-visible, .split-row:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-  border-radius: 8px;
+  border-radius: var(--r-md);
 }
 .fab:focus-visible { outline-offset: 3px; }
 
@@ -1336,7 +1393,7 @@ rect.poly-handle:hover, rect.poly-handle:active { transform: scale(1.2); transfo
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
   background: var(--panel3);
-  border-radius: 8px;
+  border-radius: var(--r-md);
   border: 2px solid transparent;
   background-clip: padding-box;
 }
@@ -1347,23 +1404,32 @@ rect.poly-handle:hover, rect.poly-handle:active { transform: scale(1.2); transfo
    rather than snapping. (Brightness sits on the GROUP so it never overrides a
    shape's own SVG filter attribute, e.g. the sketch style.) */
 .bubble:not(.stacked):hover { filter: brightness(1.06); }
-.bubble > circle, .bubble > rect { transition: stroke-width 0.12s ease, fill-opacity 0.15s ease, stroke 0.15s ease; }
+.bubble > circle, .bubble > rect { transition: stroke-width var(--dur-fast) ease, fill-opacity var(--dur-base) ease, stroke var(--dur-base) ease; }
+/* Room keylines and drawn outlines hold a constant SCREEN weight. The poché
+   keyline is an annotation of the edge, not measured geometry — at 3.429× the
+   1.5px keyline was rendering 5.1px and the 3px selection ring 10.3px, which
+   read as a completely different drawing. Sizes and positions still scale;
+   only the pen width is pinned. */
+.bubble > circle,
+.bubble > rect,
+.bubble > path,
+.poly-shape { vector-effect: non-scaling-stroke; }
 
 /* Links thicken under the cursor so "click a link to edit it" is discoverable. */
-.link { transition: stroke-width 0.1s ease, stroke 0.15s ease; }
+.link { transition: stroke-width var(--dur-fast) ease, stroke var(--dur-base) ease; }
 .link-hit:hover .link { stroke-width: 3; }
 
 /* Pin / multi-selection rings pop in instead of appearing. */
-.pin-ring, .multi-ring { transform-box: fill-box; transform-origin: center; animation: ring-pop 0.16s ease-out; }
+.pin-ring, .multi-ring { transform-box: fill-box; transform-origin: center; animation: ring-pop var(--dur-base) ease-out; }
 @keyframes ring-pop { from { opacity: 0; transform: scale(0.85); } }
 
 /* The bottom-centre HUD (action bar / hint) rises in. Keyframes repeat the
    base translateX(-50%) so the centring survives the animation. */
-.action-bar, .stage-hint { animation: hud-in 0.18s cubic-bezier(0.2, 0.9, 0.3, 1); }
+.action-bar, .stage-hint { animation: hud-in var(--dur-base) cubic-bezier(0.2, 0.9, 0.3, 1); }
 @keyframes hud-in { from { opacity: 0; transform: translateX(-50%) translateY(8px); } }
 
 /* Stage popovers (layers / more / satellite / calibration / error) drop in. */
-.stage-popover { animation: popover-in 0.15s ease-out; }
+.stage-popover { animation: popover-in var(--dur-base) ease-out; }
 @keyframes popover-in { from { opacity: 0; transform: translateY(-6px); } }
 
 /* Respect users who ask for less motion. */
@@ -1419,7 +1485,7 @@ rect.poly-handle:hover, rect.poly-handle:active { transform: scale(1.2); transfo
   align-items: stretch;
   gap: 2px;
   padding: 3px;
-  border-radius: 9px;
+  border-radius: var(--r-md);
   background: var(--glass);
   border: 1px solid var(--glass-border);
   backdrop-filter: blur(10px);
@@ -1435,7 +1501,7 @@ rect.poly-handle:hover, rect.poly-handle:active { transform: scale(1.2); transfo
   height: 26px;
   padding: 0 4px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   background: none;
   color: var(--muted);
   font-size: 14px;
@@ -1482,7 +1548,7 @@ rect.poly-handle:hover, rect.poly-handle:active { transform: scale(1.2); transfo
   width: min(460px, 92vw);
   display: flex;
   flex-direction: column;
-  border-radius: 12px;
+  border-radius: var(--r-lg);
   background: var(--panel);
   border: 1px solid var(--border);
   box-shadow: var(--shadow);
@@ -1507,7 +1573,7 @@ rect.poly-handle:hover, rect.poly-handle:active { transform: scale(1.2); transfo
   width: 100%;
   padding: 8px 10px;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--r-md);
   background: none;
   color: var(--text);
   font-size: 13px;
@@ -1516,14 +1582,14 @@ rect.poly-handle:hover, rect.poly-handle:active { transform: scale(1.2); transfo
 }
 .palette-row.active { background: var(--panel2); }
 .palette-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
-.palette-cmd { color: var(--accent); font-size: 11px; flex: none; width: 10px; text-align: center; }
+.palette-cmd { color: var(--accent-text); font-size: 11px; flex: none; width: 10px; text-align: center; }
 .palette-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .palette-sub { color: var(--muted); font-size: 11.5px; flex: none; }
 .palette-empty { padding: 18px; text-align: center; color: var(--muted); font-size: 13px; }
 .palette-foot {
   padding: 7px 16px;
   border-top: 1px solid var(--border-soft);
-  color: var(--faint);
+  color: var(--muted);
   font-size: 11px;
 }
 
@@ -1536,7 +1602,7 @@ rect.poly-handle:hover, rect.poly-handle:active { transform: scale(1.2); transfo
   gap: 2px;
   padding: 8px 10px;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--r-md);
   background: none;
   color: var(--text);
   font-size: 13px;
@@ -1559,7 +1625,7 @@ rect.poly-handle:hover, rect.poly-handle:active { transform: scale(1.2); transfo
   gap: 10px;
   max-width: min(520px, calc(100% - 24px));
   padding: 8px 12px;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: var(--glass);
   border: 1px solid var(--glass-border);
   backdrop-filter: blur(10px);
@@ -1567,15 +1633,15 @@ rect.poly-handle:hover, rect.poly-handle:active { transform: scale(1.2); transfo
   box-shadow: var(--shadow);
   font-size: 12.5px;
   color: var(--text);
-  animation: toast-in 0.18s ease-out;
+  animation: toast-in var(--dur-base) ease-out;
 }
 @keyframes toast-in { from { opacity: 0; transform: translateX(-50%) translateY(6px); } }
 @media (prefers-reduced-motion: reduce) { .stage-toast { animation: none; } }
 .stage-toast-undo {
   border: 1px solid var(--accent);
-  border-radius: 7px;
+  border-radius: var(--r-md);
   background: none;
-  color: var(--accent);
+  color: var(--accent-text);
   padding: 3px 10px;
   font-size: 12px;
   font-weight: 600;
@@ -1607,7 +1673,7 @@ rect.poly-handle:hover, rect.poly-handle:active { transform: scale(1.2); transfo
   text-align: left;
   cursor: pointer;
 }
-.rel-jump:hover b { color: var(--accent); }
+.rel-jump:hover b { color: var(--accent-text); }
 tr.rel-unmet .rel-pair b { color: var(--text); }
 tr.rel-met .rel-pair { opacity: 0.75; }
 
@@ -1632,7 +1698,7 @@ tr.rel-met .rel-pair { opacity: 0.75; }
   display: flex;
   flex-direction: column;
   padding: 5px;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: var(--panel);
   border: 1px solid var(--border);
   box-shadow: var(--shadow);
@@ -1656,7 +1722,7 @@ tr.rel-met .rel-pair { opacity: 0.75; }
   gap: 12px;
   padding: 7px 9px;
   border: none;
-  border-radius: 7px;
+  border-radius: var(--r-md);
   background: none;
   color: var(--text);
   font-size: 12.5px;
@@ -1664,12 +1730,12 @@ tr.rel-met .rel-pair { opacity: 0.75; }
   cursor: pointer;
 }
 .ctx-item:hover { background: var(--panel2); }
-.ctx-item.danger { color: var(--bad); }
+.ctx-item.danger { color: var(--bad-text); }
 .ctx-item kbd {
   font-size: 10px;
-  color: var(--faint);
+  color: var(--muted);
   background: var(--panel2);
-  border-radius: 4px;
+  border-radius: var(--r-sm);
   padding: 1px 5px;
 }
 
@@ -1688,7 +1754,7 @@ tr.rel-met .rel-pair { opacity: 0.75; }
 .action-level-sel {
   background: var(--panel2);
   border: 1px solid var(--border-soft);
-  border-radius: 7px;
+  border-radius: var(--r-md);
   color: var(--text);
   font-size: 12px;
   padding: 3px 6px;
@@ -1708,7 +1774,7 @@ tr.rel-met .rel-pair { opacity: 0.75; }
   display: flex;
   gap: 2px;
   padding: 3px;
-  border-radius: 9px;
+  border-radius: var(--r-md);
   background: var(--glass);
   border: 1px solid var(--glass-border);
   backdrop-filter: blur(10px);
@@ -1716,7 +1782,7 @@ tr.rel-met .rel-pair { opacity: 0.75; }
 }
 .cam-presets button {
   border: none;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   background: none;
   color: var(--muted);
   font-size: 11.5px;
@@ -1724,14 +1790,14 @@ tr.rel-met .rel-pair { opacity: 0.75; }
   cursor: pointer;
 }
 .cam-presets button:hover { color: var(--text); background: var(--panel2); }
-.cam-presets button.active { color: var(--accent); background: var(--panel2); font-weight: 600; }
+.cam-presets button.active { color: var(--accent-text); background: var(--panel2); font-weight: 600; }
 
 /* Align / distribute cluster in the multi action bar. */
 .align-group {
   display: inline-flex;
   gap: 1px;
   padding: 2px;
-  border-radius: 7px;
+  border-radius: var(--r-md);
   background: var(--panel2);
 }
 .align-btn {
@@ -1741,7 +1807,7 @@ tr.rel-met .rel-pair { opacity: 0.75; }
   width: 24px;
   height: 22px;
   border: none;
-  border-radius: 5px;
+  border-radius: var(--r-sm);
   background: none;
   color: var(--muted);
   cursor: pointer;
@@ -1757,7 +1823,7 @@ tr.rel-met .rel-pair { opacity: 0.75; }
   min-width: 0;
   background: none;
   border: 1px solid transparent;
-  border-radius: 5px;
+  border-radius: var(--r-sm);
   color: var(--text);
   font-size: 11.5px;
   padding: 2px 4px;

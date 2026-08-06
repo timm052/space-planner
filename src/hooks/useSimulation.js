@@ -276,6 +276,27 @@ export function useSimulation({
 
     let calmFrames = 0; // consecutive near-still frames during an auto pass
 
+    // The CSS `prefers-reduced-motion` override in diagram.css cannot reach
+    // this loop — it is rAF-driven, not a CSS transition. So the auto-layout
+    // pass honours the preference itself: instead of animating the cooling
+    // curve over ~200 frames, it solves to the same settled layout in one go
+    // and paints once. The RESULT is identical; only the travel is removed.
+    const reducedMotion = () =>
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    // Iterate to rest without painting intermediate frames. Capped so a
+    // pathological layout can never lock the main thread.
+    const settleNow = (hold) => {
+      for (let i = 0; i < 240; i++) {
+        const maxMove = simulate(Math.max(alphaRef.current, 0.3), !!hold, hold);
+        alphaRef.current *= 0.985;
+        if (maxMove < 0.05) break;
+      }
+      alphaRef.current = 0;
+    };
+
     const step = () => {
       // Authored environments (Master plan) never simulate — positions are
       // fixed until the user moves them, so the loop just idles.
@@ -289,6 +310,19 @@ export function useSimulation({
       // stay fixed). The pass ends when it cools below the floor OR when the
       // layout has visibly settled (adaptive cooling — no fixed-length tail).
       if (autoRunRef.current && (alphaRef.current > 0.012 || dragging)) {
+        // Reduced motion: jump straight to the settled layout. Not while
+        // dragging — that is direct manipulation the user is driving, and it
+        // has to keep tracking the pointer.
+        if (!dragging && reducedMotion()) {
+          settleNow(null);
+          setTick((t) => t + 1);
+          autoRunRef.current = false;
+          setAutoRunning(false);
+          calmFrames = 0;
+          onSettleRef.current?.();
+          raf = requestAnimationFrame(step);
+          return;
+        }
         const maxMove = simulate(Math.max(alphaRef.current, dragging ? 0.3 : 0));
         if (!dragging) {
           alphaRef.current *= 0.985;
@@ -308,6 +342,16 @@ export function useSimulation({
         // lands — never while it is still being carried — with zero drift.
         // The dropped instances themselves are held where the user put them.
         const relax = relaxRef.current;
+        if (reducedMotion()) {
+          // Same deal for the post-drop nudge: neighbours end up where they
+          // would have, without the visible shuffle.
+          settleNow(relax.hold);
+          setTick((t) => t + 1);
+          relaxRef.current = null;
+          onSettleRef.current?.();
+          raf = requestAnimationFrame(step);
+          return;
+        }
         const maxMove = simulate(1, true, relax.hold);
         relax.frames = maxMove < 0.05 ? 0 : relax.frames - 1;
         if (maxMove > 0) setTick((t) => t + 1);

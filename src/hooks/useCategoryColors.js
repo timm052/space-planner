@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { rootContainer, isContainerKind } from '../compute.js';
-import { STATUS_LABEL, STATUS_HEX, STATUS_ORDER as STATUS_KEYS } from '../viz.js';
+import { STATUS_LABEL, STATUS_HEX, STATUS_ORDER as STATUS_KEYS, categoryColor } from '../viz.js';
 
 // Fixed default colours for the compliance-status colour mode (recolourable
 // via the legend like any label). Sourced from viz.js so the diagram lens, the
@@ -71,6 +71,13 @@ export function useCategoryColors({ project, leaves, byId, colorBy, statusOf = n
     if (effColors[label]) return effColors[label];
     if (STATUS_COLORS[label]) return STATUS_COLORS[label];
     const i = groups.indexOf(label);
+    // Seeded category names resolve by NAME, not by encounter order. The
+    // diagram used to index the palette purely by position while the Brief
+    // treemap looked names up in CATEGORY_COLORS, so a department called
+    // "Staff" could be teal in one screen and indigo in the other depending
+    // only on where it happened to sort. categoryColor() applies the name map
+    // first and falls back to the same positional cycle.
+    if (i >= 0 && colorBy !== 'building') return categoryColor(label, i);
     if (i >= 0) return palette[i % palette.length];
     // Stable fallback for labels outside the current colour grouping (e.g. a
     // building name while colouring by category).

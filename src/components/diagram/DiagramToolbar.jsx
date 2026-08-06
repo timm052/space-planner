@@ -13,7 +13,7 @@ import { useEffect, useRef, useState } from 'react';
  * every sim frame), it subscribes to the tick store and recomputes at most
  * every 300 ms — plus immediately when the underlying data changes.
  */
-function AdjacencyBadge({ store, compute, dataKey, active, onToggle }) {
+function AdjacencyBadge({ store, compute, dataKey, active, onToggle, scopeNote = '' }) {
   const computeRef = useRef(compute);
   computeRef.current = compute;
   const [result, setResult] = useState(() => compute());
@@ -35,7 +35,7 @@ function AdjacencyBadge({ store, compute, dataKey, active, onToggle }) {
     <button
       className={`adj-badge ${active ? 'active' : ''}`}
       onClick={onToggle}
-      title={`${result.met}/${result.total} relationships satisfied — click to highlight the ${result.unmet.length} unmet`}
+      title={`${result.met}/${result.total} relationships satisfied — click to highlight the ${result.unmet.length} unmet${scopeNote ? `\n${scopeNote}` : ''}`}
     >
       <span className="adj-dot" /> {result.score == null ? '—' : `${Math.round(result.score * 100)}%`} adjacency
     </button>
@@ -78,6 +78,7 @@ export function StageTopbar({
   setPanel,
   history,
   showScore,
+  adjScopeNote = '',
   tickStore,
   computeAdjacency,
   adjDataKey,
@@ -187,6 +188,7 @@ export function StageTopbar({
             dataKey={adjDataKey}
             active={highlightGaps}
             onToggle={onToggleGaps}
+            scopeNote={adjScopeNote}
           />
         )}
         <button

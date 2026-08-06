@@ -2,7 +2,7 @@ import { lazy, memo, Suspense } from 'react';
 import { fmtArea, distUnit, rootContainer, instanceLabel } from '../../compute.js';
 import { edgeGap, linkSatisfied } from '../../adjacency.js';
 import { hullOfDiscs, smoothHullPath, filterCss, polygonPath, polyBounds, polygonArea } from '../../geometry.js';
-import { darkHex, labelInk } from '../../viz.js';
+import { darkHex, labelInk, pocheInk } from '../../viz.js';
 import { fitLabel, measureText } from '../../textfit.js';
 import { TickLayer } from '../../hooks/useTick.js';
 import { boxExtents } from './scenes.js';
@@ -29,18 +29,42 @@ const EMPTY_MAP = new Map();
  * Memoized: labels re-render (and re-fit) only when their own props change,
  * not on every sim tick.
  */
-const BubbleLabel = memo(function BubbleLabel({ label, r, areaStr, ink }) {
+const BubbleLabel = memo(function BubbleLabel({ label, r, areaStr, ink, zoom = 1 }) {
   const baseSize = Math.max(9, Math.min(14, r / 3.2));
   const maxW     = Math.max(r * 1.65, 28);
+
+  // Labels are FITTED to the room's geometry (maxW is derived from r), so their
+  // size has to stay in world units or the fit breaks. But because the whole
+  // canvas scales with the camera, that also meant a label grew without limit
+  // as you zoomed: measured across a 0.899×–3.429× range, one label's block ran
+  // 38.5px → 145.7px on screen. Text is annotation, not geometry, so past 100%
+  // we scale it back down by the zoom to hold a constant on-screen size.
+  //
+  // Clamped to `zoom >= 1` deliberately: compensating below 100% would make the
+  // label grow in world units while its bubble shrank, and it would spill out.
+  // Scaling about the label's own origin keeps it centred and carries the
+  // leading and the mono area tag with it.
+  const shrink = 1 / Math.max(1, zoom);
+
+  // Declutter: a room drawn smaller than ~18px across cannot carry a legible
+  // label, and at metric scales there are many of them — in Master plan at
+  // 1:1000 every room fell into the "below the circle" branch, so a dozen
+  // labels stacked over each other around a cluster of dots. The room keeps
+  // its tooltip and its rail row; the canvas just stops shouting.
+  if (r * zoom < 9) return null;
 
   // Tiny bubble: single line sitting below the circle — on the CANVAS, not on
   // the room's fill, so it takes the theme text colour + halo (CSS `.below`),
   // never the colour-tinted ink (dark ink vanished on the dark canvas).
   if (r <= 13) {
+    // Translate to the rim FIRST, then scale, so the gap under the bubble stays
+    // put instead of being pulled toward the centre.
     return (
-      <text textAnchor="middle" dy={r + 11} className="bubble-name below" style={{ fontSize: baseSize }}>
-        {label}
-      </text>
+      <g transform={`translate(0 ${r}) scale(${shrink})`}>
+        <text textAnchor="middle" dy={11} className="bubble-name below" style={{ fontSize: baseSize }}>
+          {label}
+        </text>
+      </g>
     );
   }
 
@@ -53,7 +77,9 @@ const BubbleLabel = memo(function BubbleLabel({ label, r, areaStr, ink }) {
   // First tspan dy: raise so the whole block is vertically centred at y=0.
   const startDy    = -((totalLines - 1) * lineH) / 2 + fontSize * 0.35;
 
-  return (
+  // The label block is centred on the bubble's origin, so a plain scale about
+  // that origin shrinks it in place — no re-centring maths needed.
+  const body = (
     <text textAnchor="middle" className="bubble-name" style={{ fontSize, fill: ink }}>
       {lines.map((ln, i) => (
         <tspan key={i} x="0" dy={i === 0 ? startDy : lineH}>{ln}</tspan>
@@ -63,6 +89,7 @@ const BubbleLabel = memo(function BubbleLabel({ label, r, areaStr, ink }) {
       )}
     </text>
   );
+  return shrink === 1 ? body : <g transform={`scale(${shrink})`}>{body}</g>;
 });
 
 /**
@@ -79,6 +106,11 @@ const BubbleLabel = memo(function BubbleLabel({ label, r, areaStr, ink }) {
 export default function DiagramCanvas({
   tickStore,
   theme = 'dark',
+  // View zoom. Interactive handles divide their radii by it so their SCREEN
+  // size is constant: geometry scales with the camera, grab targets must not.
+  zoom = 1,
+  // Measured height of the floating chrome, so canvas annotations can avoid it.
+  chromeH = 112,
   // modes & view
   stackMode,
   is3D,
@@ -261,6 +293,18 @@ export default function DiagramCanvas({
                 </div>
               )}
               <div className="stage-3d-hint">Drag to orbit · scroll to zoom · right-drag to pan · click a room to select it</div>
+              {/* The 3-D view carries a north rose but had nothing to say about
+                  scale. A single scale bar is meaningless under perspective —
+                  distance varies with depth — so state that instead of implying
+                  measurability by staying silent. The axonometric presets DO
+                  hold one scale, so they say so. Same idiom as Concept's NTS. */}
+              <div className="scale-note-3d">
+                {cam3d === 'persp' ? (
+                  <><b>NTS</b> perspective — not to scale</>
+                ) : (
+                  <><b>NTS</b> axonometric — scale varies with view</>
+                )}
+              </div>
             </div>
           )}
           <svg
@@ -473,8 +517,25 @@ export default function DiagramCanvas({
                   out.push(<path key={`${cls}:${g}`} d={d} className={`group-hull ${cls}${dim}`} fill={color} stroke={color} />);
                   if (withLabel) {
                     const top = hull.reduce((m, p) => (p.y < m.y ? p : m), hull[0]);
+                    // Keep the label clear of the floating stage chrome. The
+                    // toolbar and environment switcher are HTML overlaying the
+                    // canvas, so a hull whose top edge sits high in the viewport
+                    // put its name underneath them — "MAIN LIBRARY" was clipped
+                    // by the Colour cluster in both themes. The chrome band is a
+                    // fixed number of SCREEN px, hence the ÷ zoom.
+                    // +24 for the glyph box: `y` is the BASELINE, so clamping to
+                    // the chrome's bottom edge alone still let the ascender
+                    // overlap it by a few pixels.
+                    const minY = originY + (chromeH + 24) / zoom;
                     out.push(
-                      <text key={`lbl:${g}`} x={top.x} y={top.y - 4} textAnchor="middle" className={`hull-label${dim}`} fill={labelInk(color, theme)}>
+                      <text
+                        key={`lbl:${g}`}
+                        x={top.x}
+                        y={Math.max(top.y - 4, minY)}
+                        textAnchor="middle"
+                        className={`hull-label${dim}`}
+                        fill={labelInk(color, theme)}
+                      >
                         {g}
                       </text>
                     );
@@ -573,7 +634,7 @@ export default function DiagramCanvas({
                 return (
                   <g key={`slbl:${o.key}`} transform={`translate(${p.x}, ${p.y})`} className="bubble stacked">
                     <title>{label} — {fmtArea(ea(o.s), units)}</title>
-                    <BubbleLabel label={label} r={p.r * 0.92} areaStr={fmtArea(ea(o.s), units)} ink={labelInk(colorOf(o.s), theme)} />
+                    <BubbleLabel zoom={zoom} label={label} r={p.r * 0.92} areaStr={fmtArea(ea(o.s), units)} ink={labelInk(colorOf(o.s), theme)} />
                   </g>
                 );
               })}
@@ -679,7 +740,7 @@ export default function DiagramCanvas({
               const fillOpEff = outline ? 0 : flat ? (isSel ? 1 : 0.95) : fillOp;
               const swEff = outline ? sw + 1 : sw;
               const strokeColor = flat ? (isSel ? '#ffffff' : darkHex(baseColor, 0.4)) : baseColor;
-              const inkColor = flat ? darkHex(baseColor, 0.62) : undefined;
+              const inkColor = flat ? pocheInk(baseColor) : undefined;
               const shapeFilter = sketch ? 'url(#sketchy)' : undefined;
               return (
                 <g
@@ -734,10 +795,10 @@ export default function DiagramCanvas({
                   ) : rot ? (
                     <g transform={`rotate(${-rot})`}>
                       {/* The env badge below already states the drawn area — write it once. */}
-                      <BubbleLabel label={`${s.name}${count > 1 ? ` ${instanceLabel(i)}` : ''}`} r={r} areaStr={envInfo ? null : fmtArea(ea(s), units)} ink={inkColor} />
+                      <BubbleLabel zoom={zoom} label={`${s.name}${count > 1 ? ` ${instanceLabel(i)}` : ''}`} r={r} areaStr={envInfo ? null : fmtArea(ea(s), units)} ink={inkColor} />
                     </g>
                   ) : (
-                    <BubbleLabel
+                    <BubbleLabel zoom={zoom}
                       label={`${s.name}${count > 1 ? ` ${instanceLabel(i)}` : ''}`}
                       r={r}
                       areaStr={envInfo ? null : fmtArea(ea(s), units)}
@@ -790,11 +851,12 @@ export default function DiagramCanvas({
                       rotation, so it always points to the shape's "up". */}
                   {canRotate && isSel && !editing && (() => {
                     const topY = poly ? pb.minY : -side / 2;
-                    const knobY = topY - 20;
+                    // Stem length and knob radius in screen px, not world units.
+                    const knobY = topY - 20 / zoom;
                     return (
                       <g className="rotate-handle" onPointerDown={(e) => onRotateHandleDown(e, o)}>
                         <line x1="0" y1={topY} x2="0" y2={knobY} className="rotate-stem" />
-                        <circle cx="0" cy={knobY} r="6" className="rotate-knob" />
+                        <circle cx="0" cy={knobY} r={6 / zoom} className="rotate-knob" />
                       </g>
                     );
                   })()}
@@ -805,18 +867,22 @@ export default function DiagramCanvas({
                       lock. Handles ride the box rotation. */}
                   {box && showResize && isSel && (
                     <g className="resize-handles">
-                      {[[-1, -1], [1, -1], [-1, 1], [1, 1]].map(([sx, sy]) => (
-                        <rect
-                          key={`${sx},${sy}`}
-                          className="resize-handle"
-                          x={(sx * bw) / 2 - 4}
-                          y={(sy * bh) / 2 - 4}
-                          width="8"
-                          height="8"
-                          style={{ cursor: sx * sy > 0 ? 'nwse-resize' : 'nesw-resize' }}
-                          onPointerDown={(e) => onResizeHandleDown(e, o, sx, sy)}
-                        />
-                      ))}
+                      {[[-1, -1], [1, -1], [-1, 1], [1, 1]].map(([sx, sy]) => {
+                        // Constant on-screen handle: 8px square whatever the zoom.
+                        const hs = 8 / zoom;
+                        return (
+                          <rect
+                            key={`${sx},${sy}`}
+                            className="resize-handle"
+                            x={(sx * bw) / 2 - hs / 2}
+                            y={(sy * bh) / 2 - hs / 2}
+                            width={hs}
+                            height={hs}
+                            style={{ cursor: sx * sy > 0 ? 'nwse-resize' : 'nesw-resize' }}
+                            onPointerDown={(e) => onResizeHandleDown(e, o, sx, sy)}
+                          />
+                        );
+                      })}
                       {effScale && (
                         <text className="dim-badge" x="0" y={-bh / 2 - 10} textAnchor="middle" transform={rot ? `rotate(${-rot})` : undefined}>
                           {(bw * effScale).toFixed(1)} × {(bh * effScale).toFixed(1)} {distUnit(units)}
@@ -879,7 +945,39 @@ export default function DiagramCanvas({
                 the envelope). The SEED dot re-plans the room — dragging it
                 saves the room's Concept pin. */}
             {interior &&
-              interior.map((b) => (
+              interior.map((b) => {
+                // Label collision cull. A per-cell size gate is not enough:
+                // neighbouring cells can each be "big enough" and still have
+                // their labels overlap, which is what turned one envelope into
+                // an unreadable clump of seven names. Claim label boxes
+                // largest-cell first and drop any that would collide with one
+                // already placed — the standard cartographic answer. Dropped
+                // rooms keep their tooltip, their seed dot and their rail row.
+                const labelled = (() => {
+                  const placed = [];
+                  const keep = new Set();
+                  const ordered = [...b.cells]
+                    .map((c) => ({ c, bb: polyBounds(c.poly) }))
+                    .sort((p, q) => (q.bb.maxX - q.bb.minX) * (q.bb.maxY - q.bb.minY)
+                                  - (p.bb.maxX - p.bb.minX) * (p.bb.maxY - p.bb.minY));
+                  for (const { c, bb } of ordered) {
+                    const w = bb.maxX - bb.minX;
+                    const h = bb.maxY - bb.minY;
+                    if (!(w * zoom > 46 && h * zoom > 30 && w > 30 && h > 24)) continue;
+                    // Reserve the WIDER of the wrapped text and the space the
+                    // fitter is allowed to use, plus room for the area line.
+                    // Underestimating here is what left labels still touching.
+                    const lw = Math.max(Math.min(w * 0.8, measureText(c.name, 10)), measureText(c.name, 10) * 0.6);
+                    const cx = (bb.minX + bb.maxX) / 2;
+                    const cy = (bb.minY + bb.maxY) / 2;
+                    const box = { x0: cx - lw / 2, x1: cx + lw / 2, y0: cy - 18, y1: cy + 18 };
+                    if (placed.some((p) => box.x0 < p.x1 && p.x0 < box.x1 && box.y0 < p.y1 && p.y0 < box.y1)) continue;
+                    placed.push(box);
+                    keep.add(c.key);
+                  }
+                  return keep;
+                })();
+                return (
                 <g key={`vor:${b.rootId}`} className="voronoi-layer">
                   {/* Circulation band: the envelope hatched underneath — the
                       shrunken cells leave it visible between the rooms. */}
@@ -917,10 +1015,18 @@ export default function DiagramCanvas({
                     // to the cell (same fitter the bubbles use), name block
                     // above centre and the area line below so neither collides
                     // with the seed dot. Slivers keep just their seed + tooltip.
+                    //
+                    // The size gates are in SCREEN pixels, not world units. In
+                    // world units alone a cell "large enough to label" at 1:1000
+                    // still rendered ~24px wide, so seven labels stacked into an
+                    // unreadable clump inside one envelope. A room too small to
+                    // read is better left to its tooltip than labelled over its
+                    // neighbours.
                     const cb = polyBounds(c.poly);
                     const cw = cb.maxX - cb.minX;
                     const chh = cb.maxY - cb.minY;
-                    const fit = cw > 30 && chh > 24
+                    const roomy = labelled.has(c.key);
+                    const fit = roomy && cw > 30 && chh > 24
                       ? fitLabel({ label: c.name, maxWidth: cw * 0.8, baseSize: 10, minSize: 7, maxLines: 2 })
                       : null;
                     const lineH = fit ? fit.fontSize * 1.12 : 0;
@@ -963,16 +1069,22 @@ click to select · drag to move the building · drag the dot to re-plan the room
                         )}
                         {/* Generous invisible hit ring — the 5px dot alone was a
                             fiddly drag target. It takes the pointer; the dot is
-                            purely visual. */}
-                        <circle className="voronoi-seed-hit" cx={c.seed.x} cy={c.seed.y} r="12" onPointerDown={(e) => onSeedDown(e, c)}>
+                            purely visual. Both radii are divided by the view
+                            zoom so they hold a constant on-screen size: at a
+                            fixed radius the hit ring measured 42.1px at 100%
+                            but only 21.6px zoomed out, under the 24px minimum
+                            target, so the handle got harder to grab exactly
+                            when the rooms were smallest. */}
+                        <circle className="voronoi-seed-hit" cx={c.seed.x} cy={c.seed.y} r={14 / zoom} onPointerDown={(e) => onSeedDown(e, c)}>
                           <title>{c.name} — drag to re-plan the room (saves its Concept pin)</title>
                         </circle>
-                        <circle className="voronoi-seed" cx={c.seed.x} cy={c.seed.y} r="5" fill={c.color} />
+                        <circle className="voronoi-seed" cx={c.seed.x} cy={c.seed.y} r={6 / zoom} fill={c.color} />
                       </g>
                     );
                   })}
                 </g>
-              ))}
+                );
+              })}
 
             {/* Rubber-band link preview — from the grabbed room to the cursor
                 while dragging with the Link tool. Read from a ref so it tracks
@@ -1003,14 +1115,44 @@ click to select · drag to move the building · drag the dot to re-plan the room
               )
             )}
 
-            {scaleBar && (
-              <g className="scale-bar" transform={`translate(${originX + 20}, ${originY + vb.h - 24})`}>
-                <rect x="-8" y="-16" width={scaleBar.len + 150} height="30" rx="4" className="scale-bar-bg" />
-                <line x1="0" y1="0" x2={scaleBar.len} y2="0" />
-                <line x1="0" y1="-5" x2="0" y2="5" />
-                <line x1={scaleBar.len} y1="-5" x2={scaleBar.len} y2="5" />
-                <text x={scaleBar.len + 8} y="4">
-                  {scaleBar.label} · {scaleLabelFor(effScale)}
+            {scaleBar && (() => {
+              // The BAR is world-scaled on purpose: it has to span a real
+              // distance, and BubbleTab already swaps to the next 1-2-5 value so
+              // it stays 90–260 screen px. Its CHROME is not — the label, tick
+              // heights and backing plate were in world units too, so they grew
+              // with the camera and the readout ballooned when zoomed in.
+              // Everything except the bar's length is divided by the zoom.
+              const k = 1 / zoom;
+              return (
+                <g className="scale-bar" transform={`translate(${originX + 20}, ${originY + vb.h - 24})`}>
+                  <rect x={-8 * k} y={-16 * k} width={scaleBar.len + 150 * k} height={30 * k} rx={4 * k} className="scale-bar-bg" />
+                  <line x1="0" y1="0" x2={scaleBar.len} y2="0" />
+                  <line x1="0" y1={-5 * k} x2="0" y2={5 * k} />
+                  <line x1={scaleBar.len} y1={-5 * k} x2={scaleBar.len} y2={5 * k} />
+                  <g transform={`translate(${scaleBar.len + 8 * k} ${4 * k}) scale(${k})`}>
+                    <text x="0" y="0">
+                      {scaleBar.label} · {scaleLabelFor(effScale)}
+                    </text>
+                  </g>
+                </g>
+              );
+            })()}
+
+            {/* Concept is scale-free by design (rooms are sized RELATIVE to the
+                largest, not to a metric scale), so it has no scale bar. Silence
+                was ambiguous though — nothing on the canvas said whether what
+                you were looking at could be measured. State it explicitly, the
+                way a drawing does. The exported concept sheet is already
+                labelled NTS; this makes the screen agree with the sheet. */}
+            {!scaleBar && !stackMode && !is3D && (
+              // Scaled by 1/zoom: this is chrome, not geometry. Without it the
+              // mark grew with the camera like the drawing did — at 195% it
+              // rendered roughly twice its intended size.
+              <g className="scale-bar nts" transform={`translate(${originX + 20}, ${originY + vb.h - 24}) scale(${1 / zoom})`}>
+                <rect x="-8" y="-16" width="132" height="30" rx="4" className="scale-bar-bg" />
+                <text x="0" y="4">
+                  <tspan className="nts-mark">NTS</tspan>
+                  <tspan dx="7">relative sizes</tspan>
                 </text>
               </g>
             )}
