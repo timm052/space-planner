@@ -115,7 +115,26 @@ router.put('/:id', (req, res) => {
   const project = requireProject(req, res);
   if (!project) return;
   const updates = {};
-  if ('units' in req.body) req.body.units = oneOf(req.body.units, VALID_UNITS, 'm2');
+  if ('units' in req.body) {
+    req.body.units = oneOf(req.body.units, VALID_UNITS, 'm2');
+    // INTERIM GUARD. Areas are stored as bare numbers interpreted in the
+    // project's units, so switching units today RELABELS them instead of
+    // converting: a 405 m² room reads "405 ft²" against a true 4,359.4 ft²,
+    // wrong by a factor of 10.76. Until storage is canonical (m² stored,
+    // converted at the input/display boundary), refuse the switch once a
+    // project has areas rather than silently corrupting every figure in it.
+    if (req.body.units !== project.units) {
+      const n =
+        db.prepare('SELECT COUNT(*) AS n FROM spaces WHERE project_id = ?').get(project.id).n +
+        db.prepare('SELECT COUNT(*) AS n FROM brief_spaces WHERE project_id = ?').get(project.id).n;
+      if (n > 0) {
+        return res.status(400).json({
+          error:
+            'Units cannot be changed once a project has areas — the stored figures would be relabelled, not converted. Set the units when you create the project.',
+        });
+      }
+    }
+  }
   if ('tolerance' in req.body) req.body.tolerance = clampNum(req.body.tolerance, 0, 1, 0.05);
   if ('grossing_target' in req.body) req.body.grossing_target = clampNum(req.body.grossing_target, 0, 1, 0.7);
   // Circulation allowance: nullable fraction (0..1); explicit null clears it.

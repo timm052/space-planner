@@ -21,6 +21,19 @@ function spaceCols() {
     .filter((n) => n !== 'id' && n !== 'project_id');
 }
 
+// The project-level parameters that DRIVE a scheme's areas. An option that
+// stores 16,092.8 m² but not the plot ratio that produced it does not
+// round-trip: load it while the live ratio is different and every formula room
+// immediately recomputes to the other number, silently discarding the figure
+// the option was saved to preserve. Varying one parameter and comparing is the
+// entire point of options, so the parameters travel with them.
+const PARAM_COLS = ['variables', 'grossing_target', 'circulation', 'units', 'tolerance'];
+
+function currentParams(projectId) {
+  const p = db.prepare(`SELECT ${PARAM_COLS.join(', ')} FROM projects WHERE id = ?`).get(projectId);
+  return p ?? null;
+}
+
 export function saveOption(projectId, name) {
   const spaces = db.prepare('SELECT * FROM spaces WHERE project_id = ? ORDER BY sort_order, id').all(projectId);
   if (spaces.length === 0) return { error: 'The design is empty — nothing to save' };
@@ -28,7 +41,7 @@ export function saveOption(projectId, name) {
   const roomCount = leafRows(spaces).length;
   const r = db
     .prepare('INSERT INTO design_options (project_id, name, room_count, net, data) VALUES (?, ?, ?, ?, ?)')
-    .run(projectId, (name || 'Option').trim(), roomCount, rowsNet(spaces), JSON.stringify({ spaces, adjacencies }));
+    .run(projectId, (name || 'Option').trim(), roomCount, rowsNet(spaces), JSON.stringify({ spaces, adjacencies, params: currentParams(projectId) }));
   logChange(projectId, 'design', (name || 'Option').trim(), 'option saved', null, `${roomCount} rooms`);
   return listOptions(projectId).find((o) => o.id === Number(r.lastInsertRowid));
 }
@@ -106,7 +119,20 @@ export function loadOption(projectId, optionId) {
     insAdj.run(projectId, sa, sb, a.inst_a ?? 0, a.inst_b ?? 0, a.strength || 'desired');
   }
 
+  // Restore the parameters BEFORE resolving, so formula rooms recompute against
+  // the option's own variables rather than snapping to whatever is live. Older
+  // options carry no params — they simply leave the live ones alone.
+  let paramsRestored = null;
+  if (target.params) {
+    const cols = PARAM_COLS.filter((c) => c in target.params);
+    if (cols.length) {
+      db.prepare(`UPDATE projects SET ${cols.map((c) => `${c} = ?`).join(', ')} WHERE id = ?`)
+        .run(...cols.map((c) => target.params[c] ?? null), projectId);
+      paramsRestored = cols;
+    }
+  }
+
   resolveAndPersist(projectId);
   logChange(projectId, 'design', opt.name, 'option loaded', null, `${updated} kept · ${added} added · ${deleted} removed`);
-  return { ok: true, added, updated, deleted, lostAreas };
+  return { ok: true, added, updated, deleted, lostAreas, paramsRestored };
 }

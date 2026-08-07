@@ -8,6 +8,8 @@
 //   • percents            15% * [Adult Collection]      (15% → 0.15)
 //   • project variables    @staff, @occupants           (plain numbers)
 //   • space references     [Reading Room]               (that space's TOTAL area)
+//                          [Reading Room].each          (its unit area)
+//                          [Reading Room].total         (explicit total)
 //   • functions            min max round ceil floor abs sum
 //
 // A leading '=' is optional and stripped. Space references resolve to the
@@ -53,11 +55,19 @@ function tokenize(src) {
       i = j;
       continue;
     }
-    if (c === '[') { // space reference
+    if (c === '[') { // space reference, optionally .each / .total
       const j = s.indexOf(']', i + 1);
       if (j === -1) throw new Error('Unclosed "[" in a space reference');
-      tokens.push({ t: 'ref', name: s.slice(i + 1, j).trim() });
-      i = j + 1;
+      const name = s.slice(i + 1, j).trim();
+      let k = j + 1;
+      let part = 'total'; // bare [Name] stays the TOTAL, for back-compat
+      const m = /^\.(each|total)/i.exec(s.slice(k));
+      if (m) {
+        part = m[1].toLowerCase();
+        k += m[0].length;
+      }
+      tokens.push({ t: 'ref', name, part });
+      i = k;
       continue;
     }
     if (/[A-Za-z_]/.test(c)) { // function name
@@ -91,7 +101,7 @@ function parse(tokens) {
     if (!tok) throw new Error('Unexpected end of formula');
     if (tok.t === 'num') { next(); return { k: 'num', value: tok.value }; }
     if (tok.t === 'var') { next(); return { k: 'var', name: tok.name }; }
-    if (tok.t === 'ref') { next(); return { k: 'ref', name: tok.name }; }
+    if (tok.t === 'ref') { next(); return { k: 'ref', name: tok.name, part: tok.part || 'total' }; }
     if (tok.t === 'fn') {
       next();
       expect('(');
@@ -175,7 +185,7 @@ export function evalFormula(src, scope = {}) {
         return Number(v);
       }
       case 'ref': {
-        const v = spaceArea(n.name);
+        const v = spaceArea(n.name, n.part || 'total');
         if (v == null || !Number.isFinite(v)) throw new Error(`Unknown space “[${n.name}]”`);
         return v;
       }
@@ -248,6 +258,7 @@ export function resolveBrief(spaces, variables = {}) {
 
   const leaves = spaces.filter(isLeaf);
   const leafById = new Map(leaves.map((s) => [s.id, s]));
+  const countOf = (s) => Math.max(1, s?.count || 1);
 
   // Literal leaves are known immediately; formula leaves resolve by fixpoint.
   const pending = new Set();
@@ -276,11 +287,22 @@ export function resolveBrief(spaces, variables = {}) {
     }
     return sum;
   };
-  const lookupArea = (name) => {
+  // `part` is 'total' (count × each — what a bare [Name] means, kept for
+  // back-compat) or 'each' (the unit area). The bare form silently returning
+  // the total is the trap: `5% * [Science laboratory]` on a ×6 room reads as
+  // 5% of one lab and resolves to 5% of six, which is a plausible wrong number
+  // rather than an error. `.each` / `.total` let a formula say which it meant.
+  const lookupArea = (name, part = 'total') => {
     const s = byName.get((name || '').trim().toLowerCase());
     if (!s) return undefined; // unknown reference
-    if (leafById.has(s.id)) return total.has(s.id) ? total.get(s.id) : null; // null = pending
-    return containerTotal(s); // container (null while pending)
+    if (leafById.has(s.id)) {
+      if (!total.has(s.id)) return null; // pending
+      const t = total.get(s.id);
+      return part === 'each' ? t / countOf(s) : t;
+    }
+    const t = containerTotal(s); // container (null while pending)
+    // A container has no "each" of its own; its rolled-up subtotal is both.
+    return t;
   };
 
   let progressed = true;
@@ -291,8 +313,8 @@ export function resolveBrief(spaces, variables = {}) {
       let unresolvedRef = false;
       const scope = {
         vars: variables,
-        spaceArea: (name) => {
-          const v = lookupArea(name);
+        spaceArea: (name, part) => {
+          const v = lookupArea(name, part);
           if (v === undefined) throw new Error(`Unknown space “[${name}]”`);
           if (v === null) { unresolvedRef = true; return 0; } // dependency pending
           return v;

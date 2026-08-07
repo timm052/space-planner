@@ -153,3 +153,52 @@ test('the count still multiplies a held area', () => {
   const { total } = resolveBrief(rows, {});
   assert.equal(total.get(1), 540);
 });
+
+// ---- [Space].each vs [Space].total --------------------------------------
+
+test('a bare [Space] reference still means the TOTAL (back-compat)', () => {
+  const rows = [
+    { id: 1, name: 'Science laboratory', count: 6, target_area: 90, parent_id: null },
+    { id: 2, name: 'Prep', count: 1, target_area: 0, area_formula: '=5% * [Science laboratory]', parent_id: null },
+  ];
+  const { each } = resolveBrief(rows, {});
+  assert.equal(each.get(2), 0.05 * 540); // 27
+});
+
+test('[Space].each takes the unit area, not the total', () => {
+  const rows = [
+    { id: 1, name: 'Science laboratory', count: 6, target_area: 90, parent_id: null },
+    { id: 2, name: 'Prep', count: 1, target_area: 0, area_formula: '=5% * [Science laboratory].each', parent_id: null },
+  ];
+  const { each } = resolveBrief(rows, {});
+  assert.equal(each.get(2), 0.05 * 90); // 4.5 — 5% of ONE lab
+});
+
+test('[Space].total is the explicit form of the bare reference', () => {
+  const rows = [
+    { id: 1, name: 'Lab', count: 4, target_area: 25, parent_id: null },
+    { id: 2, name: 'A', count: 1, target_area: 0, area_formula: '=[Lab].total', parent_id: null },
+    { id: 3, name: 'B', count: 1, target_area: 0, area_formula: '=[Lab]', parent_id: null },
+  ];
+  const { each } = resolveBrief(rows, {});
+  assert.equal(each.get(2), 100);
+  assert.equal(each.get(3), 100);
+});
+
+test('.each on a count-1 room equals its total', () => {
+  const rows = [
+    { id: 1, name: 'Hall', count: 1, target_area: 900, parent_id: null },
+    { id: 2, name: 'X', count: 1, target_area: 0, area_formula: '=[Hall].each', parent_id: null },
+  ];
+  assert.equal(resolveBrief(rows, {}).each.get(2), 900);
+});
+
+test('an unknown suffix is a parse error, not a silent total', () => {
+  const rows = [
+    { id: 1, name: 'Lab', count: 2, target_area: 10, parent_id: null },
+    { id: 2, name: 'X', count: 1, target_area: 5, area_formula: '=[Lab].average', parent_id: null },
+  ];
+  const { errors, each } = resolveBrief(rows, {});
+  assert.ok(errors.has(2));
+  assert.equal(each.get(2), 5); // holds its last good area
+});

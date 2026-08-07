@@ -912,3 +912,63 @@ test('a broken formula is refused and the last good area survives', async () => 
   assert.equal(after.target_area, 180); // not 0
   assert.equal(after.area_formula, null);
 });
+
+test('units cannot be switched once a project has areas', async () => {
+  const id = await newProject();
+  // Empty project: fine, nothing to mislabel.
+  assert.equal((await api('PUT', `/api/projects/${id}`, { units: 'ft2' })).status, 200);
+  assert.equal((await api('PUT', `/api/projects/${id}`, { units: 'm2' })).status, 200);
+  await api('POST', `/api/projects/${id}/spaces`, { name: 'Room', count: 1, target_area: 405 });
+  // With areas present the switch would relabel 405 m² as "405 ft²" — refused.
+  const blocked = await api('PUT', `/api/projects/${id}`, { units: 'ft2' });
+  assert.equal(blocked.status, 400);
+  assert.match(blocked.body.error, /relabelled, not converted/);
+  const { body } = await api('GET', `/api/projects/${id}`);
+  assert.equal(body.project.units, 'm2');
+  // A PUT that does not touch units is unaffected.
+  assert.equal((await api('PUT', `/api/projects/${id}`, { stage: 'On Site' })).status, 200);
+});
+
+// ---- options carry the parameters that drive them ------------------------
+
+test('an option restores the variables its areas were computed from', async () => {
+  const id = await newProject();
+  await api('PUT', `/api/projects/${id}`, { variables: JSON.stringify({ site_area: 40232, plot_ratio: 0.8 }) });
+  const room = await api('POST', `/api/projects/${id}/spaces`, { name: 'Lots', count: 1, target_area: 1 });
+  await api('PUT', `/api/spaces/${room.body.id}`, { area_formula: '=@site_area * @plot_ratio * 0.5' });
+  // Resolved areas are stored rounded to 3 dp, so compare against that.
+  const round3 = (n) => Math.round(n * 1000) / 1000;
+  const areaOf = async () => (await api('GET', `/api/projects/${id}`)).body.spaces.find((s) => s.id === room.body.id).target_area;
+  assert.equal(await areaOf(), round3(40232 * 0.8 * 0.5)); // 16092.8
+
+  const optA = await api('POST', `/api/projects/${id}/options`, { name: 'A — PR 0.8' });
+  assert.equal(optA.status, 201);
+
+  // Vary the control: the same formula now yields a different area.
+  await api('PUT', `/api/projects/${id}`, { variables: JSON.stringify({ site_area: 40232, plot_ratio: 0.6 }) });
+  assert.equal(await areaOf(), round3(40232 * 0.6 * 0.5)); // 12069.6
+
+  // Loading A must bring its plot ratio back with it, or the formula instantly
+  // recomputes to 0.6 and the option's own figure is discarded.
+  const load = await api('POST', `/api/projects/${id}/options/${optA.body.id}/load`, {});
+  assert.equal(load.status, 200);
+  assert.ok(load.body.paramsRestored.includes('variables'));
+  assert.equal(await areaOf(), 16092.8);
+  const { body } = await api('GET', `/api/projects/${id}`);
+  assert.equal(JSON.parse(body.project.variables).plot_ratio, 0.8);
+});
+
+test('an option saved before params existed leaves the live ones alone', async () => {
+  const id = await newProject();
+  await api('POST', `/api/projects/${id}/spaces`, { name: 'Room', count: 1, target_area: 50 });
+  const opt = await api('POST', `/api/projects/${id}/options`, { name: 'Legacy' });
+  // Simulate an older payload with no params key.
+  const row = db.prepare('SELECT data FROM design_options WHERE id = ?').get(opt.body.id);
+  const data = JSON.parse(row.data);
+  delete data.params;
+  db.prepare('UPDATE design_options SET data = ? WHERE id = ?').run(JSON.stringify(data), opt.body.id);
+  await api('PUT', `/api/projects/${id}`, { grossing_target: 0.55 });
+  const load = await api('POST', `/api/projects/${id}/options/${opt.body.id}/load`, {});
+  assert.equal(load.body.paramsRestored, null);
+  assert.equal((await api('GET', `/api/projects/${id}`)).body.project.grossing_target, 0.55);
+});
