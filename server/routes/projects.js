@@ -3,6 +3,7 @@ import { oneOf, clampNum } from '../validate.js';
 import { db } from '../db.js';
 import { publicProject, IMAGE_META_COLS } from '../serialize.js';
 import { resolveAllAndPersist } from '../brief.js';
+import { blockingReason, convertProjectAreas } from '../units.js';
 
 const router = Router();
 
@@ -115,23 +116,21 @@ router.put('/:id', (req, res) => {
   const project = requireProject(req, res);
   if (!project) return;
   const updates = {};
+  // A units change CONVERTS every stored area rather than relabelling it.
+  // Relabelling is what made a 405 m² room read "405 ft²" against a true
+  // 4,359.4 — the whole schedule wrong by 10.76×. Converted here, before the
+  // column is written, so a failure leaves the project in its old units with
+  // its old numbers rather than half-way between the two.
+  let unitConversion = null;
   if ('units' in req.body) {
     req.body.units = oneOf(req.body.units, VALID_UNITS, 'm2');
-    // INTERIM GUARD. Areas are stored as bare numbers interpreted in the
-    // project's units, so switching units today RELABELS them instead of
-    // converting: a 405 m² room reads "405 ft²" against a true 4,359.4 ft²,
-    // wrong by a factor of 10.76. Until storage is canonical (m² stored,
-    // converted at the input/display boundary), refuse the switch once a
-    // project has areas rather than silently corrupting every figure in it.
     if (req.body.units !== project.units) {
-      const n =
-        db.prepare('SELECT COUNT(*) AS n FROM spaces WHERE project_id = ?').get(project.id).n +
-        db.prepare('SELECT COUNT(*) AS n FROM brief_spaces WHERE project_id = ?').get(project.id).n;
-      if (n > 0) {
-        return res.status(400).json({
-          error:
-            'Units cannot be changed once a project has areas — the stored figures would be relabelled, not converted. Set the units when you create the project.',
-        });
+      const blocked = blockingReason(project.id);
+      if (blocked) return res.status(400).json({ error: blocked });
+      try {
+        unitConversion = convertProjectAreas(project.id, project.units, req.body.units);
+      } catch (err) {
+        return res.status(500).json({ error: `Unit conversion failed, nothing was changed: ${err.message}` });
       }
     }
   }
@@ -168,7 +167,8 @@ router.put('/:id', (req, res) => {
   }
   // Editing variables re-derives formula areas in BOTH room trees.
   if ('variables' in updates) resolveAllAndPersist(project.id);
-  res.json(publicProject(getProjectStmt.get(project.id)));
+  const out = publicProject(getProjectStmt.get(project.id));
+  res.json(unitConversion ? { ...out, unitConversion } : out);
 });
 
 // DELETE /api/projects/:id

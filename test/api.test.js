@@ -913,20 +913,77 @@ test('a broken formula is refused and the last good area survives', async () => 
   assert.equal(after.area_formula, null);
 });
 
-test('units cannot be switched once a project has areas', async () => {
+test('switching units CONVERTS every stored area instead of relabelling it', async () => {
   const id = await newProject();
-  // Empty project: fine, nothing to mislabel.
+  const room = await api('POST', `/api/projects/${id}/spaces`, { name: 'Room', count: 1, target_area: 405 });
+  const brief = await api('POST', `/api/projects/${id}/brief-spaces`, { name: 'Room', count: 1, target_area: 405 });
+  const snap = await api('POST', `/api/projects/${id}/snapshots`, {
+    label: 'SD', taken_at: '2026-08-08', gross_area: 5720, areas: { [room.body.id]: 396 },
+  });
+  assert.equal(snap.status, 201);
+
+  const put = await api('PUT', `/api/projects/${id}`, { units: 'ft2' });
+  assert.equal(put.status, 200);
+  assert.equal(put.body.units, 'ft2');
+  assert.equal(put.body.unitConversion.spaces, 1);
+
+  const { body } = await api('GET', `/api/projects/${id}`);
+  // 405 m² is 4,359.4 ft² — NOT "405 ft²".
+  assert.ok(Math.abs(body.spaces.find((s) => s.id === room.body.id).target_area - 4359.381) < 0.01);
+  assert.ok(Math.abs(body.brief_spaces.find((s) => s.id === brief.body.id).target_area - 4359.381) < 0.01);
+  const sn = body.snapshots[0];
+  assert.ok(Math.abs(sn.gross_area - 61569.5) < 1); // 5,720 m²
+  assert.ok(Math.abs(sn.areas[room.body.id] - 4262.5) < 1); // 396 m²
+});
+
+test('a units round-trip returns the original figures', async () => {
+  const id = await newProject();
+  const room = await api('POST', `/api/projects/${id}/spaces`, { name: 'Hall', count: 1, target_area: 900 });
+  await api('PUT', `/api/projects/${id}`, { units: 'ft2' });
+  await api('PUT', `/api/projects/${id}`, { units: 'm2' });
+  const { body } = await api('GET', `/api/projects/${id}`);
+  assert.equal(body.spaces.find((s) => s.id === room.body.id).target_area, 900);
+});
+
+test('conversion is refused — with a reason — when formulas or variables are in play', async () => {
+  const id = await newProject();
+  await api('POST', `/api/projects/${id}/spaces`, { name: 'Room', count: 1, target_area: 100 });
+  await api('PUT', `/api/projects/${id}`, { variables: JSON.stringify({ students: 900 }) });
+  const blockedByVars = await api('PUT', `/api/projects/${id}`, { units: 'ft2' });
+  assert.equal(blockedByVars.status, 400);
+  assert.match(blockedByVars.body.error, /variables/i);
+  assert.equal((await api('GET', `/api/projects/${id}`)).body.project.units, 'm2'); // untouched
+
+  // With the variables gone but a formula left, the formula is the blocker.
+  const id2 = await newProject();
+  const r = await api('POST', `/api/projects/${id2}/spaces`, { name: 'Room', count: 1, target_area: 100 });
+  await api('PUT', `/api/spaces/${r.body.id}`, { area_formula: '=50 * 2' });
+  const blockedByFormula = await api('PUT', `/api/projects/${id2}`, { units: 'ft2' });
+  assert.equal(blockedByFormula.status, 400);
+  assert.match(blockedByFormula.body.error, /formula/i);
+});
+
+test('an empty project switches units freely', async () => {
+  const id = await newProject();
   assert.equal((await api('PUT', `/api/projects/${id}`, { units: 'ft2' })).status, 200);
   assert.equal((await api('PUT', `/api/projects/${id}`, { units: 'm2' })).status, 200);
-  await api('POST', `/api/projects/${id}/spaces`, { name: 'Room', count: 1, target_area: 405 });
-  // With areas present the switch would relabel 405 m² as "405 ft²" — refused.
-  const blocked = await api('PUT', `/api/projects/${id}`, { units: 'ft2' });
-  assert.equal(blocked.status, 400);
-  assert.match(blocked.body.error, /relabelled, not converted/);
-  const { body } = await api('GET', `/api/projects/${id}`);
-  assert.equal(body.project.units, 'm2');
-  // A PUT that does not touch units is unaffected.
   assert.equal((await api('PUT', `/api/projects/${id}`, { stage: 'On Site' })).status, 200);
+});
+
+test('areas frozen inside revisions and options convert too', async () => {
+  const id = await newProject();
+  await api('POST', `/api/projects/${id}/brief-spaces`, { name: 'Room', count: 1, target_area: 405 });
+  await api('POST', `/api/projects/${id}/spaces`, { name: 'Room', count: 1, target_area: 405 });
+  const rev = await api('POST', `/api/projects/${id}/brief-revisions`, { label: 'Rev A' });
+  const opt = await api('POST', `/api/projects/${id}/options`, { name: 'Option A' });
+  await api('PUT', `/api/projects/${id}`, { units: 'ft2' });
+  const revs = await api('GET', `/api/projects/${id}/brief-revisions`);
+  assert.ok(Math.abs(revs.body.find((x) => x.id === rev.body.id).net - 4359.381) < 0.01);
+  const opts = await api('GET', `/api/projects/${id}/options`);
+  assert.ok(Math.abs(opts.body.find((x) => x.id === opt.body.id).net - 4359.381) < 0.01);
+  // …and loading the option must not drag the project back to m².
+  await api('POST', `/api/projects/${id}/options/${opt.body.id}/load`, {});
+  assert.equal((await api('GET', `/api/projects/${id}`)).body.project.units, 'ft2');
 });
 
 // ---- options carry the parameters that drive them ------------------------

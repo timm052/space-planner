@@ -165,6 +165,14 @@ which controls exist where.
   and the PDF. If you need a size, import it — don't re-derive it in a renderer.
 - **Scene primitives carry semantic state** (`selected`, `dim`, `related`,
   `tight`), never colours. Theming stays in CSS.
+- **Areas are stored in the project's units, so a units change must CONVERT.**
+  A ft² project storing 4,359 and displaying "4,359 ft²" is correct; what was
+  wrong was the switch, which relabelled 405 m² as "405 ft²" — every figure out
+  by 10.76×. `server/units.js` converts both room trees, milestone areas and
+  gross figures, and the areas frozen inside revisions and options. It refuses a
+  project with formulas or variables, because their literals are unit-bearing
+  (`0.45` is m² per student) and nothing records which numbers are areas —
+  guessing there is exactly the silent corruption this exists to prevent.
 - **Markup is not geometry.** Redline ink lives in its own table, never in
   `spaces`, and nothing that totals the programme can reach it — a mark can
   never change an area, a total or a compliance figure. It renders over the
