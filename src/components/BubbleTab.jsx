@@ -4,7 +4,7 @@ import { fmtArea, areaToM2, distToMeters, distUnit, leafSpaces, rootContainer, i
 import { STATUS_LABEL, CATEGORY_FALLBACK, categoryColorWarning } from '../viz.js';
 // pdfExport is lazy-loaded on demand — keeps jsPDF out of the initial bundle.
 import { useHistory } from '../useHistory.js';
-import { SCALE_PRESETS, ratioToScale, scaleToRatio, zoomAbout } from '../scale.js';
+import { SCALE_PRESETS, ratioToScale, scaleToRatio, zoomAbout, nearestPreset } from '../scale.js';
 import { pinsOf, filterCss, parsePoly, regularPolygon, rectanglePolygon, outlinePoints, polygonArea, polygonCentroid, hullOfDiscs, simplifyOutline, normalizePolygon, balanceCellWeights, pointInPolygon, polygonSpansAtY } from '../geometry.js';
 import { pinPatch } from '../pins.js';
 import { edgeGap, adjacencyScore, linkSatisfied, closestInstancePair, aggregateByRoot, linkKey, CONCEPT_THRESHOLDS_U } from '../adjacency.js';
@@ -30,6 +30,7 @@ import { useCategoryColors } from '../hooks/useCategoryColors.js';
 import { usePolyEditing } from '../hooks/usePolyEditing.js';
 import { useImageLayers } from '../hooks/useImageLayers.js';
 import { useMarkup } from '../hooks/useMarkup.js';
+import { useMeasure } from '../hooks/useMeasure.js';
 import { scaleStroke, parseStroke, bboxOf as markupBbox, NO_MARKUP, PEN_COLORS, PEN_WIDTHS } from '../markup.js';
 import { bakeImage } from '../imageUtils.js';
 import { useTheme } from '../theme.jsx';
@@ -598,6 +599,12 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
     project, markups, env, level: markupLevel, active: sel.tool === 'markup',
     toSvgCoords, onChanged, setError, setTick, history,
   });
+
+  // Measure / dimension tool. Reads the drawing, never writes to it.
+  const {
+    liveRef: measureRef, committed: measureDone, measureLabel,
+    measurePointerDown, measurePointerMove, measurePointerUp, measureCancel,
+  } = useMeasure({ active: sel.tool === 'measure', toSvgCoords, effScale, units, setTick });
   useEffect(() => setPref('floorView', 'all'), [project.id]); // eslint-disable-line react-hooks/exhaustive-deps
   // Building's primary state is editing ONE floor: entering it (or opening a
   // multi-level project in it) lands on the ground floor; "all"/stacked are opt-in
@@ -718,6 +725,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
       } else if (e.key.toLowerCase() === 'd' && !mod && !is3DRef.current) {
         // Markup is a 2-D redline; the 3-D view has no plan to draw over.
         applySel((s) => linking.setTool(s, 'markup'));
+      } else if (e.key.toLowerCase() === 'm' && !mod && !is3DRef.current) {
+        applySel((s) => linking.setTool(s, 'measure'));
       } else if (e.key.toLowerCase() === 'a' && !mod && caps.autoLayout) {
         runAutoLayout(); // authored Master plan / Building have no auto-layout
       } else if (e.key === 'Tab' && !mod) {
@@ -2063,6 +2072,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
     // when it is off. Deliberately after the right/middle-button branches:
     // panning must keep working while you are drawing.
     if (markupPointerDown(e)) return;
+    if (measurePointerDown(e)) return; // dimension drag — useMeasure
     if (layerPointerDown(e)) return; // scale-click / move / rotate a layer — useImageLayers
     if (panActive) {
       if (!dragRef.current) panRef.current = { sx: e.clientX, sy: e.clientY, vx: view.x, vy: view.y };
@@ -2148,6 +2158,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
       moveRef.current = null;
     }
     if (markupCancel()) had = true;
+    if (measureCancel()) had = true;
     if (polyCancel()) had = true;
     const drag = dragRef.current;
     if (drag) {
@@ -2215,6 +2226,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
     if (pinchRef.current) return void pinchMove(e); // two fingers own the view
     if (pointersRef.current.has(e.pointerId)) pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (markupPointerMove(e)) return; // freehand redline — handled by useMarkup
+    if (measurePointerMove(e)) return; // dimension drag — handled by useMeasure
     if (polyPointerMove(e)) return; // vertex drag — handled by usePolyEditing
     if (rotPointerMove(e)) return; // rotating a placed footprint
     if (resizePointerMove(e)) return; // area-lock resizing a building box
@@ -2374,6 +2386,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
       flushMove();
     }
     if (markupPointerUp()) return; // redline release — commits the stroke
+    if (measurePointerUp()) return; // dimension release — keeps the reading on screen
     if (polyPointerUp()) return; // vertex drag release — handled by usePolyEditing
     if (await rotPointerUp()) return; // rotate release — persist plan_json rot
     if (await resizePointerUp()) return; // box resize release — persist w/h to block_json
@@ -3265,6 +3278,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
         stage: project.stage,
         sheet,
         scaleLabel: ratioLabel,
+        // "Auto" fits the drawing to the sheet, which lands on ratios like
+        // 1:1159 — a print nobody can scale off with a rule. It is also the
+        // DEFAULT, so it ships by accident. The sheet has to say so itself:
+        // the "≈" in the label is far too easy to read past.
+        nonStandardScale: metric && !nearestPreset(scaleToRatio(effScale), units).isStandard,
         date: new Date().toISOString().slice(0, 10),
       },
     };
@@ -4020,6 +4038,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
               onion={onion}
               onToggleOnion={() => setPref('onion', !onion)}
               showMarkup={!is3D}
+              showMeasure={!is3D}
               markupPen={markupPen}
               onMarkupPen={setMarkupPen}
               penColors={PEN_COLORS}
@@ -4274,6 +4293,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
             scaleLabelFor={scaleLabelFor}
             markupStrokes={markupStrokes}
             inkRef={inkRef}
+            measureRef={measureRef}
+            measureDone={measureDone}
+            measureLabel={measureLabel}
             onSvgPointerDown={onSvgPointerDown}
             onSvgContextMenu={(e) => {
               // The canvas owns right-click (pan / room menu) — never the browser menu.

@@ -360,6 +360,26 @@
 }
 .tool-dock-sep { height: 1px; background: var(--glass-border); margin: 1px 4px; }
 
+/* ---- Measure tool ------------------------------------------------------ */
+/* Screen-space, unlike markup: a dimension is an instrument reading the
+   drawing, so its line weight must not change with the camera. */
+.measure-layer { pointer-events: none; }
+.measure-line,
+.measure-tick {
+  stroke: var(--accent2);
+  stroke-width: 1.25;
+  vector-effect: non-scaling-stroke;
+  stroke-linecap: round;
+}
+.measure-line { stroke-dasharray: 5 3; }
+.measure-chip { fill: var(--panel); stroke: var(--accent2); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.measure-text {
+  fill: var(--text);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px;
+  dominant-baseline: middle;
+}
+
 /* ---- Redline markup ---------------------------------------------------- */
 /* Ink is drawn in DIAGRAM UNITS and deliberately does NOT use
    vector-effect: non-scaling-stroke. Interactive chrome (handles, guides) is

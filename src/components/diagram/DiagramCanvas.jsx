@@ -179,6 +179,10 @@ export default function DiagramCanvas({
   // a point per pointermove and must not re-render the shell on each).
   markupStrokes = [],
   inkRef = null,
+  // Measure tool: the in-flight drag (a ref, per-move) and the last reading.
+  measureRef = null,
+  measureDone = null,
+  measureLabel = null,
   // scene builders & geometry helpers
   makeStackScene,
   make3DScene,
@@ -1270,6 +1274,37 @@ click to select · drag to move the building · drag the dot to re-plan the room
                 )}
               </g>
             )}
+
+            {/* Dimension line — over everything, inert to the pointer, and
+                drawn in SCREEN space (non-scaling stroke, /zoom text) because
+                it is an instrument reading the drawing, not part of it. */}
+            {(() => {
+              const m = measureRef?.current || measureDone;
+              if (!m || !measureLabel) return null;
+              const { text } = measureLabel(m.a, m.b);
+              const mx = (m.a.x + m.b.x) / 2;
+              const my = (m.a.y + m.b.y) / 2;
+              const ang = (Math.atan2(m.b.y - m.a.y, m.b.x - m.a.x) * 180) / Math.PI;
+              // Keep the label upright whichever way the drag went.
+              const flip = ang > 90 || ang < -90 ? 180 : 0;
+              const tick = 5 / zoom;
+              const nx = -(m.b.y - m.a.y);
+              const ny = m.b.x - m.a.x;
+              const nl = Math.hypot(nx, ny) || 1;
+              const ux = (nx / nl) * tick;
+              const uy = (ny / nl) * tick;
+              return (
+                <g className="measure-layer" pointerEvents="none">
+                  <line className="measure-line" x1={m.a.x} y1={m.a.y} x2={m.b.x} y2={m.b.y} />
+                  <line className="measure-tick" x1={m.a.x - ux} y1={m.a.y - uy} x2={m.a.x + ux} y2={m.a.y + uy} />
+                  <line className="measure-tick" x1={m.b.x - ux} y1={m.b.y - uy} x2={m.b.x + ux} y2={m.b.y + uy} />
+                  <g transform={`translate(${mx} ${my}) rotate(${ang + flip}) scale(${1 / zoom})`}>
+                    <rect className="measure-chip" x={-30} y={-19} width={60} height={15} rx={3} />
+                    <text className="measure-text" x={0} y={-8} textAnchor="middle">{text}</text>
+                  </g>
+                </g>
+              );
+            })()}
 
             {marquee && (
               <rect

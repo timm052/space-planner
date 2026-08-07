@@ -340,5 +340,12 @@ function renderSheet(doc, scene, { page, mmPerUnit, reduced }) {
   if (reduced) {
     doc.setTextColor(180, 60, 50);
     doc.text(`reduced ×${(1 / reduced).toFixed(2)} to fit`, MARGIN + availW - 4, ty + 19, { align: 'right' });
+  } else if (t.nonStandardScale) {
+    // Say it on the sheet, because the sheet is what travels. "Auto" is the
+    // default and fits the drawing to the paper, so a ratio like 1:1159 ships
+    // easily — and a reader with a scale rule will take a wrong dimension off
+    // it in good faith.
+    doc.setTextColor(180, 60, 50);
+    doc.text('non-standard scale — do not measure from this print', MARGIN + availW - 4, ty + 19, { align: 'right' });
   }
 }

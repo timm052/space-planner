@@ -59,8 +59,8 @@ export function setLinkKind(sel, kind) {
  */
 export function setTool(sel, tool) {
   if (tool === 'link') return done({ ...sel, tool: 'link', selected: null, selLink: null });
-  if (tool === 'markup') {
-    return done({ ...sel, tool: 'markup', selected: null, multi: new Set(), selLink: null, linkFrom: null, linkFromInst: 0 });
+  if (tool === 'markup' || tool === 'measure') {
+    return done({ ...sel, tool, selected: null, multi: new Set(), selLink: null, linkFrom: null, linkFromInst: 0 });
   }
   return done({ ...sel, tool: 'select', linkFrom: null, linkFromInst: 0 });
 }

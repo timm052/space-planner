@@ -317,6 +317,7 @@ export function ToolDock({
   showOnion = false, onion = false, onToggleOnion,
   showMarkup = false, markupPen = null, onMarkupPen, penColors = [], penWidths = [],
   hasMarkup = false, onClearMarkup, markupScopeNote = 'this environment',
+  showMeasure = false,
   onRecentre,
 }) {
   return (
@@ -346,6 +347,17 @@ export function ToolDock({
           {/* pen nib */}
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 20l4-1 10-10a2.5 2.5 0 0 0-3.5-3.5L4.5 15.5z" /><line x1="14" y1="6.5" x2="17.5" y2="10" /></svg>
           <span className="tool-key">D</span>
+        </button>
+      )}
+      {showMeasure && (
+        <button
+          className={`tool-btn ${tool === 'measure' ? 'active' : ''}`}
+          onClick={() => onTool('measure')}
+          title="Measure — drag to read a distance at the drawing's scale (M). Shift constrains to an axis."
+        >
+          {/* ruler */}
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="8" width="20" height="8" rx="1" /><line x1="7" y1="8" x2="7" y2="11" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="17" y1="8" x2="17" y2="11" /></svg>
+          <span className="tool-key">M</span>
         </button>
       )}
       {/* Pen controls appear only while the tool is live, so the dock doesn't
