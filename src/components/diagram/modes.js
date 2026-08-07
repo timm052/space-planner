@@ -32,8 +32,30 @@
 
 import { boxExtents } from './scenes.js';
 
-/** How close (diagram units) an edge must come before it latches. */
+/**
+ * How close (diagram units) an edge must come before it latches.
+ *
+ * Deliberately world-space, unlike the pixel constants below: a snap tolerance
+ * is a statement about the DRAWING ("within 8 units of that wall"), so it must
+ * not change meaning when the user zooms in to place something precisely.
+ */
 export const SNAP_TOL = 8;
+
+/**
+ * Gesture thresholds, in SCREEN PIXELS.
+ *
+ * These are statements about the user's hand, not about the drawing, so they
+ * belong in screen space. Expressed in diagram units they swung by the whole
+ * zoom range (0.2×–6×): a 6-unit drag threshold meant 1.2px zoomed out — hand
+ * tremor started drags — and 36px zoomed in, where a room felt glued down.
+ * Callers divide by the view zoom to compare against world-space distances.
+ */
+export const HIT_PAD_PX = 6; // extra grab margin around a footprint
+export const CLICK_SLOP_PX = 4; // below this a marquee is a click on empty canvas
+export const DRAG_SLOP_PX = 6; // below this a press-and-release is a click, not a move
+
+/** Convert a screen-pixel threshold to diagram units at the current view zoom. */
+export const pxToUnits = (px, zoom) => px / (zoom || 1);
 
 /**
  * The order in which a pointer event is offered to the modes. The FIRST mode

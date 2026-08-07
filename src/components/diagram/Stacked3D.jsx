@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useMemo } from 'react';
+import { Suspense, useEffect, useMemo, useRef } from 'react';
 import { Canvas, useThree } from '@react-three/fiber';
 import { OrbitControls, PerspectiveCamera, Html, useTexture, Line, Edges } from '@react-three/drei';
 import * as THREE from 'three';
@@ -23,6 +23,10 @@ const BOX_K = Math.sqrt(Math.PI); // box side for a circle of equal area = r·�
 
 function GroundImage({ href, w, d, opacity }) {
   const texture = useTexture(href);
+  // drei's suspense cache is module-global and holds the decoded texture for the
+  // life of the process. Release this href's entry when the layer goes away, or
+  // a session that moves through several projects retains every site image.
+  useEffect(() => () => useTexture.clear(href), [href]);
   return (
     <>
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.03, 0]}>
@@ -73,13 +77,32 @@ function Floor({ floor, S, y, image, showImage }) {
   );
 }
 
+// A press-and-release counts as a click only if the pointer barely moved —
+// matching the 2-D canvas's own drag threshold (modes.DRAG_SLOP_PX).
+//
+// R3F cannot do this for us: it computes a travel delta for click events but
+// applies the `delta <= 2` guard ONLY to the pointer-MISSED path — when there is
+// a hit, onClick fires however far the pointer travelled. Since orbiting almost
+// always starts by pressing on the massing, every camera move re-selected a
+// room and dragged the rail and the shared Brief selection along with it.
+const CLICK_SLOP_PX = 4;
+
 function Room({ room, S, y, boxH, onPick }) {
   const rW = Math.max(0.06, room.r * S);
+  const downAt = useRef(null);
   // Click = select the room (rail + shared selection follow); hover shows a
   // pointer cursor so the massing reads as interactive.
   const pick = onPick
     ? {
-        onClick: (e) => {
+        onPointerDown: (e) => {
+          downAt.current = [e.nativeEvent.clientX, e.nativeEvent.clientY];
+        },
+        onPointerUp: (e) => {
+          const d = downAt.current;
+          downAt.current = null;
+          if (!d) return;
+          const travel = Math.hypot(e.nativeEvent.clientX - d[0], e.nativeEvent.clientY - d[1]);
+          if (travel > CLICK_SLOP_PX) return; // that was an orbit, not a pick
           e.stopPropagation();
           onPick(room.key);
         },
@@ -323,7 +346,51 @@ function Scene({ scene, gap, showImage, camMode, onPickRoom }) {
   );
 }
 
-export default function Stacked3D({ scene, gap, showImage, camMode = 'persp', onPickRoom = null }) {
+/**
+ * Canvas lifecycle concerns that live inside the R3F tree because they need
+ * `gl` and `invalidate`:
+ *
+ * - CONTEXT LOSS. `frameloop="demand"` means nothing schedules a frame on its
+ *   own, so a lost-then-restored context stayed blank forever — and the only way
+ *   back was unmounting the component, which the user has no reason to try.
+ *   Preventing the default on loss is what makes the browser restore it at all.
+ * - DEVICE PIXEL RATIO. `dpr` is read once at mount, so dragging the window from
+ *   a Retina display to an external monitor left the 3-D view rendering at the
+ *   old density while the SVG viewport, being vector, adapted.
+ */
+function CanvasLifecycle() {
+  const gl = useThree((s) => s.gl);
+  const setDpr = useThree((s) => s.setDpr);
+  const invalidate = useThree((s) => s.invalidate);
+
+  useEffect(() => {
+    const el = gl.domElement;
+    const onLost = (e) => e.preventDefault();
+    const onRestored = () => invalidate();
+    el.addEventListener('webglcontextlost', onLost, false);
+    el.addEventListener('webglcontextrestored', onRestored, false);
+    return () => {
+      el.removeEventListener('webglcontextlost', onLost);
+      el.removeEventListener('webglcontextrestored', onRestored);
+    };
+  }, [gl, invalidate]);
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return undefined;
+    const apply = () => {
+      setDpr(Math.min(2, window.devicePixelRatio || 1));
+      invalidate();
+    };
+    // `resolution` media queries fire when the window moves between displays.
+    const mq = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+    mq.addEventListener?.('change', apply);
+    return () => mq.removeEventListener?.('change', apply);
+  }, [setDpr, invalidate]);
+
+  return null;
+}
+
+export default function Stacked3D({ scene, gap, showImage, camMode = 'persp', onPickRoom = null, onPickNone = null }) {
   // R3F sizes its canvas from a ResizeObserver whose initial callback can be
   // missed when the canvas mounts inside a freshly-shown panel. Nudge it a few
   // times — the first nudge can race the lazy three.js chunk still mounting.
@@ -339,7 +406,12 @@ export default function Stacked3D({ scene, gap, showImage, camMode = 'persp', on
       shadows
       gl={{ antialias: true, preserveDrawingBuffer: true, toneMapping: THREE.ACESFilmicToneMapping }}
       style={{ background: 'transparent' }}
+      // Clicking empty space clears the selection, as it does in 2-D. R3F only
+      // treats a miss as a click when the pointer barely moved, so an orbit that
+      // ends over the background does not wipe the selection.
+      onPointerMissed={onPickNone || undefined}
     >
+      <CanvasLifecycle />
       <Suspense fallback={null}>
         <Scene scene={scene} gap={gap} showImage={showImage} camMode={camMode} onPickRoom={onPickRoom} />
       </Suspense>

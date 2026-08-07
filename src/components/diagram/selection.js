@@ -80,7 +80,13 @@ export function marqueeEnd(sel, hits, additive) {
   const multi = new Set(additive ? sel.multi : []);
   for (const k of hits) multi.add(k);
   if (multi.size) return done({ ...sel, multi, selected: null, selLink: null }, [notify(null)]);
-  return done({ ...sel, multi });
+  // A non-additive marquee that caught nothing is still "select these rooms:
+  // none". It used to clear only the multi-set, leaving a single selection and
+  // a selected link standing — so a CLICK on empty canvas deselected but a DRAG
+  // across empty canvas did not, which is an arbitrary distinction to be on the
+  // receiving end of.
+  if (additive) return done({ ...sel, multi });
+  return done({ ...sel, multi, selected: null, selLink: null }, [notify(null)]);
 }
 
 /** A near-zero marquee = click on empty canvas → clear all (unless additive). */
@@ -102,20 +108,46 @@ export function afterMultiDelete(sel) {
   return done({ ...sel, multi: new Set() });
 }
 
-/** Instance keys whose node position falls inside a marquee box. */
-export function hitsInBox(instances, getPos, box) {
+/**
+ * Instance keys a marquee catches, using the CAD window/crossing convention:
+ *
+ *   left → right  ("window")   selects only footprints ENTIRELY inside the box
+ *   right → left  ("crossing") selects anything the box TOUCHES
+ *
+ * Testing the node centre alone — which is what this did — meant a room whose
+ * centre happened to fall inside was selected even when it was mostly outside,
+ * while a large building envelope you had visibly boxed three-quarters of was
+ * missed. `getHalf` returns the footprint's world half-extents; without it the
+ * function degrades to the old centre test.
+ */
+export function hitsInBox(instances, getPos, box, getHalf = null) {
   const minX = Math.min(box.x0, box.x1);
   const maxX = Math.max(box.x0, box.x1);
   const minY = Math.min(box.y0, box.y1);
   const maxY = Math.max(box.y0, box.y1);
+  const crossing = box.x1 < box.x0; // dragged leftwards
   const hits = [];
   for (const o of instances) {
     const n = getPos(o.key);
-    if (n && n.x >= minX && n.x <= maxX && n.y >= minY && n.y <= maxY) hits.push(o.key);
+    if (!n) continue;
+    const h = getHalf ? getHalf(o) : null;
+    if (!h) {
+      if (n.x >= minX && n.x <= maxX && n.y >= minY && n.y <= maxY) hits.push(o.key);
+      continue;
+    }
+    const inside = n.x - h.x >= minX && n.x + h.x <= maxX && n.y - h.y >= minY && n.y + h.y <= maxY;
+    const touches = n.x + h.x >= minX && n.x - h.x <= maxX && n.y + h.y >= minY && n.y - h.y <= maxY;
+    if (crossing ? touches : inside) hits.push(o.key);
   }
   return hits;
 }
 
-/** A marquee box is a "click" when it never grew past a few pixels. */
-export const isClickBox = (box) =>
-  Math.abs(box.x1 - box.x0) < 4 && Math.abs(box.y1 - box.y0) < 4;
+/**
+ * A marquee box is a "click" when it never grew past a few SCREEN pixels.
+ *
+ * The box is in diagram units, so a fixed threshold swung across the zoom range:
+ * at 0.2× four units was 0.8px and hand tremor turned a click into a marquee
+ * that cleared the selection; at 6× it was 24px of dead travel.
+ */
+export const isClickBox = (box, slopUnits = 4) =>
+  Math.abs(box.x1 - box.x0) < slopUnits && Math.abs(box.y1 - box.y0) < slopUnits;

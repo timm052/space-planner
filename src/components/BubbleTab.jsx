@@ -258,6 +258,13 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
       viewTweenRef.current = null;
     }
   }
+  // Live pointers, so a second finger becomes a PINCH rather than a second
+  // gesture. The 2-D canvas had no multi-pointer path at all: finger two's
+  // pointerdown reset the marquee box to itself and both fingers then drove the
+  // same box. (The 3-D view has had pinch and two-finger pan all along, from
+  // OrbitControls — one more thing that behaved differently in the two views.)
+  const pointersRef = useRef(new Map());
+  const pinchRef = useRef(null); // { dist, zoom, cx, cy } at the start of a pinch
   const rotateRef = useRef(null); // { space, idx, key, cx, cy, startRot, startAng } while rotating a footprint
   const resizeRef = useRef(null); // { space, idx, key, edge, cx, cy, rot, target } while area-lock-resizing a box
   const alignRef = useRef([]); // active alignment guide lines ({x}|{y}) during a master-plan drag
@@ -330,6 +337,16 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
   // Each environment keeps its own session layout (Concept and Master plan hold
   // different truths — an auto-layout pass must never disturb site placement).
   const cacheKeyFor = (e) => `${project.id}:${e}`;
+  // Latest env / 3-D flag for handlers that live in long-lived effect closures
+  // (the native wheel listener, the debounced view commit).
+  const envRef = useRef(env);
+  envRef.current = env;
+  const is3DRef = useRef(false);
+  // Outline-edit state, mirrored for the keyboard handlers: those effects are
+  // declared ABOVE usePolyEditing, so they cannot name `editShape`/`selVert`
+  // directly (a dep array evaluates during render and would hit the TDZ).
+  const editShapeRef = useRef(null);
+  const selVertRef = useRef(null);
   const stashLayout = (e) => {
     const m = new Map();
     for (const [k, n] of nodesRef.current) m.set(k, { x: n.x, y: n.y, rot: n.rot || 0, w: n.w, h: n.h, a: n.a });
@@ -696,23 +713,44 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
         const next = vis[(at + (e.shiftKey ? -1 : 1) + vis.length) % vis.length];
         pickSpace(next.s.id, next.i);
       } else if ((e.key === '+' || e.key === '=') && !mod) {
-        zoomStep(1.25);
+        // The 2-D camera is not on screen in 3-D; driving it invisibly is the
+        // keyboard twin of the wheel bug. OrbitControls owns the 3-D camera.
+        if (!is3DRef.current) zoomStep(1.25);
       } else if ((e.key === '-' || e.key === '_') && !mod) {
-        zoomStep(1 / 1.25);
+        if (!is3DRef.current) zoomStep(1 / 1.25);
       } else if (e.key === '0' && !mod) {
-        fitView();
+        if (!is3DRef.current) fitView();
       } else if (e.key === 'Escape') {
-        // Dismiss the topmost transient UI first; only then clear the selection.
+        // Abort an in-flight gesture FIRST — that is what Escape means while the
+        // pointer is down in every drawing tool, and it must not also throw away
+        // the selection you were working on.
+        if (cancelGesture()) return;
+        // Then the topmost transient UI, then shape-edit mode, then the
+        // selection. Leaving edit mode used to require clearing the selection,
+        // since the mode only closed as a side effect of that.
         if (ctxMenu) setCtxMenu(null);
         else if (showPalette) setShowPalette(false);
         else if (showHelp) setShowHelp(false);
         else if (showMatrix) setShowMatrix(false);
         else if (panel) setPanel(null);
         else if (spotlight) setSpotlight(null);
+        else if (editShapeRef.current != null) setEditShape(null);
         else applySel(selection.escape);
-      } else if ((e.key === 'Delete' || e.key === 'Backspace') && multi.size) {
-        e.preventDefault();
-        multiDelete();
+      } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        // Single selection deletes from the keyboard too — it used to need the
+        // action bar's ⌫ while a multi-selection responded to the key.
+        if (multi.size) {
+          e.preventDefault();
+          multiDelete();
+        } else {
+          // selRef, not `selected`: this effect's deps don't include the
+          // selection, so the render-scope value here would be stale.
+          const cur = selRef.current.selected;
+          if (cur != null && byId.get(cur)) {
+            e.preventDefault();
+            removeSpace(byId.get(cur));
+          }
+        }
       }
     }
     function onKeyUp(e) {
@@ -725,6 +763,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
       window.removeEventListener('keyup', onKeyUp);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+    // editShape / is3D are read through refs inside the handler — both are
+    // declared further down this component, so naming them here would be a TDZ
+    // error (dep arrays evaluate during render, the handler body does not).
   }, [multi, env, panel, showMatrix, showHelp, showPalette, spotlight, ctxMenu, spaces, floorView]);
 
   // Arrow-key nudge — precision placement in every environment. The selection
@@ -735,12 +776,22 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     function onKey(e) {
       if (e.target.matches?.('input, select, textarea')) return;
       if (!e.key.startsWith('Arrow')) return;
-      const keys = multi.size > 0 ? [...multi] : selected != null ? [`${selected}:${selectedInst}`] : [];
-      if (!keys.length) return;
-      e.preventDefault();
       const step = e.shiftKey ? (effScale ? 0.1 / effScale : 1) : effScale ? 1 / effScale : 4;
       const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
       const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
+      // In shape-edit mode the arrows belong to the CORNER under edit, not to
+      // the whole footprint — moving the room was the opposite of what the mode
+      // implies, and it was the only reason shape editing had no keyboard route
+      // at all. Falls through to the room when no vertex is selected.
+      if (editShapeRef.current != null && selVertRef.current != null && nudgeVertex(dx, dy)) {
+        e.preventDefault();
+        clearTimeout(debouncers.current.nudge);
+        debouncers.current.nudge = setTimeout(commitVertexNudge, 350);
+        return;
+      }
+      const keys = multi.size > 0 ? [...multi] : selected != null ? [`${selected}:${selectedInst}`] : [];
+      if (!keys.length) return;
+      e.preventDefault();
       for (const k of keys) {
         const n = nodesRef.current.get(k);
         if (n) ((n.x += dx), (n.y += dy));
@@ -762,6 +813,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
+    // editShape / selVert are read through a ref for the same TDZ reason.
   }, [isStatic, selected, selectedInst, multi, effScale, spaces]);
 
   // Effective pan state: panning while the Space key is held.
@@ -818,17 +870,37 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
   // flow is delegated below via polyPointerMove/polyPointerUp. Destructured
   // names match the original call sites.
   const {
-    editShape, polyVertsOf, polyHandlesOf, polyRingPath,
+    editShape, setEditShape, polyVertsOf, polyHandlesOf, polyRingPath,
     editCustomShape, editAnchorInst, addPolyVertex, removePolyVertex,
     cycleCornerStyle, setCornerStyleAll,
-    onPolyVertexDown, polyPointerMove, polyPointerUp,
+    onPolyVertexDown, polyPointerMove, polyPointerUp, polyCancel, polyDragRef,
+    selVert, nudgeVertex, commitVertexNudge,
   } = usePolyEditing({
     project, nodesRef, pinOverride, history, applySpace, commitSpace, setError,
     setTick, toSvgCoords, shapeOf, areaUnits, selected, selectedInst,
     posPatch: polyPosPatch,
+    spaceById: byId,
     // Un-drawn building envelopes render (and seed as) the default rectangle.
     defaultOutline: (s) => (isEnvelope && isContainerKind(s) ? rectanglePolygon(1.4) : null),
+    // Corners latch to neighbours and the metric grid, like the footprint they
+    // belong to — drawing an envelope to a survey line was freehand while the
+    // envelope's own position snapped.
+    snapVertex: (p, { fine }) => {
+      if (!caps.snap || !(snapEdges || snapGrid)) return p;
+      // Exclude the footprint being reshaped from its own snap targets.
+      const nb = neighbourEdges(`${editShape}:${selectedInst}`);
+      const gx = resolveAxis(p.x, 0, nb.x, fine, snapEdges, snapGrid);
+      const gy = resolveAxis(p.y, 0, nb.y, fine, snapEdges, snapGrid);
+      const guides = [];
+      if (gx.cand) guides.push({ x: gx.cand.at, y0: Math.min(gy.val, gx.cand.c - gx.cand.h), y1: Math.max(gy.val, gx.cand.c + gx.cand.h) });
+      if (gy.cand) guides.push({ y: gy.cand.at, x0: Math.min(gx.val, gy.cand.c - gy.cand.h), x1: Math.max(gx.val, gy.cand.c + gy.cand.h) });
+      alignRef.current = guides;
+      return { x: gx.val, y: gy.val };
+    },
   });
+  // Mirror for the keyboard effects declared above this call.
+  editShapeRef.current = editShape;
+  selVertRef.current = selVert;
 
   // Seed order per environment: an authored env falls back through the earlier
   // stages (block → plan → concept), so entering it starts every room where it
@@ -951,6 +1023,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     const p0 = toSvgCoords(e);
     resizeRef.current = {
       space: o.s, idx: o.i, key: o.key, rot: n.rot || 0, target, scx, scy,
+      fromW: n.w, fromH: n.h, fromX: n.x, fromY: n.y, // for Escape / pointercancel
       ax: n.x - scx * h.x, ay: n.y - scy * h.y, // OPPOSITE corner — the anchor, stays put
       // pointer→grabbed-corner offset at grab, so the corner tracks the
       // pointer without the initial jump of a not-quite-on-the-handle press
@@ -1626,7 +1699,24 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
       if (!n || prev === undefined || busy.has(o.key)) return;
       const pin = persistedPos(o.s, o.i);
       const sig = pin ? JSON.stringify(pin) : '';
-      if (sig === prev || !pin) return; // unchanged, or no slot anywhere — session keeps it
+      if (sig === prev) return; // nothing new in this refetch — session keeps it
+      if (!pin) {
+        // The slot was CLEARED, which is what undoing a room's first move looks
+        // like: the drag wrote pin_json where there was none, so undo writes
+        // null back. Returning here (the old behaviour) left the room sitting
+        // where it had been dropped while the database said otherwise — so undo
+        // appeared to do nothing, and the user pressed it again, silently
+        // walking back through unrelated edits. Concept rooms start unpinned,
+        // so this was the common case, not an edge.
+        //
+        // `prev` distinguishes the two cases: '' means no slot has ever existed
+        // (leave the sim's own layout alone); anything else means one was just
+        // removed, so fall back to where this environment last had the room.
+        if (prev === '') return;
+        const fallback = layoutCache.get(cacheKeyFor(env))?.get(o.key);
+        if (fallback) nodes.set(o.key, { ...fallback, vx: 0, vy: 0 });
+        return;
+      }
       nodes.set(o.key, { x: pin.x, y: pin.y, rot: pin.rot || 0, w: pin.w, h: pin.h, a: pin.a, vx: 0, vy: 0 });
     });
 
@@ -1830,11 +1920,27 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     if (!el) return undefined;
     const onWheel = (e) => {
       if (!svgRef.current) return;
+      // 3-D owns its own camera (OrbitControls). The wheel listener lives on the
+      // STAGE, which contains the WebGL overlay, and the SVG stays mounted
+      // underneath — so scrolling in 3-D used to dolly the camera AND zoom the
+      // hidden 2-D view, then persist it. You came back to the plan to find your
+      // framing changed with nothing on screen having explained it.
+      if (is3DRef.current) return;
+      // Let a scrollable glass panel scroll. Everything under `.stage-chrome`
+      // floats over the canvas, and preventDefault-ing unconditionally meant the
+      // wheel zoomed the drawing instead of scrolling the open popover, the
+      // layers list or the placement tray.
+      if (e.target?.closest?.('.stage-chrome, .stage-underbar, .stage-legend')) return;
       e.preventDefault();
       stopViewTween(); // zooming mid-glide must not fight it
       const rect = readRect();
       const z = zoomRef.current;
-      const nz = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z * Math.exp(-e.deltaY * (e.ctrlKey ? 0.006 : 0.0014))));
+      // Normalise the delta. Chrome reports ~100 per notch (DOM_DELTA_PIXEL);
+      // Firefox reports ~3 in DOM_DELTA_LINE, so the raw value made wheel zoom
+      // about 30× too slow there — exp(-3 × 0.0014) is 0.996, i.e. nothing.
+      const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? (rect?.height || vb.h) : 1;
+      const dy = e.deltaY * unit;
+      const nz = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z * Math.exp(-dy * (e.ctrlKey ? 0.006 : 0.0014))));
       if (nz === z) return;
       // Keep the world point under the cursor fixed while the scale changes.
       const fx = (e.clientX - rect.left) / rect.width;
@@ -1859,6 +1965,26 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
   useEffect(() => {
     rectRef.current = null;
   }, [vb.w, vb.h]);
+  // A resize mid-gesture also moves the world under the cursor: originX/Y are
+  // derived from vbz, so the same client point maps somewhere else and whatever
+  // is being dragged jumps by the origin delta. Re-anchor the live gestures to
+  // the new mapping instead (opening a docked panel or rotating a tablet during
+  // a drag is the realistic way to hit this).
+  useEffect(() => {
+    const d = dragRef.current;
+    if (d && d.offset) {
+      const n = nodesRef.current.get(d.key);
+      if (n) d.offset = { x: n.x - (n.x - d.offset.x), y: n.y - (n.y - d.offset.y) };
+    }
+    if (panRef.current) {
+      // Restart the pan from here so the view doesn't leap.
+      panRef.current.sx = panRef.current.lastX ?? panRef.current.sx;
+      panRef.current.sy = panRef.current.lastY ?? panRef.current.sy;
+      panRef.current.vx = viewRef.current.x;
+      panRef.current.vy = viewRef.current.y;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vb.w, vb.h]);
   useEffect(() => {
     const drop = () => { rectRef.current = null; };
     window.addEventListener('scroll', drop, true);
@@ -1878,9 +2004,13 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
   );
 
   // ---------- pointer handling ----------
-  // Right button held = pan, in every environment (a stationary right-click on
-  // a room still opens its context menu — see onBubbleContext).
+  // Right button held = pan, in every environment. The context menu is opened
+  // from the RELEASE path (see onBubbleContext), not from the native event —
+  // Chrome and Firefox fire `contextmenu` on mouse-DOWN on macOS and Linux, so
+  // ordering the suppression after pointerup meant right-drag-to-pan popped the
+  // menu the instant the gesture began on those platforms.
   function startRightPan(e) {
+    suppressCtxRef.current = true; // cleared on release if the pan never moved
     panRef.current = { sx: e.clientX, sy: e.clientY, vx: viewRef.current.x, vy: viewRef.current.y, right: true, moved: false };
   }
   function onSvgPointerDown(e) {
@@ -1888,8 +2018,25 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     // Bubble presses bubble up to this handler too, so this covers them.
     rectRef.current = null;
     stopViewTween(); // the user's hand beats an in-flight glide
+    // Second finger on a live gesture = pinch zoom, not a new gesture. Without
+    // this the second pointerdown reset the marquee box to the new finger.
+    if (trackPointer(e)) return;
+    // Capture on the SVG ITSELF. Pan, marquee and layer-move took no capture at
+    // all, so the canvas relied on onPointerLeave to end them — which meant any
+    // of those gestures died the moment the cursor crossed one of the floating
+    // glass panels sitting over the canvas (`.stage-chrome > *` is
+    // pointer-events: auto). A pan under the toolbar stopped dead; a marquee
+    // dragged toward the top of the stage committed truncated.
+    try { e.currentTarget.setPointerCapture?.(e.pointerId); } catch { /* synthetic pointer */ }
     if (e.button === 2) {
       if (!dragRef.current) startRightPan(e);
+      return;
+    }
+    // Middle button = pan, the drawing-tool convention. It used to fall through
+    // to marquee while Chrome opened its autoscroll ring on top.
+    if (e.button === 1) {
+      e.preventDefault();
+      if (!dragRef.current) panRef.current = { sx: e.clientX, sy: e.clientY, vx: viewRef.current.x, vy: viewRef.current.y, moved: false };
       return;
     }
     if (layerPointerDown(e)) return; // scale-click / move / rotate a layer — useImageLayers
@@ -1908,6 +2055,117 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
       marqueeRef.current = { sx: p.x, sy: p.y, additive: e.shiftKey, box };
       setMarquee(box);
     }
+  }
+
+  // ---------- multi-pointer (pinch) ----------
+  /** Record a pointer; returns true when this press starts/continues a pinch. */
+  function trackPointer(e) {
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointersRef.current.size < 2) return false;
+    const [a, b] = [...pointersRef.current.values()];
+    // Whatever single-pointer gesture was in flight yields to the pinch.
+    cancelGesture({ silent: true });
+    pinchRef.current = {
+      dist: Math.max(1, Math.hypot(b.x - a.x, b.y - a.y)),
+      zoom: zoomRef.current,
+      view: { ...viewRef.current },
+      cx: (a.x + b.x) / 2,
+      cy: (a.y + b.y) / 2,
+    };
+    return true;
+  }
+  /** Continue a pinch: scale about the midpoint between the two fingers. */
+  function pinchMove(e) {
+    if (!pinchRef.current || !pointersRef.current.has(e.pointerId)) return false;
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointersRef.current.size < 2) return true;
+    const [a, b] = [...pointersRef.current.values()];
+    const p = pinchRef.current;
+    const nz = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, (p.zoom * Math.hypot(b.x - a.x, b.y - a.y)) / p.dist));
+    const rect = readRect();
+    if (rect) {
+      // Same cursor-anchored maths the wheel uses, about the pinch midpoint.
+      const fx = (p.cx - rect.left) / rect.width;
+      const fy = (p.cy - rect.top) / rect.height;
+      setView({
+        x: p.view.x + (fx - 0.5) * vb.w * (1 / p.zoom - 1 / nz),
+        y: p.view.y + (fy - 0.5) * vb.h * (1 / p.zoom - 1 / nz),
+      });
+    }
+    setZoom(nz);
+    return true;
+  }
+  /** Release a pointer; ends the pinch when fewer than two remain. */
+  function releasePointer(e) {
+    pointersRef.current.delete(e.pointerId);
+    if (pinchRef.current && pointersRef.current.size < 2) {
+      pinchRef.current = null;
+      commitView(viewRef.current);
+      return true; // swallow this release — it was part of the pinch
+    }
+    return false;
+  }
+
+  /**
+   * Abandon whatever gesture is in flight WITHOUT committing it — Escape, a
+   * pointercancel, or a second finger arriving.
+   *
+   * Escape-aborts-drag is close to universal in CAD-adjacent tools and it is
+   * what a user reaches for the moment they realise they grabbed the wrong room
+   * or a snap latched onto the wrong edge. There was no such path: the only way
+   * out of a drag was to finish it and undo. Rooms restore to where the gesture
+   * started, so cancelling really is a no-op rather than a cheap early release.
+   */
+  function cancelGesture({ silent = false } = {}) {
+    let had = false;
+    if (moveRafRef.current) {
+      cancelAnimationFrame(moveRafRef.current);
+      moveRafRef.current = 0;
+      moveRef.current = null;
+    }
+    if (polyCancel()) had = true;
+    const drag = dragRef.current;
+    if (drag) {
+      // Put every moved node back where the press found it.
+      if (drag.starts) for (const s of drag.starts) {
+        const n = nodesRef.current.get(s.key);
+        if (n) ((n.x = s.x), (n.y = s.y));
+      } else if (drag.from) {
+        const n = nodesRef.current.get(drag.key);
+        if (n) ((n.x = drag.from.x), (n.y = drag.from.y));
+      }
+      dragRef.current = null;
+      had = true;
+    }
+    const rot = rotateRef.current;
+    if (rot) {
+      const n = nodesRef.current.get(rot.key);
+      if (n) n.rot = rot.startRot;
+      rotateRef.current = null;
+      had = true;
+    }
+    const rz = resizeRef.current;
+    if (rz) {
+      const n = nodesRef.current.get(rz.key);
+      if (n) ((n.w = rz.fromW), (n.h = rz.fromH), (n.x = rz.fromX), (n.y = rz.fromY));
+      resizeRef.current = null;
+      had = true;
+    }
+    if (seedRef.current) {
+      seedOverride.current.delete(seedRef.current.key);
+      seedRef.current = null;
+      had = true;
+    }
+    if (linkDragRef.current) ((linkDragRef.current = null), (had = true));
+    if (marqueeRef.current) ((marqueeRef.current = null), setMarquee(null), (had = true));
+    if (panRef.current) {
+      setView({ x: panRef.current.vx, y: panRef.current.vy });
+      panRef.current = null;
+      had = true;
+    }
+    if (alignRef.current.length) alignRef.current = [];
+    if (had && !silent) setTick((t) => t + 1);
+    return had;
   }
 
   // Pointer moves arrive far faster than frames — a 1000 Hz mouse or a trackpad
@@ -1929,6 +2187,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
 
   function onMoveNow(e) {
     const rect = readRect();
+    if (pinchRef.current) return void pinchMove(e); // two fingers own the view
+    if (pointersRef.current.has(e.pointerId)) pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (polyPointerMove(e)) return; // vertex drag — handled by usePolyEditing
     if (rotPointerMove(e)) return; // rotating a placed footprint
     if (resizePointerMove(e)) return; // area-lock resizing a building box
@@ -1939,7 +2199,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
       const ld = linkDragRef.current;
       ld.x = p.x;
       ld.y = p.y;
-      if (Math.hypot(p.x - ld.fx, p.y - ld.fy) > 6) ld.moved = true;
+      // Screen-space, like every other click-vs-drag threshold.
+      if (Math.hypot(e.clientX - ld.sx, e.clientY - ld.sy) > modes.DRAG_SLOP_PX) ld.moved = true;
       // Live drop target: the band snaps to the room under the cursor so a
       // valid release reads before you let go.
       const hit = ld.moved ? hitInstanceAt(p, ld.fromId) : null;
@@ -1959,6 +2220,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     if (layerPointerMove(e)) return; // move / rotate a layer — handled by useImageLayers
     if (panRef.current) {
       if (modes.panMoved(panRef.current, e)) panRef.current.moved = true;
+      panRef.current.lastX = e.clientX; // re-anchor point if the stage resizes
+      panRef.current.lastY = e.clientY;
       setView(modes.panTo(panRef.current, e, vbz, rect));
       return;
     }
@@ -1971,6 +2234,10 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     }
     if (!dragRef.current) return;
     const drag = dragRef.current;
+    // Screen-space travel decides click-vs-drag (see onUp). Measured from the
+    // press point rather than accumulated along the path, so wandering out and
+    // back is a click, not a "move" that writes a zero-delta undo entry.
+    drag.travel = Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy);
     const { x, y } = toSvgCoords(e);
     if (drag.starts) {
       // Group drag: translate every selected node by the same delta. When snap is
@@ -1979,7 +2246,6 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
       const doSnap = caps.snap && snapGrid; // group drag latches to the grid only
       const dx = doSnap ? snapToGrid(x - drag.anchor.x, e.altKey) : x - drag.anchor.x;
       const dy = doSnap ? snapToGrid(y - drag.anchor.y, e.altKey) : y - drag.anchor.y;
-      drag.moved = Math.hypot(dx, dy);
       for (const s of drag.starts) {
         const n = nodesRef.current.get(s.key);
         if (n) ((n.x = s.x + dx), (n.y = s.y + dy));
@@ -2011,7 +2277,6 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
       ty = placed.y;
       alignRef.current = placed.guides;
     }
-    drag.moved += Math.hypot(tx - node.x, ty - node.y);
     node.x = tx;
     node.y = ty;
     setTick((t) => t + 1);
@@ -2023,7 +2288,10 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
   // {s, i, key} instance under `pt`, preferring the nearest centre when
   // instances overlap.
   function hitInstanceAt(pt, excludeId = null) {
-    const PAD = 6;
+    // Grab margin in SCREEN pixels: a fixed world-unit pad was 1.2px zoomed out
+    // and 36px zoomed in, so the same room was unpickable at one end of the
+    // zoom range and swallowed its neighbours at the other.
+    const PAD = modes.pxToUnits(modes.HIT_PAD_PX, zoomRef.current);
     let best = null;
     let bestScore = Infinity;
     for (const o of instances) {
@@ -2062,7 +2330,16 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     return best;
   }
 
+  /** A gesture the browser took away from us (system gesture, pen lift, …). */
+  function onPointerCancel(e) {
+    pointersRef.current.delete(e.pointerId);
+    pinchRef.current = null;
+    cancelGesture();
+  }
+
   async function onUp(e) {
+    // Lifting one finger of a pinch is not a release of anything.
+    if (releasePointer(e)) return;
     // Apply any move still waiting on a frame BEFORE the release is handled —
     // otherwise the last movement of a gesture is silently dropped and the
     // release commits a stale position. Must stay synchronous and first.
@@ -2100,8 +2377,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     }
     if (await layerPointerUp()) return; // move / rotate layer release — useImageLayers
     if (panRef.current) {
-      // A right-drag that actually panned must not pop the context menu on release.
-      if (panRef.current.right && panRef.current.moved) suppressCtxRef.current = true;
+      // The suppression is armed at PRESS (startRightPan) and lifted here only
+      // if the gesture never moved — so a stationary right-click still opens the
+      // menu, and the decision no longer depends on whether the platform fires
+      // `contextmenu` before or after `pointerup`.
+      if (panRef.current.right && !panRef.current.moved) suppressCtxRef.current = false;
       commitView(viewRef.current);
       panRef.current = null;
       return;
@@ -2111,9 +2391,15 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     alphaRef.current = Math.max(alphaRef.current, 0.3);
     if (alignRef.current.length) { alignRef.current = []; setTick((t) => t + 1); } // drop the alignment guides
     if (!drag) return;
+    // Click-vs-drag in SCREEN pixels. The old test compared accumulated
+    // world-unit path length against 6, which meant ~1px of travel counted as a
+    // move when zoomed out and 36px was still a "click" when zoomed in — and a
+    // wander that returned to the start counted as a move, writing an undo entry
+    // for a position that had not changed.
+    const moved = (drag.travel ?? 0) >= modes.DRAG_SLOP_PX;
     if (drag.starts) {
       // Group drag: save every moved room where it was dropped (one undo step).
-      if (drag.moved >= 6) {
+      if (moved) {
         if (isStatic) {
           await savePlanKeys(drag.starts.map((s) => s.key)); // authored — no relaxation
         } else {
@@ -2125,7 +2411,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     }
     const space = byId.get(drag.spaceId);
     if (!space) return;
-    if (drag.moved >= 6) {
+    if (moved) {
       if (isStatic) {
         // Authored env: the drop IS the position (plan_json / block_json), the sim
         // is off, and neighbours never yield.
@@ -2164,8 +2450,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     // classic click-then-click flow. Rooms never MOVE in link mode.
     if (selRef.current.tool === 'link') {
       e.stopPropagation();
+      // currentTarget (the bubble <g>), not target (whichever child shape was
+      // hit): a re-render that swaps the child — shape kind changing, a handle
+      // unmounting — implicitly releases capture taken on the child.
       try {
-        e.target.setPointerCapture?.(e.pointerId);
+        e.currentTarget.setPointerCapture?.(e.pointerId);
       } catch {
         /* synthetic pointer */
       }
@@ -2173,11 +2462,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
       const p = toSvgCoords(e);
       // Capture WHICH instance the drag starts from so the link targets that
       // specific room (not just the nearest at drop time).
-      linkDragRef.current = { fromId: o.s.id, fromInst: o.i, fx: n?.x ?? p.x, fy: n?.y ?? p.y, x: p.x, y: p.y, moved: false };
+      linkDragRef.current = { fromId: o.s.id, fromInst: o.i, sx: e.clientX, sy: e.clientY, fx: n?.x ?? p.x, fy: n?.y ?? p.y, x: p.x, y: p.y, moved: false };
       return;
     }
     try {
-      e.target.setPointerCapture?.(e.pointerId);
+      e.currentTarget.setPointerCapture?.(e.pointerId);
     } catch {
       /* synthetic pointer */
     }
@@ -2207,12 +2496,25 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
       const p = toSvgCoords(e);
       if (n) offset = { x: n.x - p.x, y: n.y - p.y };
     }
-    dragRef.current = { key: o.key, spaceId: o.s.id, idx: o.i, moved: 0, starts, anchor, groupSet, offset, clickAs };
+    // `from` is the pre-drag position, so Escape can put the room back.
+    const n0 = nodesRef.current.get(o.key);
+    dragRef.current = {
+      key: o.key, spaceId: o.s.id, idx: o.i, travel: 0,
+      sx: e.clientX, sy: e.clientY,
+      from: n0 ? { x: n0.x, y: n0.y } : null,
+      starts, anchor, groupSet, offset, clickAs,
+    };
   }
 
   function commitView(v) {
     clearTimeout(debouncers.current.view);
-    const key = cacheKeyFor(env);
+    // Read the environment from a ref, not from render scope. The wheel handler
+    // lives in an effect keyed on [vb.w, vb.h], so the commitView it closed over
+    // carried whichever env was active when the container was last resized —
+    // and wheel-zooming in the Master plan wrote its framing into Concept's
+    // slot. switchEnv is careful about this; the one write that bypassed it
+    // undid that care.
+    const key = cacheKeyFor(envRef.current);
     debouncers.current.view = setTimeout(() => {
       saveProject({ view_x: v.x, view_y: v.y }, { silent: true });
       // Per-env framing (pan + zoom) survives the session — switchEnv and the
@@ -2276,7 +2578,10 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     }
     if (!Number.isFinite(minX)) return animateViewTo({ x: 0, y: 0 }, 1);
     const w = maxX - minX + 120, h = maxY - minY + 120;
-    const z = Math.min(2.5, Math.max(ZOOM_MIN, Math.min(vb.w / w, vb.h / h)));
+    // Clamp to the same ceiling the wheel and the buttons obey — a literal 2.5
+    // meant fitting a small programme left it smaller than the user could then
+    // zoom it by hand, which reads as the button being broken.
+    const z = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.min(vb.w / w, vb.h / h)));
     animateViewTo({ x: (minX + maxX) / 2 - W / 2, y: (minY + maxY) / 2 - H / 2 }, z);
   }
 
@@ -2356,12 +2661,25 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     marqueeRef.current = null;
     setMarquee(null);
     if (!box || !m) return;
-    // A near-zero drag is a click on empty canvas → clear selection.
-    if (selection.isClickBox(box)) {
+    // A near-zero drag is a click on empty canvas → clear selection. The slop is
+    // a SCREEN distance converted to world units at the current zoom, so hand
+    // tremor never turns a click into a marquee (it did at 0.2×, where 4 units
+    // was under a pixel).
+    const slop = modes.pxToUnits(modes.CLICK_SLOP_PX, zoomRef.current);
+    if (selection.isClickBox(box, slop)) {
       applySel((s) => selection.emptyCanvasClick(s, m.additive));
       return;
     }
-    const hits = selection.hitsInBox(instances, (k) => nodesRef.current.get(k), box);
+    // Window (left→right) selects fully-enclosed footprints; crossing
+    // (right→left) selects anything touched — the CAD convention. Half-extents
+    // come from the same footHalf the snap uses, so what you box is what the
+    // room actually covers, not where its centre happens to be.
+    const hits = selection.hitsInBox(
+      instances,
+      (k) => nodesRef.current.get(k),
+      box,
+      (o) => footHalf(o.s, nodesRef.current.get(o.key))
+    );
     applySel((s) => selection.marqueeEnd(s, hits, m.additive));
   }
 
@@ -2413,10 +2731,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     }))) return;
     setError(null);
     try {
-      for (const id of ids) await api.deleteSpace(id);
+      await deleteSpacesUndoably(ids, `delete ${ids.length} room${ids.length > 1 ? 's' : ''}`);
       applySel(selection.afterMultiDelete);
-      history.clear(); // deletions invalidate recorded closures referencing these spaces
-      onChanged();
+      showToast(`Deleted ${ids.length} room${ids.length > 1 ? 's' : ''}`, history.undoLabel);
     } catch (e) {
       setError(e.message);
     }
@@ -2430,13 +2747,46 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     }))) return;
     setError(null);
     try {
-      await api.deleteSpace(space.id);
+      await deleteSpacesUndoably([space.id], `delete ${space.name}`);
       applySel(selection.afterRemoveSelected);
-      history.clear();
-      onChanged();
+      showToast(`Deleted ${space.name}`, history.undoLabel);
     } catch (e) {
       setError(e.message);
     }
+  }
+
+  /**
+   * Delete rooms as ONE undoable step.
+   *
+   * Deleting used to be the single irreversible act in the diagram: the rows
+   * went, their links went with them, and the client then called history.clear()
+   * — so an accidental confirm also cost every unrelated edit made beforehand.
+   * The clear was defending against replaying closures that reference a deleted
+   * space, but useHistory.undo already swallows exactly that failure and drops
+   * the entry rather than wedging the stack.
+   *
+   * DELETE now returns the removed subtree, and the restore endpoint re-inserts
+   * it with the ORIGINAL ids, so parent links, adjacency endpoints and every
+   * layout slot keyed by space id survive the round trip.
+   */
+  async function deleteSpacesUndoably(ids, label) {
+    const removed = [];
+    for (const id of ids) {
+      const payload = await api.deleteSpace(id);
+      if (payload?.spaces?.length) removed.push(payload);
+    }
+    if (removed.length) {
+      const restore = async () => {
+        for (const p of removed) await api.restoreSpaces(project.id, p);
+        onChanged();
+      };
+      const redo = async () => {
+        for (const id of ids) await api.deleteSpace(id);
+        onChanged();
+      };
+      history.record({ label, undo: restore, redo });
+    }
+    onChanged();
   }
   const toggleHulls = () => setPref('hulls', !hulls);
   const setHullSize = (v) => setPref('hullPad', v);
@@ -3226,6 +3576,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
   // editing, stacked offset/overlaid) stay behind hasLevels. levels3d /
   // levelRank3d live above the empty-state returns with the other hooks.
   const is3D = isBuilding && floorMode === '3d';
+  is3DRef.current = is3D; // the wheel listener's effect closure reads this
   const rankOf3d = (s) => levelRank3d.get(levelOf(s)) ?? 0;
 
   const make3DScene = () => {
@@ -3816,6 +4167,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
               const [id, i] = String(key).split(':');
               pickSpace(Number(id), Number(i));
             }}
+            // Clicking empty space clears, as it does in 2-D.
+            onPickNone3D={() => applySel(selection.escape)}
             bubbleStyle={bubbleStyle}
             bubbleOpacity={project.bubble_opacity}
             panActive={panActive}
@@ -3881,6 +4234,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
             removePolyVertex={removePolyVertex}
             onCycleCorner={cycleCornerStyle}
             hoverRef={hoverRef}
+            polyDrag={polyDragRef}
+            selVert={selVert}
+            onPointerCancel={onPointerCancel}
           />
 
           {(hasLevels || is3D) && floorMode !== 'all' && (

@@ -27,7 +27,11 @@ export const api = {
   createSpace: (projectId, data) =>
     request(`/api/projects/${projectId}/spaces`, { method: 'POST', body: JSON.stringify(data) }),
   updateSpace: (id, data) => request(`/api/spaces/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  // Resolves to { spaces, adjacencies } — the removed subtree, so a delete can
+  // be undone by handing it straight back to restoreSpaces.
   deleteSpace: (id) => request(`/api/spaces/${id}`, { method: 'DELETE' }),
+  restoreSpaces: (projectId, data) =>
+    request(`/api/projects/${projectId}/spaces/restore`, { method: 'POST', body: JSON.stringify(data) }),
 
   // Independent Brief tree (the "Brief" tab), separate from diagram `spaces`.
   createBriefSpace: (projectId, data) =>

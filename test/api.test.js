@@ -229,12 +229,50 @@ test('DELETE space removes the whole subtree', async () => {
   const room = (await api('POST', `/api/projects/${pid}/spaces`, { name: 'R', target_area: 10, parent_id: building.id })).body;
   const nested = (await api('POST', `/api/projects/${pid}/spaces`, { name: 'N', target_area: 5, parent_id: room.id })).body;
   const del = await api('DELETE', `/api/spaces/${building.id}`);
-  assert.equal(del.status, 204);
+  // 200 + the removed rows, not a bare 204: the client needs the subtree back
+  // to offer undo (deleting used to be the one irreversible act in the diagram).
+  assert.equal(del.status, 200);
+  assert.deepEqual(
+    del.body.spaces.map((s) => s.id).sort((a, b) => a - b),
+    [building.id, room.id, nested.id].sort((a, b) => a - b)
+  );
   const spaces = (await api('GET', `/api/projects/${pid}`)).body.spaces;
   const ids = spaces.map((s) => s.id);
   assert.equal(ids.includes(building.id), false);
   assert.equal(ids.includes(room.id), false);
   assert.equal(ids.includes(nested.id), false);
+});
+
+test('a deleted subtree restores with its original ids, parents and links', async () => {
+  const pid = await newProject();
+  const building = (await api('POST', `/api/projects/${pid}/spaces`, { name: 'B', kind: 'building' })).body;
+  const room = (await api('POST', `/api/projects/${pid}/spaces`, { name: 'R', target_area: 10, parent_id: building.id })).body;
+  const other = (await api('POST', `/api/projects/${pid}/spaces`, { name: 'O', target_area: 8 })).body;
+  await api('POST', `/api/projects/${pid}/adjacencies`, { space_a: room.id, space_b: other.id, strength: 'required' });
+  // Give the room a layout slot — those are keyed by space id, so they only
+  // survive if the restore keeps the id.
+  await api('PUT', `/api/spaces/${room.id}`, { pin_json: JSON.stringify({ 0: { x: 12, y: 34 } }) });
+
+  const payload = (await api('DELETE', `/api/spaces/${building.id}`)).body;
+  assert.equal((await api('GET', `/api/projects/${pid}`)).body.adjacencies.length, 0, 'the link went with it');
+
+  const restored = await api('POST', `/api/projects/${pid}/spaces/restore`, payload);
+  assert.equal(restored.status, 201);
+
+  const after = (await api('GET', `/api/projects/${pid}`)).body;
+  const back = after.spaces.find((s) => s.id === room.id);
+  assert.ok(back, 'the room came back under its ORIGINAL id');
+  assert.equal(back.parent_id, building.id, 'and still inside its building');
+  assert.equal(JSON.parse(back.pin_json)['0'].x, 12, 'its layout slot still resolves');
+  assert.equal(after.adjacencies.length, 1, 'and its adjacency was restored too');
+});
+
+test('restore rejects rows belonging to another project', async () => {
+  const a = await newProject();
+  const b = await newProject();
+  const room = (await api('POST', `/api/projects/${a}/spaces`, { name: 'R', target_area: 10 })).body;
+  const payload = (await api('DELETE', `/api/spaces/${room.id}`)).body;
+  assert.equal((await api('POST', `/api/projects/${b}/spaces/restore`, payload)).status, 400);
 });
 
 test('DELETE space 404 for unknown id', async () => {

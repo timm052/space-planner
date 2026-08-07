@@ -149,6 +149,12 @@ router.put('/spaces/:id', (req, res) => {
 
 // DELETE /api/spaces/:id — recursive subtree delete via CTE.
 // Uses UNION (not UNION ALL) as defence-in-depth against data cycles.
+//
+// Returns the removed rows and their adjacencies (200, not 204) so the client
+// can offer undo. Deleting a room used to be the one irreversible act in the
+// diagram: it took the room's recorded areas and links with it AND the client
+// wiped its whole undo stack afterwards, so an accidental confirm also cost
+// every unrelated edit made before it.
 router.delete('/spaces/:id', (req, res) => {
   const id = Number(req.params.id);
   if (!db.prepare('SELECT id FROM spaces WHERE id = ?').get(id)) {
@@ -164,13 +170,84 @@ router.delete('/spaces/:id', (req, res) => {
     .all(id)
     .map((r) => r.id);
   const root = db.prepare('SELECT * FROM spaces WHERE id = ?').get(id);
+  const ph = ids.map(() => '?').join(',');
+  // Capture BEFORE deleting — the rows are the restore payload.
+  const spaces = db.prepare(`SELECT * FROM spaces WHERE id IN (${ph})`).all(...ids);
+  const adjacencies = db
+    .prepare(`SELECT * FROM adjacencies WHERE space_a IN (${ph}) OR space_b IN (${ph})`)
+    .all(...ids, ...ids);
   const del = db.prepare('DELETE FROM spaces WHERE id = ?');
   for (const sid of ids) del.run(sid);
   if (root) {
     logRemoved(root.project_id, 'design', root);
     resolveAndPersist(root.project_id); // references/rollups may have changed
   }
-  res.status(204).end();
+  res.json({ spaces, adjacencies });
+});
+
+// POST /api/projects/:id/spaces/restore — put a deleted subtree back.
+//
+// Re-inserts with the ORIGINAL ids, which is what makes this a true undo:
+// parent_id links inside the subtree, adjacency endpoints, and any layout slot
+// keyed by space id all keep pointing at the same rows. A fresh createSpace
+// would mint new ids and silently orphan every one of those references.
+router.post('/projects/:id/spaces/restore', (req, res) => {
+  const project = requireProject(req, res);
+  if (!project) return;
+  const spaces = Array.isArray(req.body?.spaces) ? req.body.spaces : [];
+  const adjacencies = Array.isArray(req.body?.adjacencies) ? req.body.adjacencies : [];
+  if (!spaces.length) return res.status(400).json({ error: 'Nothing to restore' });
+  if (spaces.some((s) => Number(s.project_id) !== project.id)) {
+    return res.status(400).json({ error: 'Rows belong to another project' });
+  }
+
+  // Take the column list from the live table rather than hardcoding it: this
+  // schema grows by migration (shape_json, plan_json, block_json, height_m,
+  // circ_pct, area_formula all arrived that way), and a stale list here would
+  // silently drop whichever column was added last.
+  const cols = db
+    .prepare('PRAGMA table_info(spaces)')
+    .all()
+    .map((c) => c.name);
+  const insSpace = db.prepare(
+    `INSERT OR IGNORE INTO spaces (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`
+  );
+  const insAdj = db.prepare(
+    `INSERT OR IGNORE INTO adjacencies (id, project_id, space_a, space_b, strength, inst_a, inst_b)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  );
+  // Parents first, so parent_id never dangles mid-insert (foreign_keys is ON).
+  const byId = new Map(spaces.map((s) => [s.id, s]));
+  const ordered = [];
+  const seen = new Set();
+  const visit = (s) => {
+    if (!s || seen.has(s.id)) return;
+    seen.add(s.id);
+    if (s.parent_id != null && byId.has(s.parent_id)) visit(byId.get(s.parent_id));
+    ordered.push(s);
+  };
+  for (const s of spaces) visit(s);
+
+  // One transaction — a half-restored subtree (rooms back, links missing) is
+  // worse than a clean failure. node:sqlite has no transaction() wrapper, so
+  // drive it with SQL, as the rest of this server does.
+  db.exec('BEGIN');
+  try {
+    for (const s of ordered) insSpace.run(...cols.map((c) => s[c] ?? null));
+    for (const a of adjacencies) {
+      insAdj.run(a.id ?? null, project.id, a.space_a, a.space_b, a.strength ?? 'desired', a.inst_a ?? 0, a.inst_b ?? 0);
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    return res.status(400).json({ error: `Restore failed: ${err.message}` });
+  }
+  resolveAndPersist(project.id);
+  const restored = db
+    .prepare(`SELECT * FROM spaces WHERE id IN (${spaces.map(() => '?').join(',')})`)
+    .all(...spaces.map((s) => s.id));
+  for (const s of restored) logCreated(project.id, 'design', s);
+  res.status(201).json(restored);
 });
 
 export default router;

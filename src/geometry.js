@@ -479,7 +479,35 @@ export function solveAreaLockedVertex(verts, vi, target, lockedArea, seg = 12) {
     f = (f + nf) / 2; // damped — the plain iteration can overshoot on big moves
   }
   out[vi] = { ...keep, x: target.x / f, y: target.y / f };
-  return { verts: out, f };
+  return { verts: out, f, ok: !selfIntersectsAt(out, vi) };
+}
+
+/**
+ * Would moving vertex `vi` make the ring self-intersect? Only the two edges
+ * incident on `vi` can newly cross, so this is O(n) rather than O(n²) — cheap
+ * enough to run on every pointer frame of a vertex drag.
+ *
+ * Dragging a corner past its neighbours turns the outline into a bowtie, whose
+ * |shoelace| area collapses toward zero as the two lobes cancel. The area lock
+ * then solves √(target / ~0) and the footprint balloons across the canvas — and
+ * releasing there persists coordinates that no longer mean anything, to the
+ * canvas, the 3-D extrusion and the PDF alike. Callers hold the last valid
+ * outline instead.
+ */
+export function selfIntersectsAt(pts, vi) {
+  const n = pts.length;
+  if (n < 4) return false;
+  const prev = (i) => (i - 1 + n) % n;
+  const next = (i) => (i + 1) % n;
+  const incident = [[prev(vi), vi], [vi, next(vi)]];
+  for (const [a, b] of incident) {
+    for (let i = 0; i < n; i++) {
+      const j = next(i);
+      if (i === a || i === b || j === a || j === b) continue; // shares a vertex
+      if (segmentsCross(pts[a], pts[b], pts[i], pts[j])) return true;
+    }
+  }
+  return false;
 }
 
 // Axis-aligned bounding box of a point set.

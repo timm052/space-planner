@@ -24,6 +24,11 @@
 
 .bubble-stage { position: relative; flex: 1; min-height: 0; background: var(--canvas-bg); overflow: hidden; }
 .bubble-svg { width: 100%; height: 100%; display: block; touch-action: none; user-select: none; }
+/* The canvas is focusable (role="application" promised keyboard operability),
+   so it needs a visible focus ring — but only from the keyboard, or every click
+   on the drawing would outline the whole stage. */
+.bubble-svg:focus { outline: none; }
+.bubble-svg:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 .bubble-svg.scaling { cursor: crosshair; }
 .bubble-svg.panning { cursor: grab; }
 .bubble-svg.panning:active { cursor: grabbing; }
@@ -1148,13 +1153,34 @@ kbd {
 
 .poly-edit { pointer-events: all; }
 /* Vertex handles — the glyph mirrors the corner style: circle = curve,
-   rounded square = fillet, square = sharp. Right-click cycles the style. */
-.poly-handle { fill: var(--accent2); stroke: #fff; stroke-width: 1.5; cursor: grab; transition: r var(--dur-fast) ease, fill var(--dur-fast) ease; }
-.poly-handle:hover { fill: #fff; stroke: var(--accent2); r: 8; }
-.poly-handle:active { cursor: grabbing; fill: #fff; r: 8; }
-rect.poly-handle:hover, rect.poly-handle:active { transform: scale(1.2); transform-box: fill-box; transform-origin: center; }
-.poly-add { fill: rgba(87, 199, 212, 0.35); stroke: #fff; stroke-width: 1; cursor: copy; transition: r var(--dur-fast) ease, fill var(--dur-fast) ease; }
-.poly-add:hover { fill: var(--accent2); r: 6; }
+   rounded square = fillet, square = sharp. Right-click cycles the style.
+   RADII ARE SET IN JS (DiagramCanvas divides by the view zoom, as every other
+   handle on this canvas does) — a CSS `r` cannot see the zoom, so hover/active
+   growth is a transform here rather than a literal radius. Strokes are
+   non-scaling for the same reason: a 1.5px keyline became a 9px halo at 6×. */
+.poly-handle {
+  fill: var(--accent2); stroke: #fff; stroke-width: 1.5; cursor: grab;
+  vector-effect: non-scaling-stroke;
+  transform-box: fill-box; transform-origin: center;
+  transition: transform var(--dur-fast) ease, fill var(--dur-fast) ease;
+}
+.poly-handle:hover, .poly-handle:active { fill: #fff; stroke: var(--accent2); transform: scale(1.3); }
+.poly-handle:active { cursor: grabbing; }
+/* Keyboard focus: the corner the arrow keys will nudge. */
+.poly-handle.keyed { stroke: var(--accent); stroke-width: 2.5; }
+/* The cursor is somewhere that would fold the outline over itself — the drag is
+   refused rather than allowed to collapse the area lock. */
+.poly-handle.refused { fill: var(--bad); stroke: var(--bad-ink); cursor: not-allowed; }
+.poly-add {
+  fill: rgba(87, 199, 212, 0.35); stroke: #fff; stroke-width: 1; cursor: copy;
+  vector-effect: non-scaling-stroke;
+  transform-box: fill-box; transform-origin: center;
+  transition: transform var(--dur-fast) ease, fill var(--dur-fast) ease;
+}
+.poly-add:hover { fill: var(--accent2); transform: scale(1.4); }
+@media (prefers-reduced-motion: reduce) {
+  .poly-handle, .poly-add { transition: none; }
+}
 .poly-area-badge {
   fill: var(--text); font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600;
   paint-order: stroke; stroke: var(--bg, #0b0d12); stroke-width: 3px; stroke-linejoin: round; pointer-events: none;
