@@ -5,6 +5,7 @@ import { hullOfDiscs, smoothHullPath, filterCss, polygonPath, polyBounds, polygo
 import { darkHex, labelInk, pocheInk } from '../../viz.js';
 import { fitLabel, measureText } from '../../textfit.js';
 import { TickLayer } from '../../hooks/useTick.js';
+import { toPath as markupPath } from '../../markup.js';
 import { boxExtents } from './scenes.js';
 
 // three.js + react-three-fiber are the bulk of the main bundle; the 3-D view
@@ -103,6 +104,9 @@ const BubbleLabel = memo(function BubbleLabel({ label, r, areaStr, ink, zoom = 1
  * the `on*` handlers own all pointer behavior, and the geometry helpers
  * close over BubbleTab's live scale/draft state.
  */
+/** Stroke path builder, aliased so the canvas reads at a glance. */
+const toMarkupPath = markupPath;
+
 export default function DiagramCanvas({
   tickStore,
   theme = 'dark',
@@ -170,6 +174,11 @@ export default function DiagramCanvas({
   rotateLayer,
   scaleBar,
   attributionLayer,
+  // Redline markup: committed strokes for this scope, plus a ref holding the
+  // one being drawn right now (a ref, not a prop value — a freehand drag emits
+  // a point per pointermove and must not re-render the shell on each).
+  markupStrokes = [],
+  inkRef = null,
   // scene builders & geometry helpers
   makeStackScene,
   make3DScene,
@@ -1232,6 +1241,34 @@ click to select · drag to move the building · drag the dot to re-plan the room
               <text x={originX + vb.w - 8} y={originY + vb.h - 8} textAnchor="end" className="attribution">
                 {attributionLayer.attribution}
               </text>
+            )}
+
+            {/* Redline markup — over the drawing, under the marquee.
+                pointerEvents="none" is load-bearing: the ink tool takes its
+                press from the SVG itself (modes.MODE_ORDER 'ink'), so this
+                layer must never intercept one. An overlay swallowing presses
+                on the handles beneath it is exactly how the interior-sketch
+                seed rings broke vertex editing. */}
+            {(markupStrokes.length > 0 || inkRef?.current) && (
+              <g className="markup-layer" pointerEvents="none" aria-hidden="true">
+                {markupStrokes.map((s) => (
+                  <path
+                    key={s.id}
+                    className={`markup-stroke${s.pending ? ' pending' : ''}`}
+                    d={toMarkupPath(s.points)}
+                    stroke={s.color}
+                    strokeWidth={s.width}
+                  />
+                ))}
+                {inkRef?.current && (
+                  <path
+                    className="markup-stroke live"
+                    d={toMarkupPath(inkRef.current.points)}
+                    stroke={inkRef.current.color}
+                    strokeWidth={inkRef.current.width}
+                  />
+                )}
+              </g>
             )}
 
             {marquee && (

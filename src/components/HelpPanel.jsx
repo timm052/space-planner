@@ -18,11 +18,13 @@ const SHORTCUTS = {
     ['Right-click a room', 'Quick actions — pin, edit outline, rotate, remove'],
     ['Right-click a corner handle', 'Cycle its corner style (curve → fillet → sharp)'],
     ['Double-click north', 'Reset project north'],
+    ['Drag with the Markup tool', 'Draw a redline stroke (Escape abandons it mid-stroke)'],
   ],
   Keyboard: [
     ['Ctrl+K', 'Find a room or command — select & fly to it'],
     ['V', 'Select tool'],
     ['L', 'Link tool — drag from room to room'],
+    ['D', 'Markup tool — freehand redline over the drawing'],
     ['A', 'Auto-layout pass (Concept only)'],
     ['P', 'Pin / unpin (Concept only)'],
     ['+ / − / 0', 'Zoom in / out / fit the program in view'],
@@ -163,6 +165,19 @@ const SECTIONS = [
       ['Vertical links', 'A room linked to another floor wears an ↑/↓/↕ tab — green when the pair stacks in plan (stairs/lifts line up), red when it doesn’t. Click the tab to jump to the partner’s floor with it selected.'],
       ['Heights', 'Storey heights live at the top of the Stacking rail (per level, in metres; 3.5 m default). A selected room’s ↥ field sets its own clear height — taller than its storey reads as a double-height / multi-floor volume in 3-D. Heights need the drawing scale to show at true proportion.'],
       ['3-D', 'Stacked · 3D is a WebGL model — orbit, zoom, camera preset buttons (Persp / Iso / Plan / Front / Side) top-right, floor spacing via the ⇕ slider, site image on the ground floor. Click a room to select it. With a scale set, storeys stack at their real heights.'],
+    ],
+  },
+  {
+    page: 'diagram',
+    env: null,
+    title: 'Markup — redlining over the drawing',
+    items: [
+      ['What it is', 'The ✎ Markup tool (D) draws freehand redlines over the plan — circling a clash, sketching an idea, marking something up for a colleague. It is a comment on the drawing, never part of it: markup can never change an area, a total or a compliance figure.'],
+      ['Pen', 'While the tool is live the dock shows four colours and three widths. A stroke is committed when you release; Escape mid-stroke abandons it.'],
+      ['Where it lives', 'Markup belongs to the environment you drew it in, and — while you are editing a single floor — to that storey, so a ground-floor note does not float over the first. It is not part of a design option, so switching Option A ⇄ B leaves your redlines alone.'],
+      ['It moves with the drawing', 'Ink is authored in the drawing’s own coordinates, so it stays on whatever you drew it over through pan, zoom and a change of drawing scale — and prints at the weight you drew it.'],
+      ['Removing it', 'Ctrl+Z undoes the last stroke. “Clear” removes every mark in the current scope as a single undoable step.'],
+      ['On the sheet', 'Markup exports with the PDF, over the drawing, and the sheet says so in the legend — so a marked-up print is never mistaken for an issued drawing.'],
     ],
   },
   {

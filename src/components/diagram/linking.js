@@ -49,12 +49,18 @@ export function setLinkKind(sel, kind) {
 }
 
 /**
- * Switch tools (V / L, tool dock). Entering Link mode drops the room + link
+ * Switch tools (V / L / D, tool dock). Entering Link mode drops the room + link
  * selection but — deliberately — does NOT notify the shared Brief selection
  * (the Brief keeps its highlight; only Escape/explicit deselects clear it).
  * Returning to Select disarms a half-made link.
+ *
+ * Markup is a drawing tool, not a selection tool: it drops the room and link
+ * selection too, so the action bars don't hover over ink you are laying down.
  */
 export function setTool(sel, tool) {
   if (tool === 'link') return done({ ...sel, tool: 'link', selected: null, selLink: null });
+  if (tool === 'markup') {
+    return done({ ...sel, tool: 'markup', selected: null, multi: new Set(), selLink: null, linkFrom: null, linkFromInst: 0 });
+  }
   return done({ ...sel, tool: 'select', linkFrom: null, linkFromInst: 0 });
 }

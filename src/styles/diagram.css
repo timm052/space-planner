@@ -360,6 +360,70 @@
 }
 .tool-dock-sep { height: 1px; background: var(--glass-border); margin: 1px 4px; }
 
+/* ---- Redline markup ---------------------------------------------------- */
+/* Ink is drawn in DIAGRAM UNITS and deliberately does NOT use
+   vector-effect: non-scaling-stroke. Interactive chrome (handles, guides) is
+   screen-space so grab targets stay constant; a pen mark is part of the
+   drawing, so it must keep its weight relative to the plan and print true at
+   the sheet's stated scale. */
+.markup-layer { pointer-events: none; }
+.markup-stroke {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  /* Reads as a marker over the drawing rather than as geometry in it. */
+  opacity: 0.85;
+}
+.markup-stroke.live { opacity: 1; }
+/* Optimistic strokes are already at full weight — the only cue is that they
+   have not yet come back from the server, which nobody needs to see. */
+.markup-stroke.pending { opacity: 0.85; }
+
+/* Pen tray — only mounted while the Markup tool is live. */
+.pen-tray {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 2px 2px;
+  align-items: center;
+}
+.pen-colors,
+.pen-widths { display: flex; gap: 4px; flex-wrap: wrap; justify-content: center; max-width: 40px; }
+.pen-swatch {
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  background: var(--pen);
+  cursor: pointer;
+  transition: transform var(--dur-fast) var(--ease);
+}
+.pen-swatch:hover { transform: scale(1.15); }
+.pen-swatch.active { border-color: var(--text); }
+.pen-width {
+  width: 17px;
+  height: 17px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  cursor: pointer;
+  color: var(--muted);
+}
+.pen-width:hover { background: var(--panel2); }
+.pen-width.active { background: var(--accent); color: var(--accent-ink); }
+.pen-width-dot {
+  width: var(--dot);
+  height: var(--dot);
+  border-radius: 50%;
+  background: currentColor;
+}
+.pen-clear { width: 100%; font-size: 10px; padding: 2px 0; }
+
 /* Stage legend → flat square swatches on glass (the legend keeps colour inputs). */
 .stage-legend { background: var(--glass); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border-color: var(--glass-border); box-shadow: var(--shadow); }
 .legend-swatch { width: 11px; height: 11px; border-radius: 0; display: inline-block; cursor: pointer; }

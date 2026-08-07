@@ -219,6 +219,30 @@ function renderSheet(doc, scene, { page, mmPerUnit, reduced }) {
     }
   }
 
+  // Redline markup — last, so it sits over the drawing exactly as it does on
+  // screen, and still inside the clip so a stray mark can't run into the title
+  // block. Drawn as straight segments between the stored samples: the client
+  // already simplified the stroke, and jsPDF has no quadratic path primitive.
+  for (const s of scene.markup ?? []) {
+    const [r, g, b] = hexToRgb(s.color);
+    doc.setDrawColor(r, g, b);
+    // Stroke width is in diagram units, like the geometry, so it converts with
+    // the same mmPerUnit and prints at the weight it was drawn at.
+    doc.setLineWidth(Math.max(0.15, s.width * mmPerUnit));
+    doc.setLineJoin('round');
+    doc.setLineCap('round');
+    if (s.points.length === 1) {
+      const [x, y] = s.points[0];
+      doc.line(X(x), Y(y), X(x), Y(y)); // a tap is a dot
+      continue;
+    }
+    for (let i = 1; i < s.points.length; i++) {
+      doc.line(X(s.points[i - 1][0]), Y(s.points[i - 1][1]), X(s.points[i][0]), Y(s.points[i][1]));
+    }
+  }
+  doc.setLineCap('butt');
+  doc.setLineJoin('miter');
+
   doc.restoreGraphicsState(); // remove clip
 
   // Frame.
@@ -250,6 +274,13 @@ function renderSheet(doc, scene, { page, mmPerUnit, reduced }) {
     const entryW = (label) => sw + 1.4 + doc.getTextWidth(label) + 5;
     let lx = MARGIN + availW - 5;
     const ly = MARGIN + availH - 7.5;
+    // Say so when the sheet carries redlines, so nobody reads a marked-up
+    // print as an issued drawing.
+    if (scene.markup?.length) {
+      const note = 'Red / coloured lines are markup — not drawn geometry';
+      doc.setTextColor(120, 120, 120);
+      doc.text(note, lx, ly - 4.6, { align: 'right' });
+    }
     for (const item of [...scene.legend].reverse()) {
       lx -= entryW(item.label);
       const [r, g, b] = hexToRgb(item.color);

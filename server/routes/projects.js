@@ -102,7 +102,12 @@ router.get('/:id', (req, res) => {
     .prepare(`SELECT ${IMAGE_META_COLS} FROM images WHERE project_id = ? ORDER BY sort_order, id`)
     .all(project.id);
 
-  res.json({ project: publicProject(project), spaces, brief_spaces, snapshots, adjacencies, brief_adjacencies, images });
+  // Redline ink drawn over the drawing. Small enough to travel with the
+  // project; never mixed into `spaces`, so nothing that totals the programme
+  // can reach it.
+  const markups = db.prepare('SELECT * FROM markups WHERE project_id = ? ORDER BY id').all(project.id);
+
+  res.json({ project: publicProject(project), spaces, brief_spaces, snapshots, adjacencies, brief_adjacencies, images, markups });
 });
 
 // PUT /api/projects/:id

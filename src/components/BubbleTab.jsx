@@ -29,6 +29,8 @@ import { useLinks } from '../hooks/useLinks.js';
 import { useCategoryColors } from '../hooks/useCategoryColors.js';
 import { usePolyEditing } from '../hooks/usePolyEditing.js';
 import { useImageLayers } from '../hooks/useImageLayers.js';
+import { useMarkup } from '../hooks/useMarkup.js';
+import { scaleStroke, parseStroke, bboxOf as markupBbox, NO_MARKUP, PEN_COLORS, PEN_WIDTHS } from '../markup.js';
 import { bakeImage } from '../imageUtils.js';
 import { useTheme } from '../theme.jsx';
 import HelpPanel from './HelpPanel.jsx';
@@ -113,7 +115,7 @@ const ZOOM_MAX = 6;
 // Colour-by-status legend labels (vs the latest milestone) — shared vocabulary.
 const STATUS_LABELS = STATUS_LABEL;
 
-export default function BubbleTab({ project, spaces, adjacencies, images = [], snapshots = [], onChanged, selectedSpaceId = null, onSelectSpace, onPullToBrief = null, onGoTab = null }) {
+export default function BubbleTab({ project, spaces, adjacencies, images = [], markups = NO_MARKUP, snapshots = [], onChanged, selectedSpaceId = null, onSelectSpace, onPullToBrief = null, onGoTab = null }) {
   // Selection + link-tool state lives in one pure state machine (see
   // diagram/selection.js and diagram/linking.js). Transitions are applied via
   // applySel() below; the destructure keeps every read site unchanged.
@@ -582,6 +584,20 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     isBuilding && (floorView === 'offset' || floorView === 'overlaid' || floorView === '3d' || floorView === 'all' || levels.includes(floorView))
       ? floorView
       : 'all';
+
+  // Redline markup. Scoped per environment, and per storey while a single floor
+  // is being edited — a note about the ground floor has no business showing over
+  // the first. The stacked/3-D overviews are not a storey, so they scope to ''.
+  // Declared here (not with the other hooks above) because it needs floorMode.
+  const markupLevel = isBuilding && levels.includes(floorMode) ? floorMode : '';
+  const {
+    pen: markupPen, setPen: setMarkupPen, strokes: markupStrokes, inkRef,
+    markupPointerDown, markupPointerMove, markupPointerUp, markupCancel,
+    clearScope: clearMarkup, rescaleAll: rescaleMarkup, hasMarkup,
+  } = useMarkup({
+    project, markups, env, level: markupLevel, active: sel.tool === 'markup',
+    toSvgCoords, onChanged, setError, setTick, history,
+  });
   useEffect(() => setPref('floorView', 'all'), [project.id]); // eslint-disable-line react-hooks/exhaustive-deps
   // Building's primary state is editing ONE floor: entering it (or opening a
   // multi-level project in it) lands on the ground floor; "all"/stacked are opt-in
@@ -699,6 +715,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
         applySel((s) => linking.setTool(s, 'select'));
       } else if (e.key.toLowerCase() === 'l' && !mod) {
         applySel((s) => linking.setTool(s, 'link'));
+      } else if (e.key.toLowerCase() === 'd' && !mod && !is3DRef.current) {
+        // Markup is a 2-D redline; the 3-D view has no plan to draw over.
+        applySel((s) => linking.setTool(s, 'markup'));
       } else if (e.key.toLowerCase() === 'a' && !mod && caps.autoLayout) {
         runAutoLayout(); // authored Master plan / Building have no auto-layout
       } else if (e.key === 'Tab' && !mod) {
@@ -2039,6 +2058,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
       if (!dragRef.current) panRef.current = { sx: e.clientX, sy: e.clientY, vx: viewRef.current.x, vy: viewRef.current.y, moved: false };
       return;
     }
+    // Ink first (modes.MODE_ORDER), but only ever claims the press while the
+    // Markup tool is selected — so every other gesture arbitrates unchanged
+    // when it is off. Deliberately after the right/middle-button branches:
+    // panning must keep working while you are drawing.
+    if (markupPointerDown(e)) return;
     if (layerPointerDown(e)) return; // scale-click / move / rotate a layer — useImageLayers
     if (panActive) {
       if (!dragRef.current) panRef.current = { sx: e.clientX, sy: e.clientY, vx: view.x, vy: view.y };
@@ -2123,6 +2147,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
       moveRafRef.current = 0;
       moveRef.current = null;
     }
+    if (markupCancel()) had = true;
     if (polyCancel()) had = true;
     const drag = dragRef.current;
     if (drag) {
@@ -2189,6 +2214,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     const rect = readRect();
     if (pinchRef.current) return void pinchMove(e); // two fingers own the view
     if (pointersRef.current.has(e.pointerId)) pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (markupPointerMove(e)) return; // freehand redline — handled by useMarkup
     if (polyPointerMove(e)) return; // vertex drag — handled by usePolyEditing
     if (rotPointerMove(e)) return; // rotating a placed footprint
     if (resizePointerMove(e)) return; // area-lock resizing a building box
@@ -2347,6 +2373,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
       cancelAnimationFrame(moveRafRef.current);
       flushMove();
     }
+    if (markupPointerUp()) return; // redline release — commits the stroke
     if (polyPointerUp()) return; // vertex drag release — handled by usePolyEditing
     if (await rotPointerUp()) return; // rotate release — persist plan_json rot
     if (await resizePointerUp()) return; // box resize release — persist w/h to block_json
@@ -2849,6 +2876,10 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
       // Uniform zoom about the viewport centre keeps bubbles aligned with images.
       const A = { x: viewRef.current.x + W / 2, y: viewRef.current.y + H / 2 };
       const tx = (p) => zoomAbout(p, A, f);
+      // Redline ink is authored in the same world as the drawing, so it rides
+      // the same transform — points AND pen width. Miss this and every mark
+      // silently slides off the plan the first time the scale changes.
+      await rescaleMarkup((s) => scaleStroke(s, A, f));
       for (const n of nodesRef.current.values()) {
         const t = tx(n);
         n.x = t.x;
@@ -3155,6 +3186,22 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     if (bubbles.length === 0) return null;
     const bounds = sceneBounds(bubbles);
 
+    // Redline markup for THIS sheet's scope — the drawing set exports several
+    // sheets in one pass, so it has to come from the raw rows rather than from
+    // whatever the viewport happens to be showing.
+    const sheetMarkup = (markups || [])
+      .map(parseStroke)
+      .filter((s) => s && s.env === kind && (s.level || '') === (floor ?? ''));
+    // Widen the frame so a mark drawn outside the rooms is not silently cropped
+    // off the sheet. Ink is a comment someone expects to see on the print.
+    const inkBox = markupBbox(sheetMarkup);
+    if (inkBox) {
+      bounds.minX = Math.min(bounds.minX, inkBox.x0);
+      bounds.minY = Math.min(bounds.minY, inkBox.y0);
+      bounds.maxX = Math.max(bounds.maxX, inkBox.x1);
+      bounds.maxY = Math.max(bounds.maxY, inkBox.y1);
+    }
+
     // Site image layers belong to the master plan sheet only.
     const sceneLayers = [];
     if (kind === 'masterplan') {
@@ -3206,6 +3253,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
       links,
       bubbles,
       cells,
+      markup: sheetMarkup,
       // Category swatches so the sheet's colours decode on paper.
       legend: groups.map((g) => ({ label: g, color: colorForLabel(g) })),
       bubbleStyle,
@@ -3971,6 +4019,14 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
               showOnion={isBuilding && hasLevels && editingFloor != null}
               onion={onion}
               onToggleOnion={() => setPref('onion', !onion)}
+              showMarkup={!is3D}
+              markupPen={markupPen}
+              onMarkupPen={setMarkupPen}
+              penColors={PEN_COLORS}
+              penWidths={PEN_WIDTHS}
+              hasMarkup={hasMarkup}
+              onClearMarkup={clearMarkup}
+              markupScopeNote={markupLevel ? `this floor (${markupLevel})` : 'this environment'}
               onRecentre={fitView}
             />
 
@@ -4216,6 +4272,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
             instPin={instPin}
             ea={ea}
             scaleLabelFor={scaleLabelFor}
+            markupStrokes={markupStrokes}
+            inkRef={inkRef}
             onSvgPointerDown={onSvgPointerDown}
             onSvgContextMenu={(e) => {
               // The canvas owns right-click (pan / room menu) — never the browser menu.

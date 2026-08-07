@@ -141,9 +141,88 @@ test('GET /api/projects/:id returns the full bundle; 404 when missing', async ()
   const id = await newProject();
   const { status, body } = await api('GET', `/api/projects/${id}`);
   assert.equal(status, 200);
-  assert.deepEqual(Object.keys(body).sort(), ['adjacencies', 'brief_adjacencies', 'brief_spaces', 'images', 'project', 'snapshots', 'spaces']);
+  assert.deepEqual(Object.keys(body).sort(), ['adjacencies', 'brief_adjacencies', 'brief_spaces', 'images', 'markups', 'project', 'snapshots', 'spaces']);
   const missing = await api('GET', '/api/projects/99999');
   assert.equal(missing.status, 404);
+});
+
+// ---- markup --------------------------------------------------------------
+// Markup is a comment on the drawing, never programme data. These pin the two
+// properties that matter: it round-trips faithfully, and it stays out of the
+// numbers.
+
+test('POST /api/projects/:id/markups stores a stroke and it comes back in the bundle', async () => {
+  const id = await newProject();
+  const created = await api('POST', `/api/projects/${id}/markups`, {
+    env: 'masterplan', level: 'Ground', color: '#3e63dd', width: 5, points: [[10, 20], [30, 40]],
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.env, 'masterplan');
+  assert.equal(created.body.level, 'Ground');
+  assert.equal(created.body.color, '#3e63dd');
+  assert.deepEqual(JSON.parse(created.body.points), [[10, 20], [30, 40]]);
+
+  const { body } = await api('GET', `/api/projects/${id}`);
+  assert.equal(body.markups.length, 1);
+  // …and it did not become a space, so nothing that totals the programme sees it.
+  assert.equal(body.spaces.length, 0);
+});
+
+test('markup rejects an empty or unusable stroke', async () => {
+  const id = await newProject();
+  assert.equal((await api('POST', `/api/projects/${id}/markups`, { points: [] })).status, 400);
+  assert.equal((await api('POST', `/api/projects/${id}/markups`, { points: [['a', 'b']] })).status, 400);
+  assert.equal((await api('POST', `/api/projects/${id}/markups`, {})).status, 400);
+});
+
+test('markup falls back to safe values for a bad colour or environment', async () => {
+  const id = await newProject();
+  const { body } = await api('POST', `/api/projects/${id}/markups`, {
+    env: 'nowhere', color: 'url(#evil)', width: 9999, points: [[0, 0]],
+  });
+  assert.equal(body.env, 'concept');
+  assert.equal(body.color, '#e5484d'); // never lands user text in a paint attribute
+  assert.equal(body.width, 200); // clamped
+});
+
+test('DELETE /api/markups/:id returns the row so an undo can restore it', async () => {
+  const id = await newProject();
+  const { body: made } = await api('POST', `/api/projects/${id}/markups`, { env: 'concept', points: [[1, 2]] });
+  const del = await api('DELETE', `/api/markups/${made.id}`);
+  assert.equal(del.status, 200);
+  assert.equal(del.body.id, made.id);
+  assert.equal((await api('GET', `/api/projects/${id}`)).body.markups.length, 0);
+
+  const restored = await api('POST', `/api/projects/${id}/markups/restore`, { markups: [del.body] });
+  assert.equal(restored.status, 200);
+  const after = (await api('GET', `/api/projects/${id}`)).body.markups;
+  assert.equal(after.length, 1);
+  assert.equal(after[0].id, made.id); // same id, so redo/undo stay symmetrical
+});
+
+test('clear removes only the addressed scope and hands the rows back', async () => {
+  const id = await newProject();
+  await api('POST', `/api/projects/${id}/markups`, { env: 'concept', points: [[1, 1]] });
+  await api('POST', `/api/projects/${id}/markups`, { env: 'masterplan', level: 'Ground', points: [[2, 2]] });
+  await api('POST', `/api/projects/${id}/markups`, { env: 'masterplan', level: 'First', points: [[3, 3]] });
+
+  const cleared = await api('POST', `/api/projects/${id}/markups/clear`, { env: 'masterplan', level: 'Ground' });
+  assert.equal(cleared.status, 200);
+  assert.equal(cleared.body.markups.length, 1);
+
+  const left = (await api('GET', `/api/projects/${id}`)).body.markups;
+  assert.equal(left.length, 2); // the concept stroke and the First-floor one survive
+  assert.ok(left.every((m) => !(m.env === 'masterplan' && m.level === 'Ground')));
+
+  await api('POST', `/api/projects/${id}/markups/restore`, { markups: cleared.body.markups });
+  assert.equal((await api('GET', `/api/projects/${id}`)).body.markups.length, 3);
+});
+
+test('deleting a project takes its markup with it', async () => {
+  const id = await newProject();
+  await api('POST', `/api/projects/${id}/markups`, { env: 'concept', points: [[1, 1]] });
+  await api('DELETE', `/api/projects/${id}`);
+  assert.equal((await api('GET', `/api/projects/${id}`)).status, 404);
 });
 
 test('DELETE /api/projects/:id removes it', async () => {

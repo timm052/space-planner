@@ -295,6 +295,33 @@ db.exec(`
   );
 `);
 
+// Redline markup — freehand ink drawn OVER the drawing. Deliberately its own
+// table and NOT part of spaces: markup never contributes to an area, a total
+// or a compliance figure, and nothing that reads the programme should be able
+// to reach it by accident.
+//
+// Scoped per environment and per storey, because a note about the ground floor
+// has no business showing over the first. `points` is JSON [[x,y],…] in DIAGRAM
+// UNITS (see src/markup.js), so ink stays on what it was drawn over through
+// pan, zoom and a drawing-scale change.
+//
+// Markup is NOT captured by design options: a redline is a comment on the
+// project, not part of a scheme, so it must not vanish when you switch A → B.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS markups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    env TEXT NOT NULL DEFAULT 'concept',
+    level TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'ink',
+    color TEXT NOT NULL DEFAULT '#e5484d',
+    width REAL NOT NULL DEFAULT 5,
+    points TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS markups_scope ON markups (project_id, env, level);
+`);
+
 // Design options — named saves of the whole design (spaces + adjacencies) so
 // Option A/B schemes can be compared against one Brief and swapped in.
 db.exec(`

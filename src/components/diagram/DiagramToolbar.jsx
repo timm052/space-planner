@@ -309,8 +309,16 @@ export function MorePopover({
   );
 }
 
-/** The left tool dock: Select / Link, then Auto-layout and Recentre. */
-export function ToolDock({ tool, onTool, autoRunning, onAutoLayout, showAutoLayout = true, showSnap = false, snapEdges = true, snapGrid = true, onToggleSnapEdges, onToggleSnapGrid, showInterior = false, interior = true, onToggleInterior, showOnion = false, onion = false, onToggleOnion, onRecentre }) {
+/** The left tool dock: Select / Link / Markup, then Auto-layout and Recentre. */
+export function ToolDock({
+  tool, onTool, autoRunning, onAutoLayout, showAutoLayout = true, showSnap = false,
+  snapEdges = true, snapGrid = true, onToggleSnapEdges, onToggleSnapGrid,
+  showInterior = false, interior = true, onToggleInterior,
+  showOnion = false, onion = false, onToggleOnion,
+  showMarkup = false, markupPen = null, onMarkupPen, penColors = [], penWidths = [],
+  hasMarkup = false, onClearMarkup, markupScopeNote = 'this environment',
+  onRecentre,
+}) {
   return (
     <div className="tool-dock">
       <button
@@ -329,6 +337,54 @@ export function ToolDock({ tool, onTool, autoRunning, onAutoLayout, showAutoLayo
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="6" cy="17" r="3" /><circle cx="18" cy="7" r="3" /><line x1="8" y1="15" x2="16" y2="9" strokeLinecap="round" /></svg>
         <span className="tool-key">L</span>
       </button>
+      {showMarkup && (
+        <button
+          className={`tool-btn ${tool === 'markup' ? 'active' : ''}`}
+          onClick={() => onTool('markup')}
+          title="Markup — freehand redline over the drawing (D). Notes only: markup never changes an area or a total."
+        >
+          {/* pen nib */}
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 20l4-1 10-10a2.5 2.5 0 0 0-3.5-3.5L4.5 15.5z" /><line x1="14" y1="6.5" x2="17.5" y2="10" /></svg>
+          <span className="tool-key">D</span>
+        </button>
+      )}
+      {/* Pen controls appear only while the tool is live, so the dock doesn't
+          grow a colour picker for everyone else. */}
+      {showMarkup && tool === 'markup' && markupPen && (
+        <div className="pen-tray" role="group" aria-label="Markup pen">
+          <div className="pen-colors">
+            {penColors.map(([hex, label]) => (
+              <button
+                key={hex}
+                className={`pen-swatch ${markupPen.color === hex ? 'active' : ''}`}
+                style={{ '--pen': hex }}
+                onClick={() => onMarkupPen({ ...markupPen, color: hex })}
+                aria-pressed={markupPen.color === hex}
+                title={label}
+              />
+            ))}
+          </div>
+          <div className="pen-widths">
+            {penWidths.map((w, i) => (
+              <button
+                key={w}
+                className={`pen-width ${markupPen.width === w ? 'active' : ''}`}
+                onClick={() => onMarkupPen({ ...markupPen, width: w })}
+                aria-pressed={markupPen.width === w}
+                title={['Fine', 'Medium', 'Broad'][i] ?? `${w}`}
+              >
+                <span className="pen-width-dot" style={{ '--dot': `${4 + i * 3}px` }} />
+              </button>
+            ))}
+          </div>
+          <button
+            className="btn small ghost danger pen-clear"
+            onClick={onClearMarkup}
+            disabled={!hasMarkup}
+            title={hasMarkup ? `Clear all markup on ${markupScopeNote} (one undo step)` : 'No markup to clear'}
+          >Clear</button>
+        </div>
+      )}
       <div className="tool-dock-sep" />
       {showAutoLayout && (
         <button
