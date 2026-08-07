@@ -4,7 +4,7 @@ import { convexHull, concaveHull, hullOfDiscs, clipHalfPlane, voronoiCells, powe
   closestPointOnPolygon, smoothHullPath, pinsOf, filterCss, IMAGE_FILTERS,
   polygonArea, polygonCentroid, normalizePolygon, parsePoly, polygonPath, polyBounds,
   regularPolygon, lShape, smoothPolygonPoints, solveAreaLockedVertex,
-  outlinePoints, simplifyOutline } from '../src/geometry.js';
+  outlinePoints, simplifyOutline, selfIntersectsAt } from '../src/geometry.js';
 
 // ---- convexHull ---------------------------------------------------------
 
@@ -189,6 +189,57 @@ test('solveAreaLockedVertex is deterministic and continuous in the cursor', () =
   for (let i = 0; i < verts.length; i++) {
     const d = Math.hypot(b.verts[i].x - a1.verts[i].x, b.verts[i].y - a1.verts[i].y);
     assert.ok(d < 0.05, `1px cursor step moves vert ${i} smoothly (${d})`);
+  }
+});
+
+// The bowtie guard. Dragging a corner past its neighbours folds the ring; the
+// two lobes then cancel in |shoelace|, so the area lock solves √(target / ~0)
+// and the footprint balloons across the canvas. Releasing there persisted
+// coordinates that no longer meant anything — to the canvas, the 3-D extrusion
+// and the PDF alike. The solver now reports it and the drag holds the last
+// valid outline instead.
+test('selfIntersectsAt is quiet on a well-formed ring', () => {
+  for (const p of [regularPolygon(6), regularPolygon(5), lShape()]) {
+    for (let i = 0; i < p.length; i++) {
+      assert.equal(selfIntersectsAt(p, i), false, `vertex ${i} of a simple polygon`);
+    }
+  }
+});
+
+test('selfIntersectsAt catches a vertex dragged across the far side', () => {
+  // Square corners run BL → BR → TR → TL. Swinging BL out past x=1 makes the
+  // closing edge TL→BL cut through the right-hand edge BR→TR: a bowtie.
+  const square = [
+    { x: -1, y: -1 }, { x: 1, y: -1 }, { x: 1, y: 1 }, { x: -1, y: 1 },
+  ];
+  assert.equal(selfIntersectsAt([{ x: 3, y: -1 }, square[1], square[2], square[3]], 0), true);
+  // Out past the corner but ABOVE the right edge is still a simple quad — the
+  // guard must not refuse ordinary reshaping just because a vertex went far.
+  assert.equal(selfIntersectsAt([{ x: 3, y: 1.5 }, square[1], square[2], square[3]], 0), false);
+});
+
+test('adjacent edges sharing a vertex are not counted as a crossing', () => {
+  // A very sharp spike is degenerate-looking but simple — it must stay allowed.
+  const spike = [
+    { x: -1, y: 0 }, { x: 0, y: -0.02 }, { x: 1, y: 0 }, { x: 0, y: 1 },
+  ];
+  assert.equal(selfIntersectsAt(spike, 1), false);
+});
+
+test('solveAreaLockedVertex flags a fold instead of ballooning the outline', () => {
+  const square = [
+    { x: -1, y: -1 }, { x: 1, y: -1 }, { x: 1, y: 1 }, { x: -1, y: 1 },
+  ];
+  const ok = solveAreaLockedVertex(square, 0, { x: -60, y: -60 }, 5000, 14);
+  assert.equal(ok.ok, true, 'pulling a corner outwards is a normal reshape');
+  // Drag corner 0 deep across the far edge.
+  const bad = solveAreaLockedVertex(square, 0, { x: 120, y: 60 }, 5000, 14);
+  assert.equal(bad.ok, false, 'a fold is refused');
+  // `ok` must describe the outline the solver actually returned, since the drag
+  // handler decides whether to keep it on exactly that basis.
+  for (const t of [{ x: -60, y: -60 }, { x: 120, y: 60 }, { x: 150, y: -35 }, { x: 0, y: -200 }]) {
+    const r = solveAreaLockedVertex(square, 0, t, 5000, 14);
+    assert.equal(r.ok, !selfIntersectsAt(r.verts, 0), `ok matches the result for ${JSON.stringify(t)}`);
   }
 });
 

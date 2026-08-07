@@ -3,6 +3,7 @@ import {
   parsePoly, normalizePolygon, polygonCentroid, polygonPath, regularPolygon,
   polygonArea, outlinePoints, solveAreaLockedVertex, cornerOf,
 } from '../geometry.js';
+import { DRAG_SLOP_PX } from '../components/diagram/modes.js';
 import { pinPatch } from '../pins.js';
 
 // Polygons render as smooth, bubble-like blobs (a dense sampled curve through
@@ -46,10 +47,18 @@ export function usePolyEditing({
   // yet (e.g. master-plan building envelopes render a rectangle before they're
   // placed); null keeps the classic parsePoly-or-nothing behaviour.
   defaultOutline = null,
+  // Snap a WORLD-space handle position to neighbouring edges / the metric grid,
+  // returning { x, y } (and publishing its own guides). Null = no snapping.
+  snapVertex = null,
+  // Map<spaceId, space> — the keyboard nudge needs to resolve `editShape`.
+  spaceById = null,
 }) {
   const [editShape, setEditShape] = useState(null); // space id whose polygon is being edited
+  const [selVert, setSelVert] = useState(null); // vertex index under keyboard control
   const polyDragRef = useRef(null); // { space, vi } while dragging a polygon vertex handle
-  const polyOverride = useRef(new Map()); // space.id → { json, verts } saved outline awaiting refetch
+  const polyOverride = useRef(new Map()); // space.id → { from, json, verts } outline awaiting refetch
+  const nudgedRef = useRef(null); // { space, verts } accumulated keyboard nudges
+  const spaceOfEdit = (id) => spaceById?.get(id) ?? null;
 
   // Drop optimistic outlines when switching projects (matches BubbleTab's
   // project-change reset for history + optimistic colours).
@@ -58,19 +67,31 @@ export function usePolyEditing({
   useEffect(() => {
     if (editShape != null && editShape !== selected) setEditShape(null);
   }, [selected]); // eslint-disable-line react-hooks/exhaustive-deps
+  // A vertex selection only means anything inside the shape being edited.
+  useEffect(() => setSelVert(null), [editShape]);
 
   // Normalized verts for a space, preferring (1) the live drag verts, then
   // (2) the just-saved outline until the refetch delivers it — releasing a
   // vertex used to flash the PRE-edit shape for the refetch round-trip, a
-  // visible snap back and forth. The override drops itself once the space's
-  // shape_json catches up.
+  // visible snap back and forth.
+  //
+  // The override must yield to ANY other writer, not just to its own write
+  // landing. Matching only on `json` meant an UNDO — which writes the PRE-edit
+  // outline — could never satisfy the check, so the override kept rendering the
+  // undone shape for the rest of the session while the database held the
+  // reverted one. That divergence reached paper: the PDF sheet builds its
+  // outline from parsePoly(space) (BubbleTab.sheetPoly), so the drawing you
+  // issued stopped matching the drawing on screen. Recording what the override
+  // was derived FROM makes "someone else wrote" detectable.
   const liveNormOf = (s) => {
     const d = polyDragRef.current;
     if (d && d.space.id === s.id) return d.verts;
     const ov = polyOverride.current.get(s.id);
     if (ov) {
-      if (s.shape_json === ov.json) polyOverride.current.delete(s.id); // refetch caught up
-      else return ov.verts;
+      const cur = s.shape_json ?? null;
+      if (cur === ov.json) polyOverride.current.delete(s.id); // our write landed
+      else if (cur !== ov.from) polyOverride.current.delete(s.id); // undo / another writer wins
+      else return ov.verts; // unchanged since we wrote → still in flight
     }
     return parsePoly(s) || (defaultOutline ? defaultOutline(s) : null);
   };
@@ -144,32 +165,63 @@ export function usePolyEditing({
     const after = { shape: 'poly', shape_json: JSON.stringify(norm) };
     // Render the saved outline immediately (liveNormOf) so releasing the
     // handle doesn't flash the pre-edit shape while the refetch is in flight.
-    polyOverride.current.set(space.id, { json: after.shape_json, verts: norm });
-    const idx = editAnchorInst(space);
-    const node = nodesRef.current.get(`${space.id}:${idx}`);
+    // `from` is the row we derived it from — see liveNormOf for why.
+    polyOverride.current.set(space.id, { from: space.shape_json ?? null, json: after.shape_json, verts: norm });
     const c = polygonCentroid(verts);
-    if (node && Math.hypot(c.x, c.y) > 1e-6) {
+    const restore = []; // node positions to put back if the write fails
+    if (Math.hypot(c.x, c.y) > 1e-6) {
       // Screen shift removed by normalization = centroid × the render scale the
       // outline had during the edit (smoothing is affine, so this is exact).
       const k = polygonArea(outlinePoints(verts, SMOOTH_SEG)) || polygonArea(verts) || 1;
       const f = Math.sqrt(areaUnits(space) / k);
-      node.x += c.x * f;
-      node.y += c.y * f;
-      const patch = posPatch(space, [idx], (i, prev) => {
-        const pos = { x: node.x, y: node.y };
-        return prev?.locked ? { ...pos, locked: true } : pos;
-      });
-      Object.assign(before, patch.before);
-      Object.assign(after, patch.after);
-      for (const [i, p] of Object.entries(patch.touched)) pinOverride.current.set(`${space.id}:${i}`, p);
+      // shape_json belongs to the SPACE, so every instance re-renders with the
+      // re-centred outline. Compensating only the edited instance left the
+      // others to jump by the centroid delta — and to persist there. Move them
+      // all, in the one undo entry.
+      const idxs = [];
+      for (let i = 0; i < Math.max(1, space.count || 1); i++) {
+        const n = nodesRef.current.get(`${space.id}:${i}`);
+        if (!n) continue;
+        restore.push({ n, x: n.x, y: n.y });
+        n.x += c.x * f;
+        n.y += c.y * f;
+        idxs.push(i);
+      }
+      if (idxs.length) {
+        const patch = posPatch(space, idxs, (i, prev) => {
+          const n = nodesRef.current.get(`${space.id}:${i}`);
+          const pos = { x: n.x, y: n.y };
+          return prev?.locked ? { ...pos, locked: true } : pos;
+        });
+        Object.assign(before, patch.before);
+        Object.assign(after, patch.after);
+        for (const [i, p] of Object.entries(patch.touched)) pinOverride.current.set(`${space.id}:${i}`, p);
+      }
     }
     history.record({ label, undo: () => applySpace(space.id, before), redo: () => applySpace(space.id, after) });
     setError(null);
-    applySpace(space.id, after).catch((e) => setError(e.message));
+    applySpace(space.id, after).catch((e) => {
+      // The write lost. Put the geometry back rather than leave the canvas
+      // showing an outline (and positions) the database does not have.
+      for (const r of restore) ((r.n.x = r.x), (r.n.y = r.y));
+      polyOverride.current.delete(space.id);
+      setTick((t) => t + 1);
+      setError(e.message);
+    });
   }
+  // Every discrete operation below reads liveNormOf, NOT parsePoly.
+  //
+  // savePoly does not await its write, so `space` still holds the pre-edit row
+  // for the length of the round-trip. Reading parsePoly inside that window
+  // applied the change to a stale outline and saved it — silently reverting the
+  // edit before it. Users work in exactly that rhythm (drag a corner, release,
+  // immediately double-click another), so the window was hit constantly.
+  // liveNormOf already resolves drag verts → pending override → persisted, and
+  // it also covers an outline that is still only a defaultOutline.
+
   // Insert a vertex at the midpoint of edge i→i+1 (in normalized space).
   function addPolyVertex(space, edgeIndex) {
-    const np = parsePoly(space);
+    const np = liveNormOf(space);
     if (!np) return;
     const a = np[edgeIndex], b = np[(edgeIndex + 1) % np.length];
     const next = [...np];
@@ -178,7 +230,7 @@ export function usePolyEditing({
   }
   // Remove a vertex (keeps at least a triangle).
   function removePolyVertex(space, vi) {
-    const np = parsePoly(space);
+    const np = liveNormOf(space);
     if (!np || np.length <= 3) return;
     savePoly(space, np.filter((_, i) => i !== vi), 'remove vertex');
   }
@@ -187,7 +239,7 @@ export function usePolyEditing({
   // positions don't move — only how the outline passes through them; the area
   // lock re-scales so the enclosed footprint stays exact.
   function cycleCornerStyle(space, vi) {
-    const np = parsePoly(space);
+    const np = liveNormOf(space);
     if (!np || !np[vi]) return;
     const order = { c: 'f', f: 's', s: 'c' };
     const next = [...np];
@@ -195,16 +247,27 @@ export function usePolyEditing({
     savePoly(space, next, 'corner style');
   }
   function setCornerStyleAll(space, k) {
-    const np = parsePoly(space);
+    const np = liveNormOf(space);
     if (!np) return;
     savePoly(space, np.map((p) => ({ ...p, k })), 'corners');
   }
   function onPolyVertexDown(e, space, vi) {
+    // Left button only. Without this a RIGHT press set up a vertex drag as well
+    // as firing contextmenu, so one right-click both cycled the corner style and
+    // saved a reshape — and right-drag-to-pan turned into a vertex drag whenever
+    // the press landed on a handle, which while editing is most of the shape.
+    if (e.button !== 0) return;
     e.stopPropagation();
-    try { e.target.setPointerCapture?.(e.pointerId); } catch { /* synthetic */ }
-    const np = parsePoly(space);
+    // currentTarget, not target: capture must sit on the element the handler is
+    // bound to, so a re-render that swaps the child glyph can't drop the drag.
+    try { e.currentTarget.setPointerCapture?.(e.pointerId); } catch { /* synthetic */ }
+    const np = liveNormOf(space);
     if (!np) return;
-    polyDragRef.current = { space, vi, verts: np.map((p) => ({ ...p })), moved: 0 };
+    setSelVert(vi); // arrow keys now nudge THIS corner
+    polyDragRef.current = {
+      space, vi, verts: np.map((p) => ({ ...p })),
+      sx: e.clientX, sy: e.clientY, moved: 0, invalid: false,
+    };
   }
 
   // Pointer delegates for the shell switchyard: return true when a vertex drag
@@ -214,18 +277,40 @@ export function usePolyEditing({
     if (!d) return false;
     const node = nodesRef.current.get(`${d.space.id}:${editAnchorInst(d.space)}`);
     if (node) {
-      const { x, y } = toSvgCoords(e);
+      const p = toSvgCoords(e);
+      // Snap the handle in WORLD space first, so an envelope corner latches to
+      // a neighbour's edge or the metric grid exactly as the envelope's own
+      // position does. Drawing a footprint to a survey line was freehand while
+      // the thing it belonged to snapped.
+      const sp = snapVertex ? snapVertex(p, { fine: e.altKey }) : p;
+      // The handles are rendered INSIDE the footprint's rotate() group, so a
+      // world-space delta means nothing in outline space until it is un-rotated.
+      // hitInstanceAt, resizePointerMove and seedPointerUp all do this; the
+      // vertex drag was the one that didn't, which sent the handle off at the
+      // rotation angle on any turned envelope.
+      const rad = ((node.rot || 0) * Math.PI) / 180;
+      const dx = sp.x - node.x;
+      const dy = sp.y - node.y;
+      const target = {
+        x: dx * Math.cos(rad) + dy * Math.sin(rad),
+        y: -dx * Math.sin(rad) + dy * Math.cos(rad),
+      };
       // Solve the vertex + area-lock scale together (see geometry.js): the
       // dragged handle lands exactly under the cursor, the outline is a
       // smooth deterministic function of it — no cross-frame feedback.
-      d.verts = solveAreaLockedVertex(
-        d.verts,
-        d.vi,
-        { x: x - node.x, y: y - node.y },
-        areaUnits(d.space),
-        SMOOTH_SEG
-      ).verts;
-      d.moved += 1;
+      const solved = solveAreaLockedVertex(d.verts, d.vi, target, areaUnits(d.space), SMOOTH_SEG);
+      // A self-intersecting ring has no area for the lock to hold — it solves
+      // √(target / ~0) and the footprint balloons. Refuse the frame and keep the
+      // last valid outline; the canvas shows the handle as rejected.
+      if (solved.ok) {
+        d.verts = solved.verts;
+        d.invalid = false;
+      } else {
+        d.invalid = true;
+      }
+      // Screen-space travel, so the save threshold means the same at every zoom
+      // (it counted FRAMES before, so a single sub-pixel jitter wrote an entry).
+      d.moved = Math.max(d.moved, Math.hypot(e.clientX - d.sx, e.clientY - d.sy));
       setTick((t) => t + 1);
     }
     return true;
@@ -234,9 +319,61 @@ export function usePolyEditing({
     const d = polyDragRef.current;
     if (!d) return false;
     polyDragRef.current = null;
-    if (d.moved > 0) savePoly(d.space, d.verts, 'reshape');
+    if (d.moved >= DRAG_SLOP_PX) savePoly(d.space, d.verts, 'reshape');
     else setTick((t) => t + 1);
     return true;
+  }
+  /** Abandon a vertex drag without saving (Escape / pointercancel). */
+  function polyCancel() {
+    if (!polyDragRef.current) return false;
+    polyDragRef.current = null;
+    setTick((t) => t + 1);
+    return true;
+  }
+
+  /**
+   * Move the SELECTED vertex by a world-space delta — the keyboard route into
+   * shape editing, which was pointer-only. Arrow keys used to move the whole
+   * footprint even while its outline was being edited, which is the opposite of
+   * what the mode implies. Returns false when there is nothing to nudge, so the
+   * caller can fall through to moving the room.
+   *
+   * Persisting is the caller's job (it debounces a key-repeat burst into one
+   * undo step, exactly as the room nudge does).
+   */
+  function nudgeVertex(dx, dy) {
+    if (editShape == null || selVert == null) return false;
+    const space = spaceOfEdit?.(editShape);
+    if (!space) return false;
+    const np = liveNormOf(space);
+    if (!np || !np[selVert]) return false;
+    const node = nodesRef.current.get(`${space.id}:${editAnchorInst(space)}`);
+    if (!node) return false;
+    // The handle sits on the RENDERED curve, so convert the world delta into
+    // normalized outline space through the same scale the render uses, and
+    // through the footprint's rotation (as the drag does).
+    const f = polyScaleOf(space) || 1;
+    const rad = ((node.rot || 0) * Math.PI) / 180;
+    const lx = (dx * Math.cos(rad) + dy * Math.sin(rad)) / f;
+    const ly = (-dx * Math.sin(rad) + dy * Math.cos(rad)) / f;
+    const target = { x: (np[selVert].x + lx) * f, y: (np[selVert].y + ly) * f };
+    const solved = solveAreaLockedVertex(np, selVert, target, areaUnits(space), SMOOTH_SEG);
+    if (!solved.ok) return true; // refused, but the key was ours — don't move the room
+    nudgedRef.current = { space, verts: solved.verts };
+    polyOverride.current.set(space.id, {
+      from: space.shape_json ?? null,
+      json: polyOverride.current.get(space.id)?.json ?? space.shape_json ?? null,
+      verts: solved.verts,
+    });
+    setTick((t) => t + 1);
+    return true;
+  }
+  /** Persist the accumulated keyboard nudges as one undo step. */
+  function commitVertexNudge() {
+    const n = nudgedRef.current;
+    if (!n) return;
+    nudgedRef.current = null;
+    savePoly(n.space, n.verts, 'nudge vertex');
   }
 
   return {
@@ -244,6 +381,9 @@ export function usePolyEditing({
     polyVertsOf, polyHandlesOf, polyRingPath,
     editCustomShape, editAnchorInst, addPolyVertex, removePolyVertex,
     cycleCornerStyle, setCornerStyleAll,
-    onPolyVertexDown, polyPointerMove, polyPointerUp,
+    onPolyVertexDown, polyPointerMove, polyPointerUp, polyCancel,
+    polyDragRef, // the canvas reads .invalid to mark a refused handle
+    // Keyboard vertex placement: which corner is under control, and the nudge.
+    selVert, setSelVert, nudgeVertex, commitVertexNudge,
   };
 }

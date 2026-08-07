@@ -34,11 +34,10 @@ const angleDeg = (cx, cy, p) => (Math.atan2(p.y - cy, p.x - cx) * 180) / Math.PI
  * @param {function} params.layerRect   - (layer) → placement rectangle in diagram units.
  * @param {function} params.toSvgCoords - Map a pointer event to diagram coords.
  * @param {React.MutableRefObject} params.svgRef - The canvas <svg> element ref.
- * @param {object}   params.vb          - Current viewBox size { w, h }.
  */
 export function useImageLayers({
   project, units, onChanged, setError, setTick, setPanel,
-  imgById, dims, layerRect, toSvgCoords, svgRef, vb,
+  imgById, dims, layerRect, toSvgCoords, svgRef,
 }) {
   // Debounce timers for optimistic layer-slider saves, owned here (cleared on
   // unmount) rather than shared with the rest of BubbleTab's debounce bag.
@@ -218,7 +217,12 @@ export function useImageLayers({
     }
     if (moveLayer) {
       const im = imgById.get(moveLayer);
-      if (im) layerMoveRef.current = { id: moveLayer, sx: e.clientX, sy: e.clientY, lx: im.x || 0, ly: im.y || 0 };
+      if (im) {
+        // Anchor the grab in WORLD coords so the move is a pure world delta —
+        // correct at any zoom, and no layout read per pointermove.
+        const w = toSvgCoords(e);
+        layerMoveRef.current = { id: moveLayer, wx: w.x, wy: w.y, lx: im.x || 0, ly: im.y || 0 };
+      }
       return true;
     }
     return false;
@@ -229,9 +233,15 @@ export function useImageLayers({
       const m = layerMoveRef.current;
       const im = imgById.get(m.id);
       if (im) {
-        const rect = svgRef.current.getBoundingClientRect();
-        im.x = m.lx + ((e.clientX - m.sx) * vb.w) / rect.width;
-        im.y = m.ly + ((e.clientY - m.sy) * vb.h) / rect.height;
+        // World delta straight from the shared converter. The old arithmetic
+        // used the UNZOOMED container size, so the image tracked the cursor
+        // only at zoom 1 — at 2× it travelled twice as far as the pointer,
+        // which is exactly the magnification you use to align a survey. It also
+        // read getBoundingClientRect() on every move, forcing a synchronous
+        // layout on the hot path that the shell's rect cache exists to avoid.
+        const c = toSvgCoords(e);
+        im.x = m.lx + (c.x - m.wx);
+        im.y = m.ly + (c.y - m.wy);
         setTick((t) => t + 1);
       }
       return true;

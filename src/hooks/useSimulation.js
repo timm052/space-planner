@@ -74,8 +74,10 @@ export function useSimulation({
   nodeForceRef.current = nodeForce;
   const buildingForceRef = useRef(buildingForce);
   buildingForceRef.current = buildingForce;
-  // Whether the sim runs at all — read fresh in the RAF loop so toggling the
-  // active environment doesn't restart the loop.
+  // Whether the sim runs at all. Still read through a ref inside the loop (an
+  // env toggle mid-frame must not tear), but `enabled` is now also an effect
+  // dependency: the loop STOPS when it goes false rather than idling at 60 Hz,
+  // so something has to restart it when it comes back.
   const enabledRef = useRef(enabled);
   enabledRef.current = enabled;
   const onSettleRef = useRef(onSettle);
@@ -298,10 +300,14 @@ export function useSimulation({
     };
 
     const step = () => {
-      // Authored environments (Master plan) never simulate — positions are
-      // fixed until the user moves them, so the loop just idles.
+      // Authored environments (Master plan / Building) never simulate. Idling
+      // by rescheduling kept a rAF live at display refresh rate for as long as
+      // those views were open — the browser can never go quiet, and on a laptop
+      // that is battery spent to do nothing. STOP instead; the effect re-runs
+      // (and restarts the loop) whenever the environment or the programme
+      // changes, which is exactly when simulation could become relevant again.
       if (!enabledRef.current) {
-        raf = requestAnimationFrame(step);
+        raf = 0;
         return;
       }
       const dragging = !!dragRef.current;
@@ -363,7 +369,7 @@ export function useSimulation({
       raf = requestAnimationFrame(step);
     };
     raf = requestAnimationFrame(step);
-    return () => cancelAnimationFrame(raf);
+    return () => { if (raf) cancelAnimationFrame(raf); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [instances, adjacencies]);
+  }, [instances, adjacencies, enabled]);
 }

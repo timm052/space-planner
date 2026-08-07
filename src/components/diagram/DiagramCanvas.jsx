@@ -1,4 +1,4 @@
-import { lazy, memo, Suspense } from 'react';
+import { lazy, memo, Suspense, useRef } from 'react';
 import { fmtArea, distUnit, rootContainer, instanceLabel } from '../../compute.js';
 import { edgeGap, linkSatisfied } from '../../adjacency.js';
 import { hullOfDiscs, smoothHullPath, filterCss, polygonPath, polyBounds, polygonArea } from '../../geometry.js';
@@ -143,6 +143,7 @@ export default function DiagramCanvas({
   cam3d,
   onCam3d,
   onPick3DRoom,
+  onPickNone3D,
   bubbleStyle,
   bubbleOpacity,
   panActive,
@@ -197,6 +198,7 @@ export default function DiagramCanvas({
   onSvgContextMenu,
   onMove,
   onUp,
+  onPointerCancel,
   onBubbleDown,
   onBubbleContext,
   onRotateHandleDown,
@@ -207,7 +209,11 @@ export default function DiagramCanvas({
   removePolyVertex,
   onCycleCorner,
   hoverRef,
+  polyDrag, // ref: live vertex drag ({ vi, invalid } | null)
+  selVert, // vertex index under keyboard control
 }) {
+  // Press position for an add-vertex dot, so a drag off it doesn't add a corner.
+  const addFromRef = useRef(null);
   return (
     <TickLayer store={tickStore}>
       {() => {
@@ -232,12 +238,32 @@ export default function DiagramCanvas({
             .map((o) => ({ key: o.key, n: nodes.get(o.key), r: radiusOf(o.s), vis: levelVisible(o.s) }))
             // Ghost (un-placed) rooms aren't authored yet — don't flag them as overlaps.
             .filter((o) => o.n && o.vis && (!ghostUnplaced || placedKeys.has(o.key)));
-          for (let i = 0; i < arr.length; i++) {
-            for (let j = i + 1; j < arr.length; j++) {
-              const a = arr[i], b = arr[j];
-              if (Math.hypot(a.n.x - b.n.x, a.n.y - b.n.y) < (a.r + b.r) * 0.95) {
-                overlapKeys.add(a.key);
-                overlapKeys.add(b.key);
+          // Uniform-grid broad phase. This runs on EVERY tick — every pointermove
+          // frame of a drag and every simulation frame — so the all-pairs scan it
+          // replaces was 45,000 distance tests per frame at 300 rooms, on the main
+          // thread, alongside the sim. Only discs within (rMax × 2) of each other
+          // can touch, so bucketing by that cell reduces it to near-linear.
+          const rMax = arr.reduce((m, o) => Math.max(m, o.r), 0);
+          const cell = Math.max(1, rMax * 2);
+          const buckets = new Map();
+          const at = (x, y) => `${Math.floor(x / cell)},${Math.floor(y / cell)}`;
+          for (const o of arr) {
+            const k = at(o.n.x, o.n.y);
+            if (!buckets.has(k)) buckets.set(k, []);
+            buckets.get(k).push(o);
+          }
+          for (const a of arr) {
+            const cx = Math.floor(a.n.x / cell);
+            const cy = Math.floor(a.n.y / cell);
+            for (let gx = cx - 1; gx <= cx + 1; gx++) {
+              for (let gy = cy - 1; gy <= cy + 1; gy++) {
+                for (const b of buckets.get(`${gx},${gy}`) || []) {
+                  if (a.key >= b.key) continue; // each unordered pair once
+                  if (Math.hypot(a.n.x - b.n.x, a.n.y - b.n.y) < (a.r + b.r) * 0.95) {
+                    overlapKeys.add(a.key);
+                    overlapKeys.add(b.key);
+                  }
+                }
               }
             }
           }
@@ -279,7 +305,7 @@ export default function DiagramCanvas({
           {is3D && scene3d && (
             <div className="stage-3d">
               <Suspense fallback={<div className="stage-3d-hint">Loading 3-D view…</div>}>
-                <Stacked3D scene={scene3d} gap={floorGap} showImage={stackImages} camMode={cam3d} onPickRoom={onPick3DRoom} />
+                <Stacked3D scene={scene3d} gap={floorGap} showImage={stackImages} camMode={cam3d} onPickRoom={onPick3DRoom} onPickNone={onPickNone3D} />
               </Suspense>
               {/* Camera presets — the CAM map already drives these; the ⋯ menu
                   select stays as the long-form list. */}
@@ -319,12 +345,20 @@ export default function DiagramCanvas({
             // mapping correct at all times; it is a no-op once vb has caught up.
             preserveAspectRatio="none"
             role="application"
+            // role="application" promises keyboard operability, so the element
+            // has to be reachable: it had no tabIndex, and every shortcut was
+            // registered on `window` instead.
+            tabIndex={0}
             aria-label="Space planning diagram — Tab cycles rooms once one is selected, arrows nudge, ? lists shortcuts"
             className={`bubble-svg ${scalePoints ? 'scaling' : ''} ${panActive || moveLayer || rotateLayer ? 'panning' : ''} ${tool === 'link' ? 'linking' : ''}`}
             onPointerDown={onSvgPointerDown}
             onPointerMove={onMove}
             onPointerUp={onUp}
-            onPointerLeave={onUp}
+            // No onPointerLeave: the press handler now takes pointer capture, so
+            // a gesture survives the cursor crossing a floating panel or leaving
+            // the window. Ending on `leave` truncated every pan and marquee that
+            // strayed under the toolbar. pointercancel is the real interruption.
+            onPointerCancel={onPointerCancel}
             onContextMenu={onSvgContextMenu}
           >
             <defs>
@@ -890,7 +924,18 @@ export default function DiagramCanvas({
                       )}
                     </g>
                   )}
-                  {editing && polyHandles && (
+                  {editing && polyHandles && (() => {
+                    // Handles are SCREEN-space, like every other handle on this
+                    // canvas (resize divides by zoom three blocks up, so does the
+                    // rotate knob and the Voronoi seed ring). These were the last
+                    // ones still sized in world units: 1.2px specks at 0.2× and
+                    // 72px discs at 6×, where neighbouring handles merged into
+                    // one blob over the geometry they were meant to edit.
+                    const hr = 6 / zoom; // vertex handle radius
+                    const ar = 4 / zoom; // add-vertex midpoint dot
+                    const sq = 11 / zoom; // fillet / sharp glyph side
+                    const dragging = polyDrag?.current;
+                    return (
                     <g className="poly-edit">
                       {polyHandles.map((p, vi) => {
                         const a = polyHandles[vi];
@@ -901,11 +946,23 @@ export default function DiagramCanvas({
                             key={`add:${vi}`}
                             cx={mid.x}
                             cy={mid.y}
-                            r="4"
+                            r={ar}
                             className="poly-add"
-                            onPointerDown={(e) => e.stopPropagation()}
-                            onClick={(e) => (e.stopPropagation(), addPolyVertex(s, vi))}
-                          />
+                            // Track the press so a drag that started here does
+                            // not add a vertex on release — onClick alone fires
+                            // however far the pointer travelled.
+                            onPointerDown={(e) => (e.stopPropagation(), (addFromRef.current = { vi, x: e.clientX, y: e.clientY }))}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const d = addFromRef.current;
+                              addFromRef.current = null;
+                              if (!d || d.vi !== vi) return;
+                              if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > 4) return;
+                              addPolyVertex(s, vi);
+                            }}
+                          >
+                            <title>click to add a corner here</title>
+                          </circle>
                         );
                       })}
                       {polyHandles.map((p, vi) => {
@@ -914,17 +971,18 @@ export default function DiagramCanvas({
                         // Right-click cycles the style; drag moves; dbl-click
                         // removes.
                         const k = p.k === 's' || p.k === 'f' ? p.k : 'c';
+                        const bad = dragging && dragging.vi === vi && dragging.invalid;
                         const shared = {
-                          className: `poly-handle k-${k}`,
+                          className: `poly-handle k-${k}${bad ? ' refused' : ''}${selVert === vi ? ' keyed' : ''}`,
                           onPointerDown: (e) => onPolyVertexDown(e, s, vi),
                           onDoubleClick: (e) => (e.stopPropagation(), removePolyVertex(s, vi)),
                           onContextMenu: (e) => (e.preventDefault(), e.stopPropagation(), onCycleCorner(s, vi)),
                         };
-                        const title = <title>drag to move · right-click: corner style ({k === 'c' ? 'curve' : k === 'f' ? 'fillet' : 'sharp'}) · double-click to remove</title>;
+                        const title = <title>drag to move · arrows nudge · right-click: corner style ({k === 'c' ? 'curve' : k === 'f' ? 'fillet' : 'sharp'}) · double-click to remove</title>;
                         return k === 'c' ? (
-                          <circle key={`v:${vi}`} cx={p.x} cy={p.y} r="6" {...shared}>{title}</circle>
+                          <circle key={`v:${vi}`} cx={p.x} cy={p.y} r={hr} {...shared}>{title}</circle>
                         ) : (
-                          <rect key={`v:${vi}`} x={p.x - 5.5} y={p.y - 5.5} width="11" height="11" rx={k === 'f' ? 4 : 0} {...shared}>{title}</rect>
+                          <rect key={`v:${vi}`} x={p.x - sq / 2} y={p.y - sq / 2} width={sq} height={sq} rx={k === 'f' ? sq * 0.36 : 0} {...shared}>{title}</rect>
                         );
                       })}
                       {pb && (
@@ -933,7 +991,8 @@ export default function DiagramCanvas({
                         </text>
                       )}
                     </g>
-                  )}
+                    );
+                  })()}
                 </g>
               );
             })}
@@ -978,7 +1037,19 @@ export default function DiagramCanvas({
                   return keep;
                 })();
                 return (
-                <g key={`vor:${b.rootId}`} className="voronoi-layer">
+                // While an envelope's OUTLINE is being edited, its interior
+                // sketch drops out of the hit layer. The sketch paints after the
+                // bubbles, so its seed hit-rings (deliberately generous — 14px
+                // of screen radius) sat on top of the vertex handles and
+                // swallowed presses on any corner that happened to overlap a
+                // seed dot: the handle highlighted on hover but would not drag.
+                // The sketch is context while you are drawing the envelope;
+                // context must not outrank the thing being drawn.
+                <g
+                  key={`vor:${b.rootId}`}
+                  className="voronoi-layer"
+                  pointerEvents={editShape === b.rootId ? 'none' : undefined}
+                >
                   {/* Circulation band: the envelope hatched underneath — the
                       shrunken cells leave it visible between the rooms. */}
                   {b.circ > 0 && (

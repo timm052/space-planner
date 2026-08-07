@@ -175,6 +175,30 @@ which controls exist where.
 - **Every view states its scale.** A metric environment gets the scale bar;
   Concept gets `NTS relative sizes`; 3-D gets an NTS note that distinguishes
   perspective from axonometric. Silence would imply measurability.
+- **Gesture thresholds are screen-space too.** Hit padding, click-vs-drag and
+  the marquee's click slop are statements about the user's hand, not about the
+  drawing, so they live in `modes.js` as pixel constants and are divided by the
+  view zoom at the point of comparison. Expressed in diagram units they swung
+  over the whole 0.2×–6× range: 1.2px of dead travel zoomed out (tremor started
+  drags) against 36px zoomed in (rooms felt glued down). `SNAP_TOL` is the
+  deliberate exception — a snap tolerance *is* a statement about the drawing.
+- **A gesture owns the pointer until it ends.** Every press takes
+  `setPointerCapture` on the element the handler is bound to (`currentTarget`,
+  never `target` — a re-render that swaps the child silently drops the capture).
+  Nothing may rely on `pointerleave` to finish a gesture: the floating glass
+  panels sit over the canvas and take pointer events, so a leave-terminated pan
+  or marquee dies the moment it passes under the toolbar. `pointercancel` is the
+  only real interruption, and it cancels rather than commits.
+- **Every gesture can be abandoned.** Escape restores the pre-gesture state and
+  suppresses the commit, and it is the FIRST thing Escape does — before closing
+  panels, before clearing the selection. Recording where a drag started is part
+  of starting it.
+- **Optimistic state must yield to any other writer, not just to its own echo.**
+  An override keyed only on "did my write land?" can never be satisfied by an
+  UNDO, which writes a different value — the canvas then renders the undone
+  geometry indefinitely while the database holds the reverted version, and the
+  PDF (which reads the row) stops matching the screen. Record what the override
+  was derived *from* so a foreign write is detectable.
 - **Pen weights and grab targets are screen-space, geometry is world-space.**
   Rooms scale with the camera; the strokes that annotate them do not. Line
   hierarchy carries `vector-effect: non-scaling-stroke`, and interactive

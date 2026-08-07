@@ -56,10 +56,11 @@ export default function NorthRose({ deg, designMode = false, locked = false, onT
         if (designMode) {
           setTurn(0);
           onDragStart?.();
-        } else {
-          setLive(ang);
-          onSet?.(ang);
         }
+        // Deliberately NOT setting north here. Calling onSet on press snapped
+        // north to wherever the dial happened to be clicked, so a stray click
+        // rotated the project before the user had dragged anything. The first
+        // move commits.
       }}
       onPointerMove={(e) => {
         const d = dragging.current;
