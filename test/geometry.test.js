@@ -4,7 +4,7 @@ import { convexHull, concaveHull, hullOfDiscs, clipHalfPlane, voronoiCells, powe
   closestPointOnPolygon, smoothHullPath, pinsOf, filterCss, IMAGE_FILTERS,
   polygonArea, polygonCentroid, normalizePolygon, parsePoly, polygonPath, polyBounds,
   regularPolygon, lShape, smoothPolygonPoints, solveAreaLockedVertex,
-  outlinePoints, simplifyOutline, selfIntersectsAt } from '../src/geometry.js';
+  outlinePoints, simplifyOutline, selfIntersectsAt, drawnVsTarget } from '../src/geometry.js';
 
 // ---- convexHull ---------------------------------------------------------
 
@@ -519,4 +519,42 @@ test('hullOfDiscs hugs an L-shaped arrangement tighter than the convex wrap', ()
     }
     assert.ok(inside, `disc centre ${d.x},${d.y} inside the outline`);
   }
+});
+
+// ---- drawnVsTarget (stage one of deriving area from geometry) -------------
+
+test('drawnVsTarget measures what the outline encloses', () => {
+  const square = [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }, { x: 0, y: 10 }];
+  const r = drawnVsTarget(square, 100);
+  assert.equal(r.drawn, 100);
+  assert.equal(r.target, 100);
+  assert.equal(r.delta, 0);
+  assert.equal(r.pct, 0);
+});
+
+test('drawnVsTarget reports the divergence once the shape differs', () => {
+  const wide = [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 10 }, { x: 0, y: 10 }];
+  const r = drawnVsTarget(wide, 100); // drawn 200 against a 100 target
+  assert.equal(r.drawn, 200);
+  assert.equal(r.delta, 100);
+  assert.equal(r.pct, 1);
+});
+
+test('drawnVsTarget declines degenerate input rather than reporting zero', () => {
+  assert.equal(drawnVsTarget(null, 100), null);
+  assert.equal(drawnVsTarget([{ x: 0, y: 0 }, { x: 1, y: 1 }], 100), null); // < 3 points
+  assert.equal(drawnVsTarget([{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 2, y: 0 }], 100), null); // collinear
+  assert.equal(drawnVsTarget([{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }], 0), null); // no target
+});
+
+test('a normalised outline scaled to its target measures back to that target', () => {
+  // This is the invariant that lets the two be compared today: normalizePolygon
+  // gives unit area, so scaling by sqrt(target) must enclose exactly `target`.
+  const blob = [{ x: 0, y: 0 }, { x: 7, y: 1 }, { x: 9, y: 6 }, { x: 2, y: 8 }];
+  const unit = normalizePolygon(blob);
+  const target = 250;
+  const k = Math.sqrt(target);
+  const placed = unit.map((p) => ({ x: p.x * k, y: p.y * k }));
+  const r = drawnVsTarget(placed, target);
+  assert.ok(Math.abs(r.pct) < 1e-9, `expected 0% divergence, got ${r.pct}`);
 });

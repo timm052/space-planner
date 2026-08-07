@@ -230,6 +230,9 @@ input.is-formula { font-family: 'JetBrains Mono', ui-monospace, monospace; color
 .var-row { display: flex; align-items: center; gap: 8px; }
 .var-name { flex: 1; font-size: 12.5px; color: var(--accent-text); }
 .var-val { width: 74px; padding: 3px 6px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel); color: var(--text); font-size: 12px; text-align: right; }
+/* A variable nothing references — usually a rename that left its old name
+   behind. A dot, not a warning: it is untidy, not wrong. */
+.var-unused { color: var(--faint); }
 .var-add { display: flex; gap: 6px; margin-top: 2px; }
 .var-add input { min-width: 0; flex: 1; padding: 4px 7px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel); color: var(--text); font-size: 12px; }
 .var-add input:first-child { flex: 1.2; }

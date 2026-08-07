@@ -4,9 +4,11 @@ import {
   edgeGap,
   linkSatisfied,
   linkCredit,
+  gapToTarget,
   adjacencyScore,
   scoreBand,
   CREDIT_FALLOFF,
+  CREDIT_FALLOFF_BY_STRENGTH,
   DEFAULT_THRESHOLDS_M,
   LINK_WEIGHT,
 } from '../src/adjacency.js';
@@ -32,7 +34,10 @@ test('linkCredit gives full credit within the threshold and none past the fallof
   const t = DEFAULT_THRESHOLDS_M.required;
   assert.equal(linkCredit('required', 0), 1);
   assert.equal(linkCredit('required', t), 1); // exactly at the threshold
-  assert.equal(linkCredit('required', t * CREDIT_FALLOFF), 0); // at the falloff limit
+  // The falloff is now PER STRENGTH: required reaches zero at ×12, not ×3, so
+  // the score still moves while a required pair is being dragged together.
+  assert.equal(linkCredit('required', t * CREDIT_FALLOFF_BY_STRENGTH.required), 0);
+  assert.ok(linkCredit('required', t * CREDIT_FALLOFF) > 0); // ×3 used to be zero
   assert.equal(linkCredit('required', 999), 0);
 });
 
@@ -241,4 +246,42 @@ test('aggregateByRoot canonicalises pair order and skips unknown spaces', () => 
   assert.equal(out.length, 1);
   assert.ok(out[0].space_a < out[0].space_b);
   assert.equal(out[0].count, 1);
+});
+
+// ---- the score has to respond to progress --------------------------------
+// A ×3 falloff on a 28-unit required threshold put zero credit at 84 units, so
+// an auto-layout pass that pulled a pair from 576 → 98 moved the score not at
+// all. That made the score binary for exactly the links that matter most.
+
+test('a required link earns partial credit well beyond 3x its threshold', () => {
+  const T = { required: 28, desired: 98 };
+  assert.equal(linkCredit('required', 20, T), 1); // inside the threshold
+  assert.equal(linkCredit('required', 84, T) > 0, true, 'was exactly 0 before');
+  assert.ok(linkCredit('required', 98, T) > 0, 'the observed auto-layout result must register');
+  assert.equal(linkCredit('required', 28 * 12, T), 0); // zero at the new limit
+});
+
+test('required credit rises monotonically as the pair closes', () => {
+  const T = { required: 28, desired: 98 };
+  const gaps = [576, 300, 200, 120, 98, 60, 40, 28];
+  let last = -1;
+  for (const g of gaps) {
+    const c = linkCredit('required', g, T);
+    assert.ok(c >= last, `credit fell from ${last} to ${c} at gap ${g}`);
+    last = c;
+  }
+  assert.equal(last, 1);
+});
+
+test('desired links keep the tighter falloff', () => {
+  const T = { required: 28, desired: 98 };
+  assert.equal(linkCredit('desired', 98 * 3, T), 0);
+  assert.ok(linkCredit('desired', 150, T) > 0);
+});
+
+test('gapToTarget reports what is left to close, and 0 once satisfied', () => {
+  const T = { required: 28, desired: 98 };
+  assert.equal(gapToTarget('required', 98, T), 70);
+  assert.equal(gapToTarget('required', 20, T), 0);
+  assert.equal(gapToTarget('desired', 120, T), 22);
 });

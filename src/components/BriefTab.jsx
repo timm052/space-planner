@@ -123,13 +123,30 @@ function VariablesCard({ variables, onSave, usedVars = null }) {
       {entries.length === 0 && (
         <p className="vars-empty">None yet. Add one, then use <code>@name</code> in an area formula.</p>
       )}
-      {entries.map(([k, v]) => (
-        <div className="var-row" key={k}>
-          <span className="var-name">@{k}</span>
-          <input className="var-val" type="number" step="any" defaultValue={v} onBlur={(e) => update(k, e.target.value)} />
-          <button className="row-btn danger" type="button" title={`Remove @${k}`} onClick={() => remove(k)}>✕</button>
-        </div>
-      ))}
+      {entries.map(([k, v]) => {
+        // Whether anything actually reads this variable. An unused one is
+        // usually a rename that left its old name behind — harmless until you
+        // change the wrong one and wonder why no area moved.
+        const used = usedVars ? usedVars.has(k) : null;
+        return (
+          <div className="var-row" key={k}>
+            <span className="var-name" title={used === false ? `@${k} is not referenced by any formula` : undefined}>
+              @{k}
+              {used === false && <span className="var-unused" aria-hidden="true"> ·</span>}
+            </span>
+            <input
+              className="var-val"
+              type="number"
+              step="any"
+              defaultValue={v}
+              aria-label={`Value of @${k}`}
+              onBlur={(e) => update(k, e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+            />
+            <button className="row-btn danger" type="button" title={`Remove @${k}`} onClick={() => remove(k)}>✕</button>
+          </div>
+        );
+      })}
       <div className="var-add">
         <input placeholder="name" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } }} />
         <input placeholder="value" type="number" step="any" value={val} onChange={(e) => setVal(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } }} />

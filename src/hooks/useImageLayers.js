@@ -147,6 +147,12 @@ export function useImageLayers({
 
   async function fetchSatellite(e) {
     e.preventDefault();
+    // Re-entry guard. The fetch takes seconds (geocode + 16 tiles), and the
+    // button stays live throughout: a second press — or a stray Enter in the
+    // address field, which submits the same form — starts a whole second
+    // download and lands a duplicate layer on top of the first, at the same
+    // opacity, where it reads as nothing but a darker image.
+    if (satBusy) return;
     setSatBusy(true);
     setError(null);
     try {
