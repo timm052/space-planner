@@ -41,6 +41,51 @@ export function resolveTable(projectId, table) {
   }
 }
 
+/**
+ * Stop a nest from silently deleting the parent's own area.
+ *
+ * Under the default 'group' child_mode, a space that gains children becomes a
+ * PURE CONTAINER: its own area stops counting and the row renders "– –". Nest
+ * one room under a 6 × 90 m² laboratory and the programme total drops 540 m²
+ * with no prompt, no warning and nothing on the row to say so. Undo did not
+ * bring it back either, because the area was never deleted — it was excluded.
+ *
+ * So when a real space that carries area gains its FIRST child, switch it to
+ * 'within' (its children sit inside its own area) instead. That preserves the
+ * total, which is the answer that cannot be wrong; a user who genuinely wants
+ * the roll-up picks "Grouped" explicitly and sees the total move.
+ *
+ * Buildings and zones are untouched — they never carried an area of their own.
+ *
+ * @returns {{id:number,name:string,area:number}|null} the parent it protected
+ */
+export function protectParentArea(table, parentId) {
+  if (parentId == null) return null;
+  const parent = db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(parentId);
+  if (!parent) return null;
+  if (CONTAINER_KINDS.has(parent.kind)) return null; // a container never had its own area
+  if (parent.child_mode !== 'group') return null; // the user has already chosen
+  if (!(Number(parent.target_area) > 0)) return null; // nothing would be lost
+  // The row just parented is already counted, so 1 means this is the first.
+  const kids = db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE parent_id = ?`).get(parentId).n;
+  if (kids !== 1) return null; // already a container before this nest
+  db.prepare(`UPDATE ${table} SET child_mode = 'within' WHERE id = ?`).run(parentId);
+  return { id: parent.id, name: parent.name, area: Number(parent.target_area) };
+}
+
+/**
+ * Which rows in a tree currently have a formula that will not evaluate.
+ * Returns Map(id → message). The primary defence against a broken formula is
+ * refusing to save it (the routes call this); this is also what lets the apply
+ * and milestone paths decline to propagate a room whose area is not real.
+ */
+export function formulaErrorsFor(projectId, table) {
+  const project = db.prepare('SELECT id, variables FROM projects WHERE id = ?').get(projectId);
+  if (!project) return new Map();
+  const rows = db.prepare(`SELECT * FROM ${table} WHERE project_id = ?`).all(projectId);
+  return resolveBrief(rows, parseVariables(project)).errors;
+}
+
 // Called by the diagram-room (spaces) routes.
 export function resolveAndPersist(projectId) {
   resolveTable(projectId, 'spaces');
@@ -140,6 +185,36 @@ export function pathKeys(rows) {
   return keys;
 }
 
+/**
+ * Rows in dependency order: a parent always precedes its children.
+ *
+ * `ORDER BY sort_order, id` is NOT that order, and assuming it was is what
+ * silently flattened every applied Brief. Import a programme, then create the
+ * buildings and nest the rooms into them: the rooms carry the lower sort_order,
+ * so a child was processed before its parent existed in the id map, took
+ * `parent_id = null`, and landed at the top level. The tree looked right in the
+ * Brief and arrived flat in the Design — which broke path matching for EVERY
+ * room, blanking the Brief Target and variance columns.
+ *
+ * Rows in a parent cycle (the API rejects these, but stay total on bad data)
+ * are emitted in their original order rather than dropped.
+ */
+export function parentsFirst(rows) {
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const out = [];
+  const done = new Set();
+  const visit = (row, guard) => {
+    if (!row || done.has(row.id) || guard.has(row.id)) return;
+    guard.add(row.id);
+    if (row.parent_id != null && byId.has(row.parent_id)) visit(byId.get(row.parent_id), guard);
+    if (done.has(row.id)) return;
+    done.add(row.id);
+    out.push(row);
+  };
+  for (const r of rows) visit(r, new Set());
+  return out;
+}
+
 // ---------- Brief → diagram reconciliation ("overwrite") ----------
 
 // Compute the diff of applying the Brief onto the diagram: which rooms would be
@@ -203,12 +278,43 @@ export function applyBriefToDiagram(projectId, { addKeys, updateKeys, deleteKeys
   const update = db.prepare(
     'UPDATE spaces SET department = ?, count = ?, target_area = ?, kind = ?, child_mode = ?, level = ?, area_formula = ? WHERE id = ?'
   );
+  const reparent = db.prepare('UPDATE spaces SET parent_id = ? WHERE id = ?');
+
+  // ── Repair for designs flattened by the pre-parentsFirst() apply ──────────
+  // Those rows sit at the top level, so their path key is a bare name and no
+  // brief key matches them. Without this they are not adopted but DUPLICATED:
+  // the apply adds a correctly-nested copy beside the orphan and the project
+  // quietly doubles. Adopt by name instead — but only when exactly one
+  // unclaimed top-level row carries that name, so two same-named rooms in
+  // different buildings are never silently merged into the wrong one.
+  // Only rows the Brief already matches by path are spoken for. (Seeding this
+  // from every design row — which designByKey.values() is — left the orphan map
+  // empty and the repair inert.)
+  const briefKeySet = new Set([...briefKeys.values()]);
+  const claimed = new Set(design.filter((s) => briefKeySet.has(designKeys.get(s.id))).map((s) => s.id));
+  const orphansByName = new Map();
+  for (const s of design) {
+    if (s.parent_id != null || claimed.has(s.id)) continue;
+    const n = (s.name || '').trim().toLowerCase();
+    if (!orphansByName.has(n)) orphansByName.set(n, []);
+    orphansByName.get(n).push(s);
+  }
+  const adoptOrphan = (b) => {
+    if (b.parent_id == null) return null; // a root row is not an orphan
+    const cands = orphansByName.get((b.name || '').trim().toLowerCase());
+    if (!cands || cands.length !== 1) return null; // ambiguous — leave it alone
+    const [row] = cands;
+    if (claimed.has(row.id)) return null;
+    claimed.add(row.id);
+    return row;
+  };
 
   // Map each brief room id → the diagram space id it corresponds to (existing or
-  // newly created), so children can be parented correctly. Process parents first.
+  // newly created), so children can be parented correctly. parentsFirst() is
+  // what makes that mapping available in time — see its comment.
   const briefToDesign = new Map();
-  let added = 0, updated = 0;
-  for (const b of brief) {
+  let added = 0, updated = 0, reparented = 0, adopted = 0;
+  for (const b of parentsFirst(brief)) {
     const key = briefKeys.get(b.id);
     const match = designByKey.get(key);
     if (match) {
@@ -217,8 +323,26 @@ export function applyBriefToDiagram(projectId, { addKeys, updateKeys, deleteKeys
         update.run(b.department, b.count, b.target_area, b.kind, b.child_mode, b.level || '', b.area_formula || null, match.id);
         updated++;
       }
+      // Repair structure the Brief owns. A project applied before parentsFirst()
+      // existed has its whole tree flat; without this, re-applying updates the
+      // areas and leaves the hierarchy — and therefore the path match — broken.
+      const wantParent = b.parent_id != null ? (briefToDesign.get(b.parent_id) ?? null) : null;
+      if ((match.parent_id ?? null) !== wantParent) {
+        reparent.run(wantParent, match.id);
+        reparented++;
+      }
     } else if (wants(addKeys, key)) {
       const parentDesignId = b.parent_id != null ? (briefToDesign.get(b.parent_id) ?? null) : null;
+      const orphan = adoptOrphan(b);
+      if (orphan) {
+        // Re-home the existing room rather than adding a second copy of it —
+        // it keeps its id, and therefore its geometry, links and milestone areas.
+        update.run(b.department, b.count, b.target_area, b.kind, b.child_mode, b.level || '', b.area_formula || null, orphan.id);
+        reparent.run(parentDesignId, orphan.id);
+        briefToDesign.set(b.id, orphan.id);
+        adopted++;
+        continue;
+      }
       const r = insert.run(
         projectId, b.department, b.name, b.count || 1, b.target_area, b.notes || '',
         order++, parentDesignId, b.kind, b.child_mode || 'group', b.level || '', b.area_formula || null
@@ -239,7 +363,7 @@ export function applyBriefToDiagram(projectId, { addKeys, updateKeys, deleteKeys
     }
   }
   resolveAndPersist(projectId);
-  return { added, updated, deleted };
+  return { added, updated, deleted, reparented, adopted };
 }
 
 // Reverse of an apply, one room at a time: copy a single diagram space's
@@ -314,9 +438,11 @@ export function seedBriefFromDesign(projectId) {
     `INSERT INTO brief_spaces (project_id, department, name, count, target_area, notes, sort_order, parent_id, kind, child_mode, level, area_formula, image)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
-  const idMap = new Map(); // design id → new brief id (parents processed first)
+  const idMap = new Map(); // design id → new brief id
   let order = 0;
-  for (const s of design) {
+  // Same hazard as the apply path: sort order is not dependency order, and a
+  // building created after its rooms would otherwise seed a flat Brief.
+  for (const s of parentsFirst(design)) {
     const parent = s.parent_id != null ? (idMap.get(s.parent_id) ?? null) : null;
     const r = insert.run(
       projectId, s.department, s.name, s.count || 1, s.target_area, s.notes || '',

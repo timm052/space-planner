@@ -3,7 +3,7 @@ import { db } from '../db.js';
 import { requireProject } from './projects.js';
 import { oneOf, clampNum } from '../validate.js';
 import {
-  resolveBriefAndPersist, briefApplyDiff, applyBriefToDiagram, briefToMilestone, seedBriefFromDesign,
+  resolveBriefAndPersist, formulaErrorsFor, protectParentArea, briefApplyDiff, applyBriefToDiagram, briefToMilestone, seedBriefFromDesign,
   pullSpaceToBrief,
 } from '../brief.js';
 import { logCreated, logRemoved, logSpaceDiff } from '../changelog.js';
@@ -94,10 +94,31 @@ router.put('/brief-spaces/:id', (req, res) => {
     department, name, clampNum(count, 1, 100, 1), area, notes,
     parent_id, oneOf(kind, VALID_KINDS, 'space'), image, sort_order, child_mode, level ?? '', area_formula, space.id
   );
+  // A formula that does not evaluate is refused rather than stored. Storing it
+  // used to set the room's area to 0 m² and let that zero flow into the design
+  // and the issued milestone — a typo silently deleting a room from the
+  // programme. The write is rolled back so the last good area survives.
+  if (area_formula) {
+    const err = formulaErrorsFor(space.project_id, 'brief_spaces').get(space.id);
+    if (err) {
+      db.prepare(
+        `UPDATE brief_spaces SET department = ?, name = ?, count = ?, target_area = ?, notes = ?,
+         parent_id = ?, kind = ?, image = ?, sort_order = ?, child_mode = ?, level = ?, area_formula = ? WHERE id = ?`
+      ).run(
+        space.department, space.name, space.count, space.target_area, space.notes,
+        space.parent_id, space.kind, space.image, space.sort_order, space.child_mode, space.level ?? '', space.area_formula, space.id
+      );
+      resolveBriefAndPersist(space.project_id);
+      return res.status(400).json({ error: err });
+    }
+  }
+  // Nesting under a space that carries its own area must not silently drop it.
+  const protectedParent =
+    parent_id !== space.parent_id ? protectParentArea('brief_spaces', parent_id) : null;
   resolveBriefAndPersist(space.project_id);
   const updated = db.prepare('SELECT * FROM brief_spaces WHERE id = ?').get(space.id);
   logSpaceDiff(space.project_id, 'brief', space, updated); // programme fields only
-  res.json(updated);
+  res.json(protectedParent ? { ...updated, protectedParent } : updated);
 });
 
 // DELETE /api/brief-spaces/:id — recursive subtree delete.

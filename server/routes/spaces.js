@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { db } from '../db.js';
 import { requireProject } from './projects.js';
 import { oneOf, clampNum } from '../validate.js';
-import { resolveAndPersist } from '../brief.js';
+import { resolveAndPersist, formulaErrorsFor, protectParentArea } from '../brief.js';
 import { logCreated, logRemoved, logSpaceDiff } from '../changelog.js';
 
 const isFormulaStr = (v) => typeof v === 'string' && v.trim().startsWith('=');
@@ -141,10 +141,24 @@ router.put('/spaces/:id', (req, res) => {
     plan_json, block_json, image, sort_order, child_mode, level ?? '',
     height_m, circ_pct, area_formula, space.id
   );
+  // Same rule as the Brief tree: a formula that does not evaluate is refused,
+  // not stored as a 0 m² room. Restore the row's previous programme fields so
+  // the last good area survives the rejected write.
+  if (area_formula) {
+    const err = formulaErrorsFor(space.project_id, 'spaces').get(space.id);
+    if (err) {
+      db.prepare('UPDATE spaces SET target_area = ?, area_formula = ?, count = ? WHERE id = ?')
+        .run(space.target_area, space.area_formula, space.count, space.id);
+      resolveAndPersist(space.project_id);
+      return res.status(400).json({ error: err });
+    }
+  }
+  const protectedParent =
+    parent_id !== space.parent_id ? protectParentArea('spaces', parent_id) : null;
   resolveAndPersist(space.project_id); // re-derive formula areas + mirror baseline
   const updated = db.prepare('SELECT * FROM spaces WHERE id = ?').get(space.id);
   logSpaceDiff(space.project_id, 'design', space, updated); // programme fields only
-  res.json(updated);
+  res.json(protectedParent ? { ...updated, protectedParent } : updated);
 });
 
 // DELETE /api/spaces/:id — recursive subtree delete via CTE.

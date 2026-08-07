@@ -850,3 +850,65 @@ test('duplicate siblings: loading an option reconciles each one by ordinal', asy
   assert.equal(spaces[0].target_area, 10);
   assert.equal(spaces[1].target_area, 20);
 });
+
+// ---- nesting must not silently drop the parent's area --------------------
+// One keystroke used to remove 540 m² from a 4,455 m² programme with no
+// prompt, no warning, and no way back through undo.
+
+test('nesting under a space that carries area switches it to "within", not "group"', async () => {
+  const id = await newProject();
+  const lab = await api('POST', `/api/projects/${id}/spaces`, { name: 'Science laboratory', count: 6, target_area: 90 });
+  const prep = await api('POST', `/api/projects/${id}/spaces`, { name: 'Science preparation', count: 2, target_area: 30 });
+  const netOf = async () => {
+    const { body } = await api('GET', `/api/projects/${id}`);
+    const parents = new Set(body.spaces.filter((s) => s.parent_id != null).map((s) => s.parent_id));
+    return body.spaces
+      .filter((s) => !parents.has(s.id) || s.child_mode === 'within')
+      .reduce((t, s) => t + (s.count || 1) * (s.target_area || 0), 0);
+  };
+  assert.equal(await netOf(), 6 * 90 + 2 * 30); // 600
+
+  const moved = await api('PUT', `/api/spaces/${prep.body.id}`, { parent_id: lab.body.id });
+  assert.equal(moved.status, 200);
+  assert.equal(moved.body.protectedParent.name, 'Science laboratory');
+  assert.equal(moved.body.protectedParent.area, 90);
+
+  const { body } = await api('GET', `/api/projects/${id}`);
+  const parent = body.spaces.find((s) => s.id === lab.body.id);
+  assert.equal(parent.child_mode, 'within'); // NOT 'group'
+  assert.equal(await netOf(), 600); // the 540 did not vanish
+});
+
+test('a building gaining a child is left alone — it never carried its own area', async () => {
+  const id = await newProject();
+  const b = await api('POST', `/api/projects/${id}/spaces`, { name: 'Building A', kind: 'building', target_area: 0 });
+  const room = await api('POST', `/api/projects/${id}/spaces`, { name: 'Room', count: 1, target_area: 50 });
+  const moved = await api('PUT', `/api/spaces/${room.body.id}`, { parent_id: b.body.id });
+  assert.equal(moved.body.protectedParent, undefined);
+  const { body } = await api('GET', `/api/projects/${id}`);
+  assert.equal(body.spaces.find((s) => s.id === b.body.id).child_mode, 'group');
+});
+
+test('a SECOND child does not re-trigger the protection', async () => {
+  const id = await newProject();
+  const p = await api('POST', `/api/projects/${id}/spaces`, { name: 'Parent', count: 1, target_area: 100 });
+  const a = await api('POST', `/api/projects/${id}/spaces`, { name: 'A', count: 1, target_area: 10 });
+  const c = await api('POST', `/api/projects/${id}/spaces`, { name: 'C', count: 1, target_area: 10 });
+  await api('PUT', `/api/spaces/${a.body.id}`, { parent_id: p.body.id });
+  // The user may have switched back to Grouped deliberately; respect that.
+  await api('PUT', `/api/spaces/${p.body.id}`, { child_mode: 'group' });
+  const second = await api('PUT', `/api/spaces/${c.body.id}`, { parent_id: p.body.id });
+  assert.equal(second.body.protectedParent, undefined);
+});
+
+test('a broken formula is refused and the last good area survives', async () => {
+  const id = await newProject();
+  const s = await api('POST', `/api/projects/${id}/spaces`, { name: 'Canteen', count: 1, target_area: 180 });
+  const bad = await api('PUT', `/api/spaces/${s.body.id}`, { area_formula: '=@pupils * 0.2' });
+  assert.equal(bad.status, 400);
+  assert.match(bad.body.error, /Unknown variable/);
+  const { body } = await api('GET', `/api/projects/${id}`);
+  const after = body.spaces.find((x) => x.id === s.body.id);
+  assert.equal(after.target_area, 180); // not 0
+  assert.equal(after.area_formula, null);
+});

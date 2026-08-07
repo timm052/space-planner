@@ -201,6 +201,23 @@ export function effectiveTarget(space, targets) {
   return targets && targets.has(space.id) ? targets.get(space.id) : targetTotal(space);
 }
 
+/**
+ * WHERE that target came from — the distinction the compliance figures depend on.
+ *
+ *   'brief'     matched to a Brief room; the agreed figure
+ *   'own'       no Brief exists at all, so the design's own target is the only
+ *               one there is. A legitimate fallback.
+ *   'unmatched' a Brief EXISTS but this room has no counterpart in it.
+ *
+ * The last case must never quietly fall back to the design's own target: doing
+ * so measures the design against itself and reports 0% — an on-target reading
+ * for a room nobody agreed. Callers render it as unmatched instead.
+ */
+export function targetSource(space, targets) {
+  if (!targets) return 'own';
+  return targets.has(space.id) ? 'brief' : 'unmatched';
+}
+
 // ---------- Compliance ----------
 
 export function briefNet(spaces) {
@@ -215,15 +232,18 @@ export function snapshotNet(snapshot, spaces) {
 // `targets` (optional Map from briefTargetsFor) overrides the design target
 // with the Brief's, so drift is measured against the agreed programme.
 export function spaceStatus(space, snapshot, tolerance, targets = null) {
+  const source = targetSource(space, targets);
   const target = effectiveTarget(space, targets);
   const actual = snapshot.areas[space.id];
-  if (actual == null) return { status: 'missing', target, actual: null, delta: null, pct: null };
+  if (actual == null) return { status: 'missing', source, target, actual: null, delta: null, pct: null };
+  // No agreed figure to measure against — report that, not a variance.
+  if (source === 'unmatched') return { status: 'unmatched', source, target: null, actual, delta: null, pct: null };
   const delta = actual - target;
   const pct = target > 0 ? delta / target : 0;
   let status = 'on';
   if (pct > tolerance) status = 'over';
   else if (pct < -tolerance) status = 'under';
-  return { status, target, actual, delta, pct };
+  return { status, source, target, actual, delta, pct };
 }
 
 // Roll up leaves by a grouping key ('department' or 'building').
@@ -238,8 +258,12 @@ export function rollup(spaces, snapshot, tolerance, by = 'department', targets =
       const root = rootContainer(s, byId);
       key = root ? root.name : 'Unassigned';
     }
-    const g = groups.get(key) || { key, target: 0, actual: 0, hasActual: false };
-    g.target += effectiveTarget(s, targets);
+    const g = groups.get(key) || { key, target: 0, actual: 0, hasActual: false, unmatched: 0 };
+    // A room with no Brief counterpart contributes no agreed target. Folding
+    // its own design figure in would inflate the group's target to exactly its
+    // actual and report the group as on-target — so it is counted, not summed.
+    if (targetSource(s, targets) === 'unmatched') g.unmatched++;
+    else g.target += effectiveTarget(s, targets);
     const a = snapshot ? snapshot.areas[s.id] : null;
     if (a != null) {
       g.actual += a;
@@ -322,9 +346,16 @@ export function buildCsv(project, spaces, snapshots, briefSpaces = []) {
   ];
   const rows = leaves.map((s) => {
     const root = rootContainer(s, byId);
-    const bt = targets && targets.has(s.id) ? targets.get(s.id) : null;
+    // MATCHED is `targets.has(id)`, never truthiness of the value: a room whose
+    // agreed target is legitimately 0 is matched, and reporting it as unmatched
+    // sends the reader hunting for a Brief row that is right there.
+    const matched = !!targets && targets.has(s.id);
+    const bt = matched ? targets.get(s.id) : null;
+    // An unmatched room gets the word, not an empty cell. Blank reads as "no
+    // data yet"; this room has data and no agreed figure to measure it against,
+    // which is a different — and more urgent — thing for a reader to know.
     const briefCols = hasBrief
-      ? [bt ?? '', bt ? Math.round(((targetTotal(s) - bt) / bt) * 1000) / 10 : '']
+      ? [matched ? bt : '', matched ? (bt > 0 ? Math.round(((targetTotal(s) - bt) / bt) * 1000) / 10 : '') : 'unmatched']
       : [];
     return [
       root ? root.name : '',

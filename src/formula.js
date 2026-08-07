@@ -308,19 +308,31 @@ export function resolveBrief(spaces, variables = {}) {
         progressed = true;
       } catch (err) {
         if (unresolvedRef) continue; // real error is a pending dep, not this
+        // A formula that does not evaluate leaves the room's LAST GOOD area in
+        // place — it does not silently become 0 m². Zeroing it quietly deleted
+        // the room from the net, from the applied design and from the issued
+        // milestone, on nothing worse than a typo'd variable name. The error is
+        // recorded so callers can render the row as blocking and exclude it
+        // from a total they present as complete.
         errors.set(id, err.message);
-        each.set(id, 0);
-        total.set(id, 0);
+        const held = Number(s.target_area);
+        const keep = Number.isFinite(held) && held > 0 ? held : 0;
+        each.set(id, keep);
+        total.set(id, (s.count || 1) * keep);
         pending.delete(id);
         progressed = true;
       }
     }
   }
-  // Anything still pending is a dependency cycle.
+  // Anything still pending is a dependency cycle. Same rule as a bad formula:
+  // hold the last good area and mark the row, rather than zeroing it.
   for (const id of pending) {
+    const s = leafById.get(id);
     errors.set(id, 'Circular reference between spaces');
-    each.set(id, 0);
-    total.set(id, 0);
+    const held = Number(s?.target_area);
+    const keep = Number.isFinite(held) && held > 0 ? held : 0;
+    each.set(id, keep);
+    total.set(id, (s?.count || 1) * keep);
   }
 
   // Roll up container totals now that every leaf is resolved.
