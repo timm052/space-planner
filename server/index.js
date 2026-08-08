@@ -10,6 +10,7 @@ import spacesRouter from './routes/spaces.js';
 import adjacenciesRouter from './routes/adjacencies.js';
 import snapshotsRouter from './routes/snapshots.js';
 import imagesRouter from './routes/images.js';
+import markupsRouter from './routes/markups.js';
 import settingsRouter from './routes/settings.js';
 import proxyRouter from './routes/proxy.js';
 
@@ -31,6 +32,7 @@ app.use('/api', programRouter);
 app.use('/api', adjacenciesRouter);
 app.use('/api', snapshotsRouter);
 app.use('/api', imagesRouter);
+app.use('/api', markupsRouter);
 app.use('/api', settingsRouter);
 app.use('/api', proxyRouter);
 

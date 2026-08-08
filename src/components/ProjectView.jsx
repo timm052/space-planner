@@ -41,7 +41,7 @@ export default function ProjectView({ projectId, onBack }) {
   if (error) return <div className="scroll"><div className="page"><Banner>{error}</Banner></div></div>;
   if (!data) return <div className="scroll"><div className="page"><Empty>Loading project…</Empty></div></div>;
 
-  const { project, spaces, brief_spaces = [], snapshots, adjacencies = [], brief_adjacencies = [], images = [] } = data;
+  const { project, spaces, brief_spaces = [], snapshots, adjacencies = [], brief_adjacencies = [], images = [], markups = [] } = data;
   const tab = tabState ?? (spaces.length === 0 ? 'Brief' : 'Bubble Diagram');
 
   function exportCsv() {
@@ -133,6 +133,7 @@ export default function ProjectView({ projectId, onBack }) {
             spaces={spaces}
             adjacencies={adjacencies}
             images={images}
+            markups={markups}
             snapshots={snapshots}
             onChanged={refresh}
             selectedSpaceId={selectedSpaceId}

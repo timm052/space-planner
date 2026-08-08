@@ -55,3 +55,28 @@ test('zoomAbout preserves a point fractional position between two scaled points'
   const after = (b2.x - i2.x) / (A.x - i2.x);
   assert.ok(Math.abs(before - after) < 1e-9);
 });
+
+// ---- satellite ground sample distance ------------------------------------
+// The extent presets said how WIDE the imagery was and never how detailed, so
+// there was no way to know whether it would carry a site plan or just context.
+
+test('groundSampleDistance halves with each zoom level', async () => {
+  const { groundSampleDistance } = await import('../src/components/diagram/LayersPanel.jsx');
+  const z18 = groundSampleDistance(18, 0);
+  const z19 = groundSampleDistance(19, 0);
+  assert.ok(Math.abs(z18 / z19 - 2) < 1e-9);
+});
+
+test('groundSampleDistance matches the observed Esri figure at the audit site', async () => {
+  const { groundSampleDistance } = await import('../src/components/diagram/LayersPanel.jsx');
+  // Truganina, −37.83°: the fetched layer came back at 0.4715 m/px at z18.
+  const g = groundSampleDistance(18, -37.83);
+  assert.ok(Math.abs(g - 0.4715) < 0.002, `expected ≈0.4715, got ${g}`);
+});
+
+test('groundSampleDistance coarsens away from the equator', async () => {
+  const { groundSampleDistance } = await import('../src/components/diagram/LayersPanel.jsx');
+  const eq = groundSampleDistance(18, 0);
+  const high = groundSampleDistance(18, 60);
+  assert.ok(Math.abs(high / eq - 0.5) < 1e-6, 'cos(60°) = 0.5');
+});

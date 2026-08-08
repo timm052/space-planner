@@ -320,6 +320,37 @@ export function normalizePolygon(pts) {
   return centred.map((p) => ({ ...p, x: p.x * f, y: p.y * f }));
 }
 
+/**
+ * The area a room's outline ACTUALLY encloses, in project units.
+ *
+ * Stage one of separating the drawn area from the typed one. `shape_json` holds
+ * a polygon normalised to unit area, so today a room's area is whatever number
+ * was typed and the outline only supplies proportion — dragging a vertex 90 px
+ * changes the recorded area by 0.000%. That means no figure on a sheet can be
+ * traced back to the geometry it sits on, which is the inverse of how a
+ * schedule is defended.
+ *
+ * This computes what the shape encloses so the two can be shown side by side
+ * and compared. It is deliberately NOT wired into any total yet: read it,
+ * trust it, then flip the source of truth (see docs/DESIGN.md).
+ *
+ * With the outline normalised, the drawn area equals the target by
+ * construction; the value only diverges once the lock is relaxed and a vertex
+ * genuinely moves. `smoothed` should pass the rendered ring (outlinePoints)
+ * rather than the raw vertices, so curved corners are measured as drawn.
+ *
+ * @param {Array<{x,y}>|null} ring Absolute-position outline as rendered.
+ * @param {number} targetArea The room's programme area, same units.
+ * @returns {{drawn:number, target:number, delta:number, pct:number}|null}
+ */
+export function drawnVsTarget(ring, targetArea) {
+  if (!ring || ring.length < 3 || !(targetArea > 0)) return null;
+  const drawn = polygonArea(ring);
+  if (!(drawn > 0)) return null;
+  const delta = drawn - targetArea;
+  return { drawn, target: targetArea, delta, pct: delta / targetArea };
+}
+
 // Corner styles a polygon vertex can carry (shape_json `k` per vertex):
 // 'c' curve (smooth through the corner — the default), 'f' fillet (tight
 // rounding), 's' sharp (a true corner).

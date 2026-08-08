@@ -37,7 +37,10 @@ export const api = {
   createBriefSpace: (projectId, data) =>
     request(`/api/projects/${projectId}/brief-spaces`, { method: 'POST', body: JSON.stringify(data) }),
   updateBriefSpace: (id, data) => request(`/api/brief-spaces/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  // Resolves to { brief_spaces } — the removed subtree, so a delete is undoable.
   deleteBriefSpace: (id) => request(`/api/brief-spaces/${id}`, { method: 'DELETE' }),
+  restoreBriefSpaces: (projectId, data) =>
+    request(`/api/projects/${projectId}/brief-spaces/restore`, { method: 'POST', body: JSON.stringify(data) }),
   // Reconcile the Brief onto the diagram (preview, then apply) / snapshot it.
   briefDiff: (projectId) => request(`/api/projects/${projectId}/brief-diff`),
   applyBrief: (projectId, opts) =>
@@ -87,6 +90,21 @@ export const api = {
   updateImage: (id, data) => request(`/api/images/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteImage: (id) => request(`/api/images/${id}`, { method: 'DELETE' }),
   getImageData: (id) => request(`/api/images/${id}/data`),
+
+  // Redline markup (freehand ink over the drawing). Never programme data.
+  createMarkup: (projectId, data) =>
+    request(`/api/projects/${projectId}/markups`, { method: 'POST', body: JSON.stringify(data) }),
+  updateMarkup: (id, data) => request(`/api/markups/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  // Resolves to the removed row, so a delete can be undone by handing it back.
+  deleteMarkup: (id) => request(`/api/markups/${id}`, { method: 'DELETE' }),
+  importMarkups: (projectId, data) =>
+    request(`/api/projects/${projectId}/markups/bulk`, { method: 'POST', body: JSON.stringify(data) }),
+  removeMarkupSource: (projectId, data) =>
+    request(`/api/projects/${projectId}/markups/remove-source`, { method: 'POST', body: JSON.stringify(data) }),
+  clearMarkups: (projectId, scope) =>
+    request(`/api/projects/${projectId}/markups/clear`, { method: 'POST', body: JSON.stringify(scope) }),
+  restoreMarkups: (projectId, data) =>
+    request(`/api/projects/${projectId}/markups/restore`, { method: 'POST', body: JSON.stringify(data) }),
 
   createSnapshot: (projectId, data) =>
     request(`/api/projects/${projectId}/snapshots`, { method: 'POST', body: JSON.stringify(data) }),

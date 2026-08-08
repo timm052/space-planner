@@ -37,7 +37,23 @@ export function linkSatisfied(strength, gap, thresholds = DEFAULT_THRESHOLDS_M) 
   return gap <= t;
 }
 
-// A link's credit falls from 1 to 0 between its threshold and FALLOFF× it.
+/**
+ * A link's credit falls from 1 to 0 between its threshold and FALLOFF× it.
+ *
+ * Per strength, because one number could not serve both. A required link's
+ * threshold is small (2 m on the site, 28 units in Concept), so a ×3 falloff
+ * put its zero at 84 units — and an auto-layout pass that pulled a required
+ * pair from 576 units to 98, a six-fold improvement plainly visible on screen,
+ * moved the score not at all. Every genuinely unsatisfied required pair sits
+ * beyond that, which made the score binary for exactly the links that matter
+ * most and useless for judging whether a layout is getting better.
+ *
+ * Desired links keep the tighter falloff: their threshold is already generous
+ * (12 m / 98 units), so a wide one would hand out credit for rooms nowhere
+ * near each other.
+ */
+export const CREDIT_FALLOFF_BY_STRENGTH = { required: 12, desired: 3 };
+/** @deprecated Kept for callers that pass a single factor. */
 export const CREDIT_FALLOFF = 3;
 
 // Graded credit for a single link, 0..1. Full credit within the threshold,
@@ -48,10 +64,19 @@ export const CREDIT_FALLOFF = 3;
 export function linkCredit(strength, gap, thresholds = DEFAULT_THRESHOLDS_M) {
   const t = thresholds[strength] ?? thresholds.desired;
   if (gap <= t) return 1;
-  const limit = t * CREDIT_FALLOFF;
+  const limit = t * (CREDIT_FALLOFF_BY_STRENGTH[strength] ?? CREDIT_FALLOFF);
   if (gap >= limit) return 0;
   const x = (gap - t) / (limit - t); // 0 at the threshold → 1 at the limit
   return 1 - x * x * (3 - 2 * x); // 1 − smoothstep(x)
+}
+
+/**
+ * How far a link still has to close, for a per-link readout in the rail.
+ * `gap` and thresholds share a unit. Returns 0 once satisfied.
+ */
+export function gapToTarget(strength, gap, thresholds = DEFAULT_THRESHOLDS_M) {
+  const t = thresholds[strength] ?? thresholds.desired;
+  return Math.max(0, gap - t);
 }
 
 // Score a set of links. Each link is `{ strength, gap, ...anything }`; the extra

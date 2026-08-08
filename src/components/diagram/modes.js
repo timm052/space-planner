@@ -67,6 +67,12 @@ export const pxToUnits = (px, zoom) => px / (zoom || 1);
  * rotate/resize/seed handlers); the last three were the inline refs.
  */
 export const MODE_ORDER = Object.freeze([
+  // MODAL. Claims nothing unless the Markup tool is active, and when it is it
+  // takes the press before anything else — you cannot half-draw a redline. That
+  // is what keeps arbitration for every other gesture byte-identical when the
+  // tool is off; the ink LAYER is pointer-events: none for the same reason.
+  'ink', // freehand redline stroke (Markup tool only)
+  'measure', // MODAL too — a dimension drag (Measure tool only)
   'poly', // vertex drag on a custom shape
   'rotate', // rotating a placed footprint
   'resize', // area-locked corner resize of a building box

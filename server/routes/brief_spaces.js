@@ -3,7 +3,7 @@ import { db } from '../db.js';
 import { requireProject } from './projects.js';
 import { oneOf, clampNum } from '../validate.js';
 import {
-  resolveBriefAndPersist, briefApplyDiff, applyBriefToDiagram, briefToMilestone, seedBriefFromDesign,
+  resolveBriefAndPersist, formulaErrorsFor, protectParentArea, briefApplyDiff, applyBriefToDiagram, briefToMilestone, seedBriefFromDesign,
   pullSpaceToBrief,
 } from '../brief.js';
 import { logCreated, logRemoved, logSpaceDiff } from '../changelog.js';
@@ -94,10 +94,41 @@ router.put('/brief-spaces/:id', (req, res) => {
     department, name, clampNum(count, 1, 100, 1), area, notes,
     parent_id, oneOf(kind, VALID_KINDS, 'space'), image, sort_order, child_mode, level ?? '', area_formula, space.id
   );
+  // A formula that does not evaluate is refused rather than stored. Storing it
+  // used to set the room's area to 0 m² and let that zero flow into the design
+  // and the issued milestone — a typo silently deleting a room from the
+  // programme. The write is rolled back so the last good area survives.
+  const parentChanged = parent_id !== space.parent_id;
+  // Re-checked on a MOVE as well as a formula edit: re-parenting a row under a
+  // space its formula references creates a cycle just as surely as writing a
+  // bad expression, and the row doing the moving need not be the one that
+  // carries the formula.
+  if (area_formula || parentChanged) {
+    const errs = formulaErrorsFor(space.project_id, 'brief_spaces');
+    const err = errs.get(space.id) ?? (parentChanged ? [...errs.values()][0] : null);
+    if (err) {
+      db.prepare(
+        `UPDATE brief_spaces SET department = ?, name = ?, count = ?, target_area = ?, notes = ?,
+         parent_id = ?, kind = ?, image = ?, sort_order = ?, child_mode = ?, level = ?, area_formula = ? WHERE id = ?`
+      ).run(
+        space.department, space.name, space.count, space.target_area, space.notes,
+        space.parent_id, space.kind, space.image, space.sort_order, space.child_mode, space.level ?? '', space.area_formula, space.id
+      );
+      resolveBriefAndPersist(space.project_id);
+      // "Circular reference between spaces" is accurate and useless on its own
+      // when the user's action was a drag: say what the move did.
+      const msg = parentChanged && /circular/i.test(err)
+        ? `${err} — nesting “${name}” here makes an area formula depend on its own total. Move it elsewhere, or replace the formula with a figure.`
+        : err;
+      return res.status(400).json({ error: msg });
+    }
+  }
+  // Nesting under a space that carries its own area must not silently drop it.
+  const protectedParent = parentChanged ? protectParentArea('brief_spaces', parent_id) : null;
   resolveBriefAndPersist(space.project_id);
   const updated = db.prepare('SELECT * FROM brief_spaces WHERE id = ?').get(space.id);
   logSpaceDiff(space.project_id, 'brief', space, updated); // programme fields only
-  res.json(updated);
+  res.json(protectedParent ? { ...updated, protectedParent } : updated);
 });
 
 // DELETE /api/brief-spaces/:id — recursive subtree delete.
@@ -115,10 +146,52 @@ router.delete('/brief-spaces/:id', (req, res) => {
     .all(id)
     .map((r) => r.id);
   const del = db.prepare('DELETE FROM brief_spaces WHERE id = ?');
+  // Capture the subtree BEFORE deleting: without it the response carried
+  // nothing and the delete was one-way, so a mis-drop on a building took its
+  // whole contents with no way back.
+  const removed = ids.map((sid) => db.prepare('SELECT * FROM brief_spaces WHERE id = ?').get(sid)).filter(Boolean);
   for (const sid of ids) del.run(sid);
   logRemoved(row.project_id, 'brief', row);
   resolveBriefAndPersist(row.project_id);
-  res.status(204).end();
+  res.json({ brief_spaces: removed });
+});
+
+// POST /api/projects/:id/brief-spaces/restore — hand a deleted subtree back.
+// Ids and parents are preserved, so an undo rebuilds exactly what was there
+// and anything matching by path still matches.
+router.post('/projects/:id/brief-spaces/restore', (req, res) => {
+  const project = requireProject(req, res);
+  if (!project) return;
+  const rows = Array.isArray(req.body?.brief_spaces) ? req.body.brief_spaces : [];
+  if (!rows.length) return res.json({ brief_spaces: [] });
+  if (rows.some((r) => Number(r.project_id) !== project.id)) {
+    return res.status(400).json({ error: 'Those rows belong to another project' });
+  }
+  const cols = db.prepare('PRAGMA table_info(brief_spaces)').all().map((c) => c.name);
+  const ins = db.prepare(
+    `INSERT OR IGNORE INTO brief_spaces (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`
+  );
+  // Parents first, so a child never references a row that does not exist yet.
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const done = new Set();
+  const visit = (r, guard) => {
+    if (!r || done.has(r.id) || guard.has(r.id)) return;
+    guard.add(r.id);
+    if (r.parent_id != null && byId.has(r.parent_id)) visit(byId.get(r.parent_id), guard);
+    if (done.has(r.id)) return;
+    done.add(r.id);
+    ins.run(...cols.map((c) => r[c] ?? null));
+  };
+  db.exec('BEGIN');
+  try {
+    for (const r of rows) visit(r, new Set());
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    return res.status(400).json({ error: `Restore failed: ${err.message}` });
+  }
+  resolveBriefAndPersist(project.id);
+  res.json({ brief_spaces: db.prepare('SELECT * FROM brief_spaces WHERE project_id = ? ORDER BY sort_order, id').all(project.id) });
 });
 
 // GET /api/projects/:id/brief-diff — preview an "overwrite the diagram" apply.

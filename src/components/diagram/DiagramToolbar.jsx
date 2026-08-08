@@ -35,9 +35,11 @@ function AdjacencyBadge({ store, compute, dataKey, active, onToggle, scopeNote =
     <button
       className={`adj-badge ${active ? 'active' : ''}`}
       onClick={onToggle}
-      title={`${result.met}/${result.total} relationships satisfied — click to highlight the ${result.unmet.length} unmet${scopeNote ? `\n${scopeNote}` : ''}`}
+      title={`${result.met} of ${result.total} relationships satisfied — click to highlight the ${result.unmet.length} unmet.\nThe % is a weighted score: required links count double, and a near-miss earns partial credit, so it does not equal ${result.met}/${result.total}.${scopeNote ? `\n${scopeNote}` : ''}`}
     >
-      <span className="adj-dot" /> {result.score == null ? '—' : `${Math.round(result.score * 100)}%`} adjacency
+      {/* "weighted" because it is NOT the met/total fraction, and a reader who
+          assumes it is will not be able to reconcile the two numbers. */}
+      <span className="adj-dot" /> {result.score == null ? '—' : `${Math.round(result.score * 100)}%`} weighted
     </button>
   );
 }
@@ -309,8 +311,18 @@ export function MorePopover({
   );
 }
 
-/** The left tool dock: Select / Link, then Auto-layout and Recentre. */
-export function ToolDock({ tool, onTool, autoRunning, onAutoLayout, showAutoLayout = true, showSnap = false, snapEdges = true, snapGrid = true, onToggleSnapEdges, onToggleSnapGrid, showInterior = false, interior = true, onToggleInterior, showOnion = false, onion = false, onToggleOnion, onRecentre }) {
+/** The left tool dock: Select / Link / Markup, then Auto-layout and Recentre. */
+export function ToolDock({
+  tool, onTool, autoRunning, onAutoLayout, showAutoLayout = true, showSnap = false,
+  snapEdges = true, snapGrid = true, onToggleSnapEdges, onToggleSnapGrid,
+  showInterior = false, interior = true, onToggleInterior,
+  showOnion = false, onion = false, onToggleOnion,
+  showMarkup = false, markupPen = null, onMarkupPen, penColors = [], penWidths = [], noteHeights = [],
+  noteDraft = null, onNoteDraft, onCommitNote,
+  hasMarkup = false, onClearMarkup, markupScopeNote = 'this environment',
+  showMeasure = false,
+  onRecentre,
+}) {
   return (
     <div className="tool-dock">
       <button
@@ -329,6 +341,110 @@ export function ToolDock({ tool, onTool, autoRunning, onAutoLayout, showAutoLayo
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="6" cy="17" r="3" /><circle cx="18" cy="7" r="3" /><line x1="8" y1="15" x2="16" y2="9" strokeLinecap="round" /></svg>
         <span className="tool-key">L</span>
       </button>
+      {showMarkup && (
+        <button
+          className={`tool-btn ${tool === 'markup' ? 'active' : ''}`}
+          onClick={() => onTool('markup')}
+          title="Markup — freehand redline over the drawing (D). Notes only: markup never changes an area or a total."
+        >
+          {/* pen nib */}
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 20l4-1 10-10a2.5 2.5 0 0 0-3.5-3.5L4.5 15.5z" /><line x1="14" y1="6.5" x2="17.5" y2="10" /></svg>
+          <span className="tool-key">D</span>
+        </button>
+      )}
+      {showMeasure && (
+        <button
+          className={`tool-btn ${tool === 'measure' ? 'active' : ''}`}
+          onClick={() => onTool('measure')}
+          title="Measure — drag to read a distance at the drawing's scale (M). Shift constrains to an axis."
+        >
+          {/* ruler */}
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="8" width="20" height="8" rx="1" /><line x1="7" y1="8" x2="7" y2="11" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="17" y1="8" x2="17" y2="11" /></svg>
+          <span className="tool-key">M</span>
+        </button>
+      )}
+      {/* Pen controls appear only while the tool is live, so the dock doesn't
+          grow a colour picker for everyone else. */}
+      {showMarkup && tool === 'markup' && markupPen && (
+        <div className="pen-tray" role="group" aria-label="Markup pen">
+          {/* Ink or words. Both are markup and neither changes an area — the
+              difference is only whether the comment is legible to someone who
+              wasn't in the room. */}
+          <div className="pen-modes seg-sm" role="group" aria-label="Markup kind">
+            <button
+              className={(markupPen.mode ?? 'ink') === 'ink' ? 'active' : ''}
+              onClick={() => onMarkupPen({ ...markupPen, mode: 'ink', width: penWidths[1] })}
+              aria-pressed={(markupPen.mode ?? 'ink') === 'ink'}
+              title="Freehand ink — drag to draw"
+            >✎</button>
+            <button
+              className={markupPen.mode === 'note' ? 'active' : ''}
+              onClick={() => onMarkupPen({ ...markupPen, mode: 'note', width: noteHeights[1] })}
+              aria-pressed={markupPen.mode === 'note'}
+              title="Note — click to place text, or drag from the thing you mean to add a leader"
+            >T</button>
+          </div>
+          <div className="pen-colors">
+            {penColors.map(([hex, label]) => (
+              <button
+                key={hex}
+                className={`pen-swatch ${markupPen.color === hex ? 'active' : ''}`}
+                style={{ '--pen': hex }}
+                onClick={() => onMarkupPen({ ...markupPen, color: hex })}
+                aria-pressed={markupPen.color === hex}
+                title={label}
+              />
+            ))}
+          </div>
+          <div className="pen-widths">
+            {(markupPen.mode === 'note' ? noteHeights : penWidths).map((w, i) => (
+              <button
+                key={w}
+                className={`pen-width ${markupPen.width === w ? 'active' : ''}`}
+                onClick={() => onMarkupPen({ ...markupPen, width: w })}
+                aria-pressed={markupPen.width === w}
+                title={
+                  markupPen.mode === 'note'
+                    ? (['Small', 'Medium', 'Large'][i] ?? `${w}`)
+                    : (['Fine', 'Medium', 'Broad'][i] ?? `${w}`)
+                }
+              >
+                {markupPen.mode === 'note'
+                  ? <span className="pen-note-size" style={{ fontSize: `${8 + i * 3}px` }}>T</span>
+                  : <span className="pen-width-dot" style={{ '--dot': `${4 + i * 3}px` }} />}
+              </button>
+            ))}
+          </div>
+          <button
+            className="btn small ghost danger pen-clear"
+            onClick={onClearMarkup}
+            disabled={!hasMarkup}
+            title={hasMarkup ? `Clear all markup on ${markupScopeNote} (one undo step)` : 'No markup to clear'}
+          >Clear</button>
+        </div>
+      )}
+      {/* The note being written. It appears only once a note has been placed,
+          and the canvas previews it where it will land as it is typed. */}
+      {showMarkup && tool === 'markup' && noteDraft && (
+        <div className="note-editor">
+          <input
+            className="ctrl-input"
+            autoFocus
+            value={noteDraft.text}
+            placeholder="Note text — Enter to place, Esc to cancel"
+            onChange={(e) => onNoteDraft({ ...noteDraft, text: e.target.value })}
+            onKeyDown={(e) => {
+              // Shift+Enter breaks the line: a note is often two.
+              if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onCommitNote(); }
+              else if (e.key === 'Enter') { e.preventDefault(); onNoteDraft({ ...noteDraft, text: `${noteDraft.text}
+` }); }
+              else if (e.key === 'Escape') { e.preventDefault(); onNoteDraft(null); }
+            }}
+          />
+          <button className="btn small primary" onClick={onCommitNote} disabled={!noteDraft.text.trim()}>Place</button>
+          <button className="btn small ghost" onClick={() => onNoteDraft(null)}>Cancel</button>
+        </div>
+      )}
       <div className="tool-dock-sep" />
       {showAutoLayout && (
         <button

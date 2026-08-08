@@ -155,7 +155,7 @@ test('Master plan with buildings draws building envelopes, not rooms', () => {
   }
 });
 
-test('Voronoi interior: cells render, click one to select its ROOM (no shape tools)', async () => {
+test('Voronoi interior: cells render; first click takes the ENVELOPE, a second drills to the room', async () => {
   const { normalizePolygon, regularPolygon } = await import('../src/geometry.js');
   // A PLACED envelope (plan_json slot + poly outline) with pinned rooms —
   // everything the interior sketch needs to draw cells.
@@ -181,16 +181,27 @@ test('Voronoi interior: cells render, click one to select its ROOM (no shape too
     assert.ok(interiorField, 'interior storey selector renders');
     const opts = [...interiorField.querySelectorAll('option')].map((o) => o.textContent);
     assert.deepEqual(opts, ['Ground', 'Level 1'], 'no All-floors option');
-    // Clicking a cell selects the ROOM it stands for, not the building —
-    // and interior rooms get no outline editing (they aren't drawn here).
+    // Group first, then the member. This REVERSES the earlier decision that a
+    // cell click always selected the room: the sketch covers the whole
+    // envelope, so that left the envelope unselectable by clicking it and put
+    // its own ✎ Shape / ⬡ Hull / rotate controls out of reach whenever the
+    // sketch was on — which is the default.
     const fill = cells[0].querySelector('.voronoi-fill');
-    await act(async () => {
-      fill.dispatchEvent(new window.MouseEvent('pointerdown', { bubbles: true, button: 0 }));
-      fill.dispatchEvent(new window.MouseEvent('pointerup', { bubbles: true, button: 0 }));
-    });
-    const bar = container.querySelector('.action-bar');
+    const press = async (el) => {
+      await act(async () => {
+        el.dispatchEvent(new window.MouseEvent('pointerdown', { bubbles: true, button: 0 }));
+        el.dispatchEvent(new window.MouseEvent('pointerup', { bubbles: true, button: 0 }));
+      });
+    };
+    await press(fill);
+    let bar = container.querySelector('.action-bar');
     assert.ok(bar, 'action bar appears');
-    assert.match(bar.textContent, /Lobby/, 'the ROOM is selected, not the building');
+    assert.match(bar.textContent, /Main/, 'the ENVELOPE is selected first');
+    assert.match(bar.textContent, /Shape/, 'so its outline tools are reachable');
+    // With the envelope already selected, a further press picks the room.
+    await press(container.querySelector('.voronoi-cell .voronoi-fill'));
+    bar = container.querySelector('.action-bar');
+    assert.match(bar.textContent, /Lobby/, 'a second press drills into the room');
     assert.doesNotMatch(bar.textContent, /Shape/, 'no outline editing for an interior room');
     // Switching storeys swaps which room's cell shows.
     const select = interiorField.querySelector('select');

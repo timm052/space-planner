@@ -17,6 +17,7 @@ import {
 } from '../compute.js';
 import { squarify, darkHex, categoryColor, BUILDING_COLORS, STATUS_HEX, STATUS_LABEL, STATUS_ORDER, pocheInk } from '../viz.js';
 import { orderedLevels } from '../floors.js';
+import { useHistory } from '../useHistory.js';
 import { evalFormula, referencedSpaces } from '../formula.js';
 import { Banner, Empty, Overlay } from './ui.jsx';
 import { confirmDialog } from './ConfirmDialog.jsx';
@@ -123,13 +124,30 @@ function VariablesCard({ variables, onSave, usedVars = null }) {
       {entries.length === 0 && (
         <p className="vars-empty">None yet. Add one, then use <code>@name</code> in an area formula.</p>
       )}
-      {entries.map(([k, v]) => (
-        <div className="var-row" key={k}>
-          <span className="var-name">@{k}</span>
-          <input className="var-val" type="number" step="any" defaultValue={v} onBlur={(e) => update(k, e.target.value)} />
-          <button className="row-btn danger" type="button" title={`Remove @${k}`} onClick={() => remove(k)}>✕</button>
-        </div>
-      ))}
+      {entries.map(([k, v]) => {
+        // Whether anything actually reads this variable. An unused one is
+        // usually a rename that left its old name behind — harmless until you
+        // change the wrong one and wonder why no area moved.
+        const used = usedVars ? usedVars.has(k) : null;
+        return (
+          <div className="var-row" key={k}>
+            <span className="var-name" title={used === false ? `@${k} is not referenced by any formula` : undefined}>
+              @{k}
+              {used === false && <span className="var-unused" aria-hidden="true"> ·</span>}
+            </span>
+            <input
+              className="var-val"
+              type="number"
+              step="any"
+              defaultValue={v}
+              aria-label={`Value of @${k}`}
+              onBlur={(e) => update(k, e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+            />
+            <button className="row-btn danger" type="button" title={`Remove @${k}`} onClick={() => remove(k)}>✕</button>
+          </div>
+        );
+      })}
       <div className="var-add">
         <input placeholder="name" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } }} />
         <input placeholder="value" type="number" step="any" value={val} onChange={(e) => setVal(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } }} />
@@ -458,7 +476,12 @@ export default function BriefTab({
   store, mode = 'design', programActions = null, onPullToBrief = null, extraSidebar = null,
   defaultView = 'schedule', // 'schedule' | 'treemap' — which view opens first
 }) {
-  const st = store || { create: api.createSpace, update: api.updateSpace, remove: api.deleteSpace };
+  const st = store || { create: api.createSpace, update: api.updateSpace, remove: api.deleteSpace, restore: api.restoreSpaces };
+  // Structural edits — nest, unnest, re-parent, delete — were one-way. On a
+  // contractual brief that is the wrong default: a mis-drop on a building took
+  // its whole contents with nothing to reach for. Geometry has had undo all
+  // along; the schedules had none.
+  const history = useHistory();
   const isBrief = mode === 'brief';
   // Mode-aware copy so the Brief and Design tabs read as distinct things.
   const L = isBrief
@@ -504,6 +527,20 @@ export default function BriefTab({
     setSelIds(deselect ? [] : [id]);
     onSelectSpace?.(deselect ? null : id); // share single selection with the Diagram
   }
+  // Ctrl/Cmd+Z on the schedule, matching the diagram. Ignored while typing in a
+  // field, where the browser's own text undo is what the user means.
+  useEffect(() => {
+    const onKey = (e) => {
+      const mod = e.ctrlKey || e.metaKey;
+      if (!mod || e.key.toLowerCase() !== 'z') return;
+      if (e.target.matches?.('input, select, textarea')) return;
+      e.preventDefault();
+      if (e.shiftKey) history.redo(); else history.undo();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [history]);
+
   const pendingFocus = useRef(null); // re-focus this row after the next refetch
 
   // Keep keyboard focus on the row the user just moved/indented, across refetch.
@@ -517,8 +554,23 @@ export default function BriefTab({
   async function reparent(id, parentId) {
     if (id === parentId) return;
     setError(null);
+    const before = spaces.find((x) => x.id === id)?.parent_id ?? null;
     try {
-      await st.update(id, { parent_id: parentId });
+      const res = await st.update(id, { parent_id: parentId });
+      if (before !== parentId) {
+        history.record({
+          label: 'move',
+          // The parent it CAME from, plus the child mode the move may have
+          // switched on its new parent (see protectParentArea) — both have to
+          // go back, or an undo leaves the tree right and the totals wrong.
+          undo: async () => {
+            await st.update(id, { parent_id: before });
+            if (res?.protectedParent) await st.update(res.protectedParent.id, { child_mode: 'group' });
+            onChanged();
+          },
+          redo: async () => { await st.update(id, { parent_id: parentId }); onChanged(); },
+        });
+      }
       onChanged();
     } catch (e) {
       setError(e.message);
@@ -608,14 +660,31 @@ export default function BriefTab({
   const isContainerRow = (s) => isPureContainer(s, parents);
   const hasChildren = (s) => parents.has(s.id);
 
+  // Undo for a create is just the matching delete — but a redo re-creates the
+  // row under a NEW id, so the entry follows the live id instead of the one it
+  // was recorded with (otherwise the second undo deletes nothing).
+  function recordCreate(created, payload, label) {
+    if (!created?.id) return;
+    let id = created.id;
+    history.record({
+      label,
+      undo: async () => { await st.remove(id); onChanged(); },
+      redo: async () => {
+        const again = await st.create(project.id, payload);
+        if (again?.id) id = again.id;
+        onChanged();
+      },
+    });
+  }
+
   // One-click onboarding: create the first building container and aim the add
   // dialog inside it, so the next spaces nest where they belong.
   async function startWithBuilding() {
     setError(null);
+    const payload = { kind: 'building', department: 'Building', name: 'Building A', count: 1, target_area: 0 };
     try {
-      const created = await st.create(project.id, {
-        kind: 'building', department: 'Building', name: 'Building A', count: 1, target_area: 0,
-      });
+      const created = await st.create(project.id, payload);
+      recordCreate(created, payload, 'add Building A');
       if (created?.id) {
         setAddParent(created.id);
         // Open the new building's edit row with the placeholder name selected —
@@ -702,25 +771,40 @@ export default function BriefTab({
         : `Removed from the ${tree}${isBrief ? '' : ' — recorded areas for it will be lost'}.`,
     });
     if (!ok) return;
-    await st.remove(s.id);
-    if (editingId === s.id) setEditingId(null);
-    onChanged();
+    setError(null);
+    try {
+      const removed = await st.remove(s.id);
+      const rows = removed?.brief_spaces ?? removed?.spaces ?? null;
+      if (rows?.length) {
+        history.record({
+          label: `delete ${s.name}`,
+          undo: async () => { await st.restore(project.id, removed); onChanged(); },
+          redo: async () => { await st.remove(s.id); onChanged(); },
+        });
+      }
+      if (editingId === s.id) setEditingId(null);
+      onChanged();
+    } catch (e) {
+      setError(e.message);
+    }
   }
 
   // Clone a space — the fast way to add another room like this one (same
   // parent, category, count, area). Milestone measurements aren't copied.
   async function duplicate(s) {
     setError(null);
+    const payload = {
+      kind: s.kind,
+      parent_id: s.parent_id ?? null,
+      department: s.department || 'General',
+      name: `${s.name} copy`,
+      count: s.count || 1,
+      target_area: s.target_area || 0,
+      level: s.level || '',
+    };
     try {
-      await st.create(project.id, {
-        kind: s.kind,
-        parent_id: s.parent_id ?? null,
-        department: s.department || 'General',
-        name: `${s.name} copy`,
-        count: s.count || 1,
-        target_area: s.target_area || 0,
-        level: s.level || '',
-      });
+      const created = await st.create(project.id, payload);
+      recordCreate(created, payload, `duplicate ${s.name}`);
       onChanged();
     } catch (e) {
       setError(e.message);
@@ -1123,6 +1207,18 @@ export default function BriefTab({
       <div className="brief-main">
         <div className={`brief-context ${isBrief ? 'is-brief' : 'is-design'}`}>{L.context}</div>
         <div className="brief-viewbar">
+          <div className="seg seg-sm brief-history" role="group" aria-label="Undo and redo">
+            <button
+              onClick={history.undo}
+              disabled={!history.canUndo}
+              title={history.canUndo ? `Undo ${history.undoLabel} (Ctrl+Z)` : 'Nothing to undo'}
+            >↶</button>
+            <button
+              onClick={history.redo}
+              disabled={!history.canRedo}
+              title={history.canRedo ? `Redo ${history.redoLabel} (Ctrl+Shift+Z)` : 'Nothing to redo'}
+            >↷</button>
+          </div>
           <div className="seg">
             <button className={briefView === 'schedule' ? 'active' : ''} onClick={() => setBriefView('schedule')}>
               ≣ Schedule
@@ -1281,7 +1377,11 @@ export default function BriefTab({
           groundLevel={groundLevel}
           defaultParent={addParent}
           formulaHint={formulaHint}
-          onCreate={async (payload) => { await st.create(project.id, payload); onChanged(); }}
+          onCreate={async (payload) => {
+            const created = await st.create(project.id, payload);
+            recordCreate(created, payload, `add ${payload.name || 'space'}`);
+            onChanged();
+          }}
           onClose={() => setShowAddDialog(false)}
         />
       )}
@@ -1443,8 +1543,20 @@ export default function BriefTab({
                         <span className="kind-icon">{s.kind === 'building' ? '🏢' : isContainerRow(s) ? '▦' : '·'}</span>
                         <span className={isContainerRow(s) ? 'container-name' : ''}>{s.name}</span>
                         {s.level ? <span className="row-tag" title="Building level">{s.level}</span> : null}
+                        {/* The mode governs whether this row's OWN area counts,
+                            and 'group' — the mode that stops it counting — was
+                            the one case left unlabelled. So a laboratory whose
+                            6 × 90 m² had silently left every total looked
+                            identical to one that had not. Flag it, and say what
+                            it costs. */}
                         {hasChildren(s) && s.kind === 'space' && (s.child_mode === 'within' || s.child_mode === 'attached') ? (
                           <span className="row-tag mode" title="How nested spaces relate to this one">{CHILD_MODE_LABEL[s.child_mode]}</span>
+                        ) : null}
+                        {hasChildren(s) && s.kind === 'space' && s.child_mode === 'group' && targetTotal(s) > 0 ? (
+                          <span
+                            className="row-tag mode warn"
+                            title={`Grouped — this row's own ${fmtArea(targetTotal(s), project.units)} is NOT counted; the total comes from its children. Edit it and choose "Within its own area" to count it.`}
+                          >Grouped</span>
                         ) : null}
                         {s.notes ? <span className="row-flag" title="Has notes">📝</span> : null}
                         {s.image ? <span className="row-flag" title="Has reference image">🖼</span> : null}
@@ -1474,7 +1586,15 @@ export default function BriefTab({
                               <span className="fx">ƒ</span> {fmtArea(s.target_area, project.units)}
                             </span>
                           );
-                        })() : (
+                        })() : s.area_locked === 0 ? (
+                          // 5c — this number came off the drawing, not off a
+                          // keyboard. Say so where the number is read: a figure
+                          // whose provenance is invisible is one nobody can
+                          // defend, which is the whole point of the exercise.
+                          <span className="formula-cell drawn" title="Taken from the drawn footprint — reshaping the room in the diagram changes this figure. Lock it in the diagram's action bar to type it instead.">
+                            <span className="fx">▱</span> {fmtArea(s.target_area, project.units)}
+                          </span>
+                        ) : (
                           fmtArea(s.target_area, project.units)
                         )}
                       </td>

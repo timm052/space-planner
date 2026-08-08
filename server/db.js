@@ -124,6 +124,36 @@ ensureColumn('projects', 'north_locked', 'north_locked INTEGER DEFAULT 0'); // 1
 ensureColumn('projects', 'category_colors', 'category_colors TEXT'); // JSON map: category/building label → custom colour
 ensureColumn('projects', 'images_migrated', 'images_migrated INTEGER DEFAULT 0'); // legacy bg_/sat_ → images rows done
 
+// Which way round a room's area and its outline are related.
+//
+// 1 (the default, and how the app has always behaved): the typed area is the
+// truth and the outline only supplies proportion — dragging a corner reshapes
+// the footprint and the enclosed area is held constant.
+//
+// 0: the DRAWING is the truth. Dragging a corner changes what the footprint
+// encloses, and the schedule figure follows it. That is how a plan is actually
+// developed once it stops being a bubble diagram, and until now there was no
+// way to say it: no figure on a sheet could be traced back to the geometry it
+// sat on.
+ensureColumn('spaces', 'area_locked', 'area_locked INTEGER DEFAULT 1');
+
+// Title-block fields. A sheet that leaves the office is identified by more than
+// its project name: BS EN ISO 7200 makes the identification number, the
+// revision index, the date of issue and the people who created and approved it
+// mandatory data fields. The export carried none of them, so every print was
+// unreferenced and every reissue looked identical to the last.
+ensureColumn('projects', 'drawing_number', "drawing_number TEXT DEFAULT ''");
+ensureColumn('projects', 'revision', "revision TEXT DEFAULT ''");
+ensureColumn('projects', 'drawn_by', "drawn_by TEXT DEFAULT ''");
+ensureColumn('projects', 'checked_by', "checked_by TEXT DEFAULT ''");
+// Free text, not an enum: office conventions differ (BS 1192 suitability codes
+// S0–S7, "PRELIMINARY", "FOR CONSTRUCTION"), and guessing wrong is worse than
+// letting the user type theirs.
+ensureColumn('projects', 'issue_status', "issue_status TEXT DEFAULT ''");
+// The date the current revision was issued. Blank means the sheet is dated the
+// day it is printed, which is the old behaviour.
+ensureColumn('projects', 'issue_date', "issue_date TEXT DEFAULT ''");
+
 // One-time migration: fold the legacy single satellite + custom layers into the
 // new multi-image `images` table so existing projects keep their backgrounds.
 function migrateImages() {
@@ -294,6 +324,50 @@ db.exec(`
     new TEXT
   );
 `);
+
+// Redline markup — freehand ink drawn OVER the drawing. Deliberately its own
+// table and NOT part of spaces: markup never contributes to an area, a total
+// or a compliance figure, and nothing that reads the programme should be able
+// to reach it by accident.
+//
+// Scoped per environment and per storey, because a note about the ground floor
+// has no business showing over the first. `points` is JSON [[x,y],…] in DIAGRAM
+// UNITS (see src/markup.js), so ink stays on what it was drawn over through
+// pan, zoom and a drawing-scale change.
+//
+// Markup is NOT captured by design options: a redline is a comment on the
+// project, not part of a scheme, so it must not vanish when you switch A → B.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS markups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    env TEXT NOT NULL DEFAULT 'concept',
+    level TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'ink',
+    color TEXT NOT NULL DEFAULT '#e5484d',
+    width REAL NOT NULL DEFAULT 5,
+    points TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS markups_scope ON markups (project_id, env, level);
+`);
+
+// Imported vector underlays ride in the same table as redlines: both are
+// reference over the drawing that never touches an area or a total, and they
+// therefore want identical rendering, scoping, undo and export. `src_layer`
+// keeps the source drawing's layer name so an import can be shown, hidden or
+// removed a layer at a time; `src_name` groups a single import together.
+ensureColumn('markups', 'src_layer', 'src_layer TEXT');
+ensureColumn('markups', 'src_name', 'src_name TEXT');
+
+// Sheet notes ride in the same table again (kind 'note'): a note is markup by
+// every rule that matters — it never touches an area, it is scoped to an
+// environment and storey, it undoes and exports with the ink. `points` holds
+// [[textX, textY]] for a plain note, or [[textX, textY], [targetX, targetY]]
+// when the note has a leader pointing at something. `width` is the TEXT HEIGHT
+// in diagram units, so a note keeps its paper size through a scale change for
+// the same reason a pen stroke keeps its weight.
+ensureColumn('markups', 'note_text', 'note_text TEXT');
 
 // Design options — named saves of the whole design (spaces + adjacencies) so
 // Option A/B schemes can be compared against one Brief and swapped in.

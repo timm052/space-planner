@@ -230,6 +230,9 @@ input.is-formula { font-family: 'JetBrains Mono', ui-monospace, monospace; color
 .var-row { display: flex; align-items: center; gap: 8px; }
 .var-name { flex: 1; font-size: 12.5px; color: var(--accent-text); }
 .var-val { width: 74px; padding: 3px 6px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel); color: var(--text); font-size: 12px; text-align: right; }
+/* A variable nothing references — usually a rename that left its old name
+   behind. A dot, not a warning: it is untidy, not wrong. */
+.var-unused { color: var(--faint); }
 .var-add { display: flex; gap: 6px; margin-top: 2px; }
 .var-add input { min-width: 0; flex: 1; padding: 4px 7px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel); color: var(--text); font-size: 12px; }
 .var-add input:first-child { flex: 1.2; }
@@ -544,3 +547,13 @@ input.is-formula { font-family: 'JetBrains Mono', ui-monospace, monospace; color
 .chart-dot { fill: var(--accent); stroke: var(--bg); stroke-width: 2; }
 .chart-label { fill: var(--muted); font-size: 11px; }
 .chart-label.dim { fill: var(--muted); font-size: 10px; }
+
+/* Undo / redo for the schedule — structural edits used to be one-way. */
+.brief-history button { min-width: 26px; padding: 3px 6px; font-size: 13px; line-height: 1; }
+.brief-history button:disabled { opacity: 0.35; cursor: default; }
+
+/* 5c — an area taken from the drawn footprint rather than typed. Same shape as
+   the formula badge, because it is the same fact: this figure is derived, and
+   editing it here is not where it comes from. */
+.formula-cell.drawn { color: var(--accent2-text); }
+.formula-cell.drawn .fx { color: var(--accent2-text); }

@@ -141,9 +141,119 @@ test('GET /api/projects/:id returns the full bundle; 404 when missing', async ()
   const id = await newProject();
   const { status, body } = await api('GET', `/api/projects/${id}`);
   assert.equal(status, 200);
-  assert.deepEqual(Object.keys(body).sort(), ['adjacencies', 'brief_adjacencies', 'brief_spaces', 'images', 'project', 'snapshots', 'spaces']);
+  assert.deepEqual(Object.keys(body).sort(), ['adjacencies', 'brief_adjacencies', 'brief_spaces', 'images', 'markups', 'project', 'snapshots', 'spaces']);
   const missing = await api('GET', '/api/projects/99999');
   assert.equal(missing.status, 404);
+});
+
+// ---- markup --------------------------------------------------------------
+// Markup is a comment on the drawing, never programme data. These pin the two
+// properties that matter: it round-trips faithfully, and it stays out of the
+// numbers.
+
+test('POST /api/projects/:id/markups stores a stroke and it comes back in the bundle', async () => {
+  const id = await newProject();
+  const created = await api('POST', `/api/projects/${id}/markups`, {
+    env: 'masterplan', level: 'Ground', color: '#3e63dd', width: 5, points: [[10, 20], [30, 40]],
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.env, 'masterplan');
+  assert.equal(created.body.level, 'Ground');
+  assert.equal(created.body.color, '#3e63dd');
+  assert.deepEqual(JSON.parse(created.body.points), [[10, 20], [30, 40]]);
+
+  const { body } = await api('GET', `/api/projects/${id}`);
+  assert.equal(body.markups.length, 1);
+  // …and it did not become a space, so nothing that totals the programme sees it.
+  assert.equal(body.spaces.length, 0);
+});
+
+test('a sheet note stores its words and survives a delete/restore round trip', async () => {
+  const id = await newProject();
+  const created = await api('POST', `/api/projects/${id}/markups`, {
+    env: 'masterplan', kind: 'note', note_text: '  Level change to confirm  ', width: 12,
+    color: '#e5484d', points: [[40, 20], [10, 60]],
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.kind, 'note');
+  assert.equal(created.body.note_text, 'Level change to confirm', 'trimmed, not stored raw');
+  // A note is markup, so it is in the markup list and nowhere near the programme.
+  const bundle = (await api('GET', `/api/projects/${id}`)).body;
+  assert.equal(bundle.markups.length, 1);
+  assert.equal(bundle.spaces.length, 0);
+
+  const removed = (await api('DELETE', `/api/markups/${created.body.id}`)).body;
+  assert.equal((await api('GET', `/api/projects/${id}`)).body.markups.length, 0);
+  await api('POST', `/api/projects/${id}/markups/restore`, { markups: [removed] });
+  const back = (await api('GET', `/api/projects/${id}`)).body.markups[0];
+  assert.equal(back.note_text, 'Level change to confirm', 'the words come back with the note');
+  assert.equal(back.kind, 'note');
+});
+
+test('a note with nothing written on it is refused', async () => {
+  // An empty note is an invisible mark: the user cannot find it again to
+  // delete it, and it prints as a blank leader pointing at nothing.
+  const id = await newProject();
+  const res = await api('POST', `/api/projects/${id}/markups`, { kind: 'note', note_text: '   ', points: [[1, 1]] });
+  assert.equal(res.status, 400);
+  assert.match(res.body.error, /needs some text/);
+});
+
+test('markup rejects an empty or unusable stroke', async () => {
+  const id = await newProject();
+  assert.equal((await api('POST', `/api/projects/${id}/markups`, { points: [] })).status, 400);
+  assert.equal((await api('POST', `/api/projects/${id}/markups`, { points: [['a', 'b']] })).status, 400);
+  assert.equal((await api('POST', `/api/projects/${id}/markups`, {})).status, 400);
+});
+
+test('markup falls back to safe values for a bad colour or environment', async () => {
+  const id = await newProject();
+  const { body } = await api('POST', `/api/projects/${id}/markups`, {
+    env: 'nowhere', color: 'url(#evil)', width: 9999, points: [[0, 0]],
+  });
+  assert.equal(body.env, 'concept');
+  assert.equal(body.color, '#e5484d'); // never lands user text in a paint attribute
+  assert.equal(body.width, 200); // clamped
+});
+
+test('DELETE /api/markups/:id returns the row so an undo can restore it', async () => {
+  const id = await newProject();
+  const { body: made } = await api('POST', `/api/projects/${id}/markups`, { env: 'concept', points: [[1, 2]] });
+  const del = await api('DELETE', `/api/markups/${made.id}`);
+  assert.equal(del.status, 200);
+  assert.equal(del.body.id, made.id);
+  assert.equal((await api('GET', `/api/projects/${id}`)).body.markups.length, 0);
+
+  const restored = await api('POST', `/api/projects/${id}/markups/restore`, { markups: [del.body] });
+  assert.equal(restored.status, 200);
+  const after = (await api('GET', `/api/projects/${id}`)).body.markups;
+  assert.equal(after.length, 1);
+  assert.equal(after[0].id, made.id); // same id, so redo/undo stay symmetrical
+});
+
+test('clear removes only the addressed scope and hands the rows back', async () => {
+  const id = await newProject();
+  await api('POST', `/api/projects/${id}/markups`, { env: 'concept', points: [[1, 1]] });
+  await api('POST', `/api/projects/${id}/markups`, { env: 'masterplan', level: 'Ground', points: [[2, 2]] });
+  await api('POST', `/api/projects/${id}/markups`, { env: 'masterplan', level: 'First', points: [[3, 3]] });
+
+  const cleared = await api('POST', `/api/projects/${id}/markups/clear`, { env: 'masterplan', level: 'Ground' });
+  assert.equal(cleared.status, 200);
+  assert.equal(cleared.body.markups.length, 1);
+
+  const left = (await api('GET', `/api/projects/${id}`)).body.markups;
+  assert.equal(left.length, 2); // the concept stroke and the First-floor one survive
+  assert.ok(left.every((m) => !(m.env === 'masterplan' && m.level === 'Ground')));
+
+  await api('POST', `/api/projects/${id}/markups/restore`, { markups: cleared.body.markups });
+  assert.equal((await api('GET', `/api/projects/${id}`)).body.markups.length, 3);
+});
+
+test('deleting a project takes its markup with it', async () => {
+  const id = await newProject();
+  await api('POST', `/api/projects/${id}/markups`, { env: 'concept', points: [[1, 1]] });
+  await api('DELETE', `/api/projects/${id}`);
+  assert.equal((await api('GET', `/api/projects/${id}`)).status, 404);
 });
 
 test('DELETE /api/projects/:id removes it', async () => {
@@ -463,6 +573,41 @@ test('the Brief tree is independent of the diagram spaces', async () => {
   assert.ok(b.id !== bundle.spaces[0].id); // separate rows
 });
 
+test('a deleted Brief subtree comes back whole, parents first', async () => {
+  // Deleting in the schedule was one-way: drop a building on the wrong row and
+  // its whole contents went with it. The DELETE now hands the subtree back and
+  // the restore rebuilds it under the same ids, so path matching still holds.
+  const pid = await newProject('BriefUndo');
+  const b = (await api('POST', `/api/projects/${pid}/brief-spaces`, { name: 'Block A', kind: 'building' })).body;
+  const room = (await api('POST', `/api/projects/${pid}/brief-spaces`, { name: 'Ward', target_area: 40, parent_id: b.id })).body;
+  const store = (await api('POST', `/api/projects/${pid}/brief-spaces`, { name: 'Store', target_area: 6, parent_id: room.id })).body;
+
+  const del = await api('DELETE', `/api/brief-spaces/${b.id}`);
+  assert.equal(del.status, 200);
+  assert.deepEqual(
+    del.body.brief_spaces.map((r) => r.id).sort((x, y) => x - y),
+    [b.id, room.id, store.id].sort((x, y) => x - y)
+  );
+  assert.equal((await api('GET', `/api/projects/${pid}`)).body.brief_spaces.length, 0);
+
+  const back = await api('POST', `/api/projects/${pid}/brief-spaces/restore`, del.body);
+  assert.equal(back.status, 200);
+  const rows = (await api('GET', `/api/projects/${pid}`)).body.brief_spaces;
+  assert.equal(rows.length, 3);
+  const ward = rows.find((r) => r.id === room.id);
+  assert.equal(ward.parent_id, b.id, 'the ward is back inside its own building');
+  assert.equal(rows.find((r) => r.id === store.id).parent_id, room.id, 'and the store inside the ward');
+  assert.equal(ward.target_area, 40, 'with its agreed area intact');
+});
+
+test('a Brief restore refuses rows from another project', async () => {
+  const a = await newProject('BriefUndoA');
+  const other = await newProject('BriefUndoB');
+  const room = (await api('POST', `/api/projects/${a}/brief-spaces`, { name: 'Ward', target_area: 40 })).body;
+  const del = (await api('DELETE', `/api/brief-spaces/${room.id}`)).body;
+  assert.equal((await api('POST', `/api/projects/${other}/brief-spaces/restore`, del)).status, 400);
+});
+
 test('Brief formulas resolve independently of the diagram', async () => {
   const pid = await newProject('BriefFormula');
   await api('PUT', `/api/projects/${pid}`, { variables: JSON.stringify({ staff: 15 }) });
@@ -770,4 +915,236 @@ test('duplicate siblings: loading an option reconciles each one by ordinal', asy
   assert.equal(spaces[0].id, s1.id); // id (and thus pins/milestones) kept
   assert.equal(spaces[0].target_area, 10);
   assert.equal(spaces[1].target_area, 20);
+});
+
+// ---- nesting must not silently drop the parent's area --------------------
+// One keystroke used to remove 540 m² from a 4,455 m² programme with no
+// prompt, no warning, and no way back through undo.
+
+test('nesting under a space that carries area switches it to "within", not "group"', async () => {
+  const id = await newProject();
+  const lab = await api('POST', `/api/projects/${id}/spaces`, { name: 'Science laboratory', count: 6, target_area: 90 });
+  const prep = await api('POST', `/api/projects/${id}/spaces`, { name: 'Science preparation', count: 2, target_area: 30 });
+  const netOf = async () => {
+    const { body } = await api('GET', `/api/projects/${id}`);
+    const parents = new Set(body.spaces.filter((s) => s.parent_id != null).map((s) => s.parent_id));
+    return body.spaces
+      .filter((s) => !parents.has(s.id) || s.child_mode === 'within')
+      .reduce((t, s) => t + (s.count || 1) * (s.target_area || 0), 0);
+  };
+  assert.equal(await netOf(), 6 * 90 + 2 * 30); // 600
+
+  const moved = await api('PUT', `/api/spaces/${prep.body.id}`, { parent_id: lab.body.id });
+  assert.equal(moved.status, 200);
+  assert.equal(moved.body.protectedParent.name, 'Science laboratory');
+  assert.equal(moved.body.protectedParent.area, 90);
+
+  const { body } = await api('GET', `/api/projects/${id}`);
+  const parent = body.spaces.find((s) => s.id === lab.body.id);
+  assert.equal(parent.child_mode, 'within'); // NOT 'group'
+  assert.equal(await netOf(), 600); // the 540 did not vanish
+});
+
+test('a building gaining a child is left alone — it never carried its own area', async () => {
+  const id = await newProject();
+  const b = await api('POST', `/api/projects/${id}/spaces`, { name: 'Building A', kind: 'building', target_area: 0 });
+  const room = await api('POST', `/api/projects/${id}/spaces`, { name: 'Room', count: 1, target_area: 50 });
+  const moved = await api('PUT', `/api/spaces/${room.body.id}`, { parent_id: b.body.id });
+  assert.equal(moved.body.protectedParent, undefined);
+  const { body } = await api('GET', `/api/projects/${id}`);
+  assert.equal(body.spaces.find((s) => s.id === b.body.id).child_mode, 'group');
+});
+
+test('a SECOND child does not re-trigger the protection', async () => {
+  const id = await newProject();
+  const p = await api('POST', `/api/projects/${id}/spaces`, { name: 'Parent', count: 1, target_area: 100 });
+  const a = await api('POST', `/api/projects/${id}/spaces`, { name: 'A', count: 1, target_area: 10 });
+  const c = await api('POST', `/api/projects/${id}/spaces`, { name: 'C', count: 1, target_area: 10 });
+  await api('PUT', `/api/spaces/${a.body.id}`, { parent_id: p.body.id });
+  // The user may have switched back to Grouped deliberately; respect that.
+  await api('PUT', `/api/spaces/${p.body.id}`, { child_mode: 'group' });
+  const second = await api('PUT', `/api/spaces/${c.body.id}`, { parent_id: p.body.id });
+  assert.equal(second.body.protectedParent, undefined);
+});
+
+test('a broken formula is refused and the last good area survives', async () => {
+  const id = await newProject();
+  const s = await api('POST', `/api/projects/${id}/spaces`, { name: 'Canteen', count: 1, target_area: 180 });
+  const bad = await api('PUT', `/api/spaces/${s.body.id}`, { area_formula: '=@pupils * 0.2' });
+  assert.equal(bad.status, 400);
+  assert.match(bad.body.error, /Unknown variable/);
+  const { body } = await api('GET', `/api/projects/${id}`);
+  const after = body.spaces.find((x) => x.id === s.body.id);
+  assert.equal(after.target_area, 180); // not 0
+  assert.equal(after.area_formula, null);
+});
+
+test('switching units CONVERTS every stored area instead of relabelling it', async () => {
+  const id = await newProject();
+  const room = await api('POST', `/api/projects/${id}/spaces`, { name: 'Room', count: 1, target_area: 405 });
+  const brief = await api('POST', `/api/projects/${id}/brief-spaces`, { name: 'Room', count: 1, target_area: 405 });
+  const snap = await api('POST', `/api/projects/${id}/snapshots`, {
+    label: 'SD', taken_at: '2026-08-08', gross_area: 5720, areas: { [room.body.id]: 396 },
+  });
+  assert.equal(snap.status, 201);
+
+  const put = await api('PUT', `/api/projects/${id}`, { units: 'ft2' });
+  assert.equal(put.status, 200);
+  assert.equal(put.body.units, 'ft2');
+  assert.equal(put.body.unitConversion.spaces, 1);
+
+  const { body } = await api('GET', `/api/projects/${id}`);
+  // 405 m² is 4,359.4 ft² — NOT "405 ft²".
+  assert.ok(Math.abs(body.spaces.find((s) => s.id === room.body.id).target_area - 4359.381) < 0.01);
+  assert.ok(Math.abs(body.brief_spaces.find((s) => s.id === brief.body.id).target_area - 4359.381) < 0.01);
+  const sn = body.snapshots[0];
+  assert.ok(Math.abs(sn.gross_area - 61569.5) < 1); // 5,720 m²
+  assert.ok(Math.abs(sn.areas[room.body.id] - 4262.5) < 1); // 396 m²
+});
+
+test('a units round-trip returns the original figures', async () => {
+  const id = await newProject();
+  const room = await api('POST', `/api/projects/${id}/spaces`, { name: 'Hall', count: 1, target_area: 900 });
+  await api('PUT', `/api/projects/${id}`, { units: 'ft2' });
+  await api('PUT', `/api/projects/${id}`, { units: 'm2' });
+  const { body } = await api('GET', `/api/projects/${id}`);
+  assert.equal(body.spaces.find((s) => s.id === room.body.id).target_area, 900);
+});
+
+test('conversion is refused — with a reason — when formulas or variables are in play', async () => {
+  const id = await newProject();
+  await api('POST', `/api/projects/${id}/spaces`, { name: 'Room', count: 1, target_area: 100 });
+  await api('PUT', `/api/projects/${id}`, { variables: JSON.stringify({ students: 900 }) });
+  const blockedByVars = await api('PUT', `/api/projects/${id}`, { units: 'ft2' });
+  assert.equal(blockedByVars.status, 400);
+  assert.match(blockedByVars.body.error, /variables/i);
+  assert.equal((await api('GET', `/api/projects/${id}`)).body.project.units, 'm2'); // untouched
+
+  // With the variables gone but a formula left, the formula is the blocker.
+  const id2 = await newProject();
+  const r = await api('POST', `/api/projects/${id2}/spaces`, { name: 'Room', count: 1, target_area: 100 });
+  await api('PUT', `/api/spaces/${r.body.id}`, { area_formula: '=50 * 2' });
+  const blockedByFormula = await api('PUT', `/api/projects/${id2}`, { units: 'ft2' });
+  assert.equal(blockedByFormula.status, 400);
+  assert.match(blockedByFormula.body.error, /formula/i);
+});
+
+test('an empty project switches units freely', async () => {
+  const id = await newProject();
+  assert.equal((await api('PUT', `/api/projects/${id}`, { units: 'ft2' })).status, 200);
+  assert.equal((await api('PUT', `/api/projects/${id}`, { units: 'm2' })).status, 200);
+  assert.equal((await api('PUT', `/api/projects/${id}`, { stage: 'On Site' })).status, 200);
+});
+
+test('areas frozen inside revisions and options convert too', async () => {
+  const id = await newProject();
+  await api('POST', `/api/projects/${id}/brief-spaces`, { name: 'Room', count: 1, target_area: 405 });
+  await api('POST', `/api/projects/${id}/spaces`, { name: 'Room', count: 1, target_area: 405 });
+  const rev = await api('POST', `/api/projects/${id}/brief-revisions`, { label: 'Rev A' });
+  const opt = await api('POST', `/api/projects/${id}/options`, { name: 'Option A' });
+  await api('PUT', `/api/projects/${id}`, { units: 'ft2' });
+  const revs = await api('GET', `/api/projects/${id}/brief-revisions`);
+  assert.ok(Math.abs(revs.body.find((x) => x.id === rev.body.id).net - 4359.381) < 0.01);
+  const opts = await api('GET', `/api/projects/${id}/options`);
+  assert.ok(Math.abs(opts.body.find((x) => x.id === opt.body.id).net - 4359.381) < 0.01);
+  // …and loading the option must not drag the project back to m².
+  await api('POST', `/api/projects/${id}/options/${opt.body.id}/load`, {});
+  assert.equal((await api('GET', `/api/projects/${id}`)).body.project.units, 'ft2');
+});
+
+// ---- options carry the parameters that drive them ------------------------
+
+test('an option restores the variables its areas were computed from', async () => {
+  const id = await newProject();
+  await api('PUT', `/api/projects/${id}`, { variables: JSON.stringify({ site_area: 40232, plot_ratio: 0.8 }) });
+  const room = await api('POST', `/api/projects/${id}/spaces`, { name: 'Lots', count: 1, target_area: 1 });
+  await api('PUT', `/api/spaces/${room.body.id}`, { area_formula: '=@site_area * @plot_ratio * 0.5' });
+  // Resolved areas are stored rounded to 3 dp, so compare against that.
+  const round3 = (n) => Math.round(n * 1000) / 1000;
+  const areaOf = async () => (await api('GET', `/api/projects/${id}`)).body.spaces.find((s) => s.id === room.body.id).target_area;
+  assert.equal(await areaOf(), round3(40232 * 0.8 * 0.5)); // 16092.8
+
+  const optA = await api('POST', `/api/projects/${id}/options`, { name: 'A — PR 0.8' });
+  assert.equal(optA.status, 201);
+
+  // Vary the control: the same formula now yields a different area.
+  await api('PUT', `/api/projects/${id}`, { variables: JSON.stringify({ site_area: 40232, plot_ratio: 0.6 }) });
+  assert.equal(await areaOf(), round3(40232 * 0.6 * 0.5)); // 12069.6
+
+  // Loading A must bring its plot ratio back with it, or the formula instantly
+  // recomputes to 0.6 and the option's own figure is discarded.
+  const load = await api('POST', `/api/projects/${id}/options/${optA.body.id}/load`, {});
+  assert.equal(load.status, 200);
+  assert.ok(load.body.paramsRestored.includes('variables'));
+  assert.equal(await areaOf(), 16092.8);
+  const { body } = await api('GET', `/api/projects/${id}`);
+  assert.equal(JSON.parse(body.project.variables).plot_ratio, 0.8);
+});
+
+test('an option saved before params existed leaves the live ones alone', async () => {
+  const id = await newProject();
+  await api('POST', `/api/projects/${id}/spaces`, { name: 'Room', count: 1, target_area: 50 });
+  const opt = await api('POST', `/api/projects/${id}/options`, { name: 'Legacy' });
+  // Simulate an older payload with no params key.
+  const row = db.prepare('SELECT data FROM design_options WHERE id = ?').get(opt.body.id);
+  const data = JSON.parse(row.data);
+  delete data.params;
+  db.prepare('UPDATE design_options SET data = ? WHERE id = ?').run(JSON.stringify(data), opt.body.id);
+  await api('PUT', `/api/projects/${id}`, { grossing_target: 0.55 });
+  const load = await api('POST', `/api/projects/${id}/options/${opt.body.id}/load`, {});
+  assert.equal(load.body.paramsRestored, null);
+  assert.equal((await api('GET', `/api/projects/${id}`)).body.project.grossing_target, 0.55);
+});
+
+test('re-parenting into a formula cycle is refused, and says what the move did', async () => {
+  const id = await newProject();
+  const lab = await api('POST', `/api/projects/${id}/spaces`, { name: 'Lab', count: 6, target_area: 90 });
+  const prep = await api('POST', `/api/projects/${id}/spaces`, { name: 'Prep', count: 1, target_area: 30 });
+  // Prep's area is a share of Lab's total — fine while they are siblings.
+  const f = await api('PUT', `/api/spaces/${prep.body.id}`, { area_formula: '=5% * [Lab]' });
+  assert.equal(f.status, 200);
+  // Nesting Prep UNDER Lab makes Lab a container whose total includes Prep,
+  // so Prep's formula would depend on itself.
+  const moved = await api('PUT', `/api/spaces/${prep.body.id}`, { parent_id: lab.body.id });
+  assert.equal(moved.status, 400);
+  assert.match(moved.body.error, /circular/i);
+  assert.match(moved.body.error, /nesting/i); // names the action, not just the condition
+  // …and the move did not stick.
+  const { body } = await api('GET', `/api/projects/${id}`);
+  assert.equal(body.spaces.find((s) => s.id === prep.body.id).parent_id, null);
+});
+
+test('an ordinary re-parent with no formulas is unaffected', async () => {
+  const id = await newProject();
+  const a = await api('POST', `/api/projects/${id}/spaces`, { name: 'Block', kind: 'building', target_area: 0 });
+  const b = await api('POST', `/api/projects/${id}/spaces`, { name: 'Room', count: 1, target_area: 40 });
+  const moved = await api('PUT', `/api/spaces/${b.body.id}`, { parent_id: a.body.id });
+  assert.equal(moved.status, 200);
+  const { body } = await api('GET', `/api/projects/${id}`);
+  assert.equal(body.spaces.find((s) => s.id === b.body.id).parent_id, a.body.id);
+});
+
+test('the area lock is per room, defaults on, and survives a round trip', async () => {
+  // On (1) is how the app has always behaved: the typed figure rules and the
+  // outline only supplies proportion. Off means the drawing rules.
+  const pid = await newProject('AreaLock');
+  const room = (await api('POST', `/api/projects/${pid}/spaces`, { name: 'Hall', target_area: 200 })).body;
+  assert.equal(room.area_locked, 1, 'a new room keeps its typed area');
+
+  const off = await api('PUT', `/api/spaces/${room.id}`, { area_locked: 0 });
+  assert.equal(off.body.area_locked, 0);
+  // Unrelated edits must not silently re-lock it — the field is key-presence
+  // checked like every other nullable-ish column here.
+  const renamed = await api('PUT', `/api/spaces/${room.id}`, { name: 'Main hall' });
+  assert.equal(renamed.body.area_locked, 0, 'a rename does not re-lock the area');
+  assert.equal((await api('PUT', `/api/spaces/${room.id}`, { area_locked: 1 })).body.area_locked, 1);
+});
+
+test('unlocking does not by itself change the recorded area', async () => {
+  // The lock says which way round the two are related; it is not an edit.
+  const pid = await newProject('AreaLockInert');
+  const room = (await api('POST', `/api/projects/${pid}/spaces`, { name: 'Hall', target_area: 200 })).body;
+  await api('PUT', `/api/spaces/${room.id}`, { area_locked: 0 });
+  const after = (await api('GET', `/api/projects/${pid}`)).body.spaces.find((s) => s.id === room.id);
+  assert.equal(after.target_area, 200);
 });

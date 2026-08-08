@@ -36,6 +36,8 @@ export default function SelectionHud({
   // geometry is a drawn footprint); Building shows a 90° rotate instead and hides
   // Pin (no sim to protect against).
   showShapeTools,
+  drawn = null, // 5a: what the outline encloses, vs the figure carried for it
+  onAreaLock = null, // 5b: (space, locked) — which of the two rules the other
   showRotate90,
   onRotate90,
   // Master plan — numeric rotation for a drawn footprint (the ⟲ drag handle
@@ -208,6 +210,47 @@ export default function SelectionHud({
       <div className="action-bar" onClick={(e) => e.stopPropagation()}>
         <span className="swatch" style={{ background: colorOf(sel) }} />
         <span className="action-name">{envelope ? '🏢 ' : ''}{sel.name}{selCount > 1 ? ` ${instanceLabel(selectedInst)}` : ''}</span>
+        {/* 5a/5b — the drawn area beside the stated one, and the lock that
+            decides which of the two is the truth. Locked (the default): the
+            figure rules and a corner drag only reshapes. Unlocked: the drawing
+            rules and the schedule figure follows what you draw. */}
+        {drawn && (
+          <span
+            className={`drawn-chip ${Math.abs(drawn.pct) > 0.005 ? 'off' : ''}`}
+            title={
+              Math.abs(drawn.pct) > 0.005
+                ? `The outline encloses ${Math.round(drawn.drawn).toLocaleString()} against a stated ${Math.round(drawn.target).toLocaleString()} — ${(drawn.pct * 100).toFixed(1)}%.`
+                : 'The outline encloses exactly the area carried for it.'
+            }
+          >
+            drawn {Math.round(drawn.drawn).toLocaleString()}
+            {Math.abs(drawn.pct) > 0.005 ? ` (${drawn.pct > 0 ? '+' : ''}${(drawn.pct * 100).toFixed(1)}%)` : ' ✓'}
+          </span>
+        )}
+        {drawn && onAreaLock && (() => {
+          // A formula-driven room can never take its area from the drawing:
+          // the next resolve would overwrite whatever the drag wrote, so the
+          // toggle says why instead of pretending to work.
+          const formulaDriven = !!sel.area_formula;
+          const locked = formulaDriven || !!(sel.area_locked ?? 1);
+          return (
+            <button
+              className={`action-btn area-lock ${locked ? 'on' : ''}`}
+              disabled={formulaDriven}
+              aria-pressed={locked}
+              onClick={() => onAreaLock(sel, !locked)}
+              title={
+                formulaDriven
+                  ? 'This room’s area comes from a formula, so the drawing cannot set it — clear the formula first.'
+                  : locked
+                    ? 'Area locked: the figure rules and dragging a corner only reshapes. Click to let the drawing set the area.'
+                    : 'Drawing rules: dragging a corner changes the area and the schedule follows it. Click to lock the figure again.'
+              }
+            >
+              {locked ? '🔒 area' : '🔓 drawn'}
+            </button>
+          );
+        })()}
         {envelope ? (
           <>
             <input

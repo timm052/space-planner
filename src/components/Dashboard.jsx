@@ -102,9 +102,16 @@ export default function Dashboard({ project, spaces, briefSpaces = [], snapshots
 
   const catRollup = latest ? rollupBy(spaces, latest, project.tolerance, 'department', targets) : [];
   const statuses = latest ? leaves.map((s) => ({ space: s, ...spaceStatus(s, latest, project.tolerance, targets) })) : [];
+  // Unmatched rooms lead the list: a room with no agreed target is a bigger
+  // problem than one that is 8% over, because there is nothing to argue about
+  // it with. They have no pct, so they sort ahead of everything rather than
+  // falling to the bottom of a magnitude sort.
   const flagged = statuses
-    .filter((s) => s.status === 'over' || s.status === 'under')
-    .sort((a, b) => Math.abs(b.pct) - Math.abs(a.pct));
+    .filter((s) => s.status === 'over' || s.status === 'under' || s.status === 'unmatched')
+    .sort((a, b) => {
+      if ((a.status === 'unmatched') !== (b.status === 'unmatched')) return a.status === 'unmatched' ? -1 : 1;
+      return Math.abs(b.pct ?? 0) - Math.abs(a.pct ?? 0);
+    });
 
   // Compliance mix across the programme — the segmented bar that echoes the
   // diagram's colour-by-status lens and the Building stacking bars.
@@ -227,7 +234,13 @@ export default function Dashboard({ project, spaces, briefSpaces = [], snapshots
             <div className="sec-head">
               <span className="sec-tag t-bad">D·07</span>
               <span className="sec-title">Flagged spaces</span>
-              <span className="sec-meta right mono">{flagged.length} outside ±{Math.round(project.tolerance * 100)}%{flagged.length > 0 ? ' · click to locate' : ''}</span>
+              <span className="sec-meta right mono">
+                {(() => {
+                  const un = flagged.filter((f) => f.status === 'unmatched').length;
+                  const out = flagged.length - un;
+                  return `${out} outside ±${Math.round(project.tolerance * 100)}%${un ? ` · ${un} not in the Brief` : ''}${flagged.length > 0 ? ' · click to locate' : ''}`;
+                })()}
+              </span>
             </div>
             {flagged.length === 0 ? (
               <Empty small>Every space is within tolerance.</Empty>
@@ -245,9 +258,15 @@ export default function Dashboard({ project, spaces, briefSpaces = [], snapshots
                   <span className="swatch" style={{ background: categoryColor(space.department) }} />
                   <span className="dl-name" style={{ maxWidth: '46%', flex: 'none' }}>{space.name}</span>
                   <span className="dl-lead" />
-                  <span className="dl-val">{fmtNum(t)} → {fmtNum(a)} {suffix}</span>
-                  <span className="dl-val strong" style={{ color: statusColor(status), width: 56, textAlign: 'right' }}>
-                    {fmtPct(pct)}
+                  <span className="dl-val">
+                    {status === 'unmatched' ? `— → ${fmtNum(a)} ${suffix}` : `${fmtNum(t)} → ${fmtNum(a)} ${suffix}`}
+                  </span>
+                  <span
+                    className="dl-val strong"
+                    style={{ color: statusColor(status), width: 56, textAlign: 'right' }}
+                    title={status === 'unmatched' ? 'No matching room in the Brief — this area has no agreed target to be measured against' : undefined}
+                  >
+                    {status === 'unmatched' ? 'no brief' : fmtPct(pct)}
                   </span>
                 </div>
               ))

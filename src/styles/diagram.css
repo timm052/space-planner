@@ -360,6 +360,120 @@
 }
 .tool-dock-sep { height: 1px; background: var(--glass-border); margin: 1px 4px; }
 
+/* Overlap count — a canvas-level warning, beside the drawing not in the rail,
+   because it is about what is drawn rather than about the schedule. */
+.overlap-chip rect { fill: var(--panel); stroke: var(--bad); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.overlap-chip text { fill: var(--bad); font-size: 11px; dominant-baseline: middle; }
+
+/* ---- Measure tool ------------------------------------------------------ */
+/* Screen-space, unlike markup: a dimension is an instrument reading the
+   drawing, so its line weight must not change with the camera. */
+.measure-layer { pointer-events: none; }
+.measure-line,
+.measure-tick {
+  stroke: var(--accent2);
+  stroke-width: 1.25;
+  vector-effect: non-scaling-stroke;
+  stroke-linecap: round;
+}
+.measure-line { stroke-dasharray: 5 3; }
+.measure-chip { fill: var(--panel); stroke: var(--accent2); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.measure-text {
+  fill: var(--text);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px;
+  dominant-baseline: middle;
+}
+
+/* ---- Redline markup ---------------------------------------------------- */
+/* Ink is drawn in DIAGRAM UNITS and deliberately does NOT use
+   vector-effect: non-scaling-stroke. Interactive chrome (handles, guides) is
+   screen-space so grab targets stay constant; a pen mark is part of the
+   drawing, so it must keep its weight relative to the plan and print true at
+   the sheet's stated scale. */
+.markup-layer { pointer-events: none; }
+.markup-stroke {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  /* Reads as a marker over the drawing rather than as geometry in it. */
+  opacity: 0.85;
+}
+.markup-stroke.live { opacity: 1; }
+/* Optimistic strokes are already at full weight — the only cue is that they
+   have not yet come back from the server, which nobody needs to see. */
+.markup-stroke.pending { opacity: 0.85; }
+
+/* Pen tray — only mounted while the Markup tool is live. */
+.pen-tray {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 2px 2px;
+  align-items: center;
+}
+.pen-colors,
+.pen-widths { display: flex; gap: 4px; flex-wrap: wrap; justify-content: center; max-width: 40px; }
+.pen-swatch {
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  background: var(--pen);
+  cursor: pointer;
+  transition: transform var(--dur-fast) var(--ease);
+}
+.pen-swatch:hover { transform: scale(1.15); }
+.pen-swatch.active { border-color: var(--text); }
+.pen-width {
+  width: 17px;
+  height: 17px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  cursor: pointer;
+  color: var(--muted);
+}
+.pen-width:hover { background: var(--panel2); }
+.pen-width.active { background: var(--accent); color: var(--accent-ink); }
+.pen-width-dot {
+  width: var(--dot);
+  height: var(--dot);
+  border-radius: 50%;
+  background: currentColor;
+}
+.pen-clear { width: 100%; font-size: 10px; padding: 2px 0; }
+/* Ink vs words. Two buttons, same tray, because both are markup. */
+.pen-modes { display: flex; }
+.pen-modes button { min-width: 20px; padding: 2px 6px; font-size: 12px; line-height: 1.2; }
+.pen-note-size { font-weight: 700; line-height: 1; }
+
+/* Sheet notes — text over the drawing, in diagram units like the ink, so a
+   note stays on what it annotates and prints at the height it was written. */
+.markup-note text {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-weight: 500;
+  paint-order: stroke;
+  /* A hairline of canvas behind the glyphs keeps a note legible over a busy
+     satellite underlay without hiding what it points at. */
+  stroke: var(--canvas-bg);
+  stroke-width: 0.18em;
+  stroke-linejoin: round;
+}
+.markup-note.pending text { opacity: 0.75; }
+.markup-leader { stroke-linecap: round; }
+.markup-leader.live { opacity: 0.7; stroke-dasharray: 4 3; }
+
+/* The note being typed, in the tool dock under the pen tray. */
+.note-editor { display: flex; flex-direction: column; gap: 4px; padding: 6px 2px 2px; }
+.note-editor .ctrl-input { width: 150px; font-size: 11px; }
+.note-editor .btn { font-size: 10px; padding: 2px 0; }
+
 /* Stage legend → flat square swatches on glass (the legend keeps colour inputs). */
 .stage-legend { background: var(--glass); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border-color: var(--glass-border); box-shadow: var(--shadow); }
 .legend-swatch { width: 11px; height: 11px; border-radius: 0; display: inline-block; cursor: pointer; }
@@ -736,9 +850,14 @@
 .opacity-mini input[type='range'] { width: 78px; }
 .rot-field { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); }
 .rot-field input { width: 44px; padding: 4px 6px; font-size: 12px; }
+/* Layer position, typeable like its rotation. */
+.xy-field { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; color: var(--muted); }
+.xy-field input { width: 46px; padding: 4px 5px; font-size: 12px; }
 
 .sat-panel, .scale-panel { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; }
 .sat-panel input { flex: 1; min-width: 220px; }
+/* Resolution readout — what detail this zoom actually buys you. */
+.sat-gsd { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
 .sat-panel select { width: auto; }
 .scale-panel input { width: 110px; }
 .scale-panel { color: var(--warn-text); }
@@ -1338,6 +1457,9 @@ kbd {
 /* ---------- brief: nesting modes, levels, edit controls ---------- */
 .row-tag { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: var(--r-pill); font-size: 10px; background: var(--panel3); color: var(--muted); vertical-align: middle; }
 .row-tag.mode { background: rgba(87, 199, 212, 0.16); color: var(--accent2-text); }
+/* 'Grouped' on a row that carries its own area: that area is being excluded
+   from every total. Amber — it is a fact to notice, not an error. */
+.row-tag.mode.warn { background: rgba(245, 165, 36, 0.18); color: var(--warn-text, #f5a524); }
 .edit-extra { display: flex; flex-direction: column; gap: 4px; align-items: stretch; }
 .edit-extra .mode-select, .edit-extra .level-input, .edit-extra .parent-select { font-size: 12px; width: 100%; }
 
@@ -1856,3 +1978,49 @@ tr.rel-met .rel-pair { opacity: 0.75; }
 }
 .stack-height-rename:hover { border-color: var(--border-soft); }
 .stack-height-rename:focus { border-color: var(--accent); outline: none; background: var(--panel2); }
+
+/* Sheet-size picker in the export menu. */
+.export-sheet { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 10px 8px; border-bottom: 1px solid var(--glass-border); }
+.export-sheet-label { font-size: 11.5px; color: var(--muted); letter-spacing: 0.04em; }
+
+/* 5a — drawn-vs-stated area chip on the action bar. Quiet while they agree;
+   it only earns attention when the outline and the number disagree. */
+.drawn-chip { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10.5px; color: var(--muted); padding: 2px 6px; border-radius: var(--r-sm); background: var(--panel2); white-space: nowrap; }
+.drawn-chip.off { color: var(--warn-text, #f5a524); background: rgba(245, 165, 36, 0.14); }
+
+/* Imported vector underlays, grouped by source file. */
+.vector-sources { border-top: 1px solid var(--glass-border); margin-top: 8px; padding-top: 8px; }
+.vector-sources-head { font-size: 10.5px; color: var(--muted); letter-spacing: 0.03em; margin-bottom: 6px; }
+.vector-source { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+.vector-source-name { flex: 1; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vector-source-meta { font-size: 10.5px; color: var(--muted); }
+.vector-note { font-size: 11px; color: var(--muted); padding: 6px 2px 0; line-height: 1.45; }
+.vector-width { display: inline-flex; align-items: center; gap: 3px; font-size: 10.5px; color: var(--muted); }
+.vector-width input { width: 56px; padding: 3px 5px; font-size: 11.5px; text-align: right; }
+
+/* Title-block fields, opened from the export menu. The width has to beat
+   `.stage-chrome .stage-popover { width: 100% }`, which is why it is scoped the
+   same way the layers and "more" popovers are — a form this narrow stretched
+   across the whole canvas otherwise. */
+.stage-popover.titleblock-popover,
+.stage-chrome .titleblock-popover { width: 400px; }
+.titleblock-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; padding: 4px 0 12px; }
+.titleblock-grid label { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.titleblock-grid label.wide { grid-column: 1 / -1; }
+.titleblock-grid label span {
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 600;
+}
+.titleblock-grid .ctrl-input { width: 100%; min-width: 0; }
+.popover-note { font-size: 11.5px; color: var(--muted); margin: 0 0 6px; }
+.popover-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+/* 5b — which of the two rules the other. On (locked) is the default and the
+   quiet state; unlocked is called out, because the drawing is now writing
+   numbers into the schedule and that should never be a surprise. */
+.action-btn.area-lock { font-size: 11px; white-space: nowrap; }
+.action-btn.area-lock:not(.on) { color: var(--accent2-text); border-color: var(--accent2); }
+.action-btn.area-lock:disabled { opacity: 0.45; cursor: default; }

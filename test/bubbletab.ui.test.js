@@ -125,15 +125,28 @@ test('palette commands: switching environment persists the new env', async () =>
   }
 });
 
-test('export menu: one ⤓ Export button opens PNG / PDF / drawing-set rows', async () => {
+test('export menu: one ⤓ Export button opens PNG / PDF / set / DXF rows', async () => {
   const { container, unmount } = mount();
   try {
     const btn = [...container.querySelectorAll('.stage-actions button')].find((b) => b.textContent.includes('Export'));
     assert.ok(btn, 'single Export button replaces the three export buttons');
     await act(async () => btn.dispatchEvent(ev('click')));
-    const rows = [...container.querySelectorAll('.export-row')].map((r) => r.textContent);
-    assert.equal(rows.length, 3);
-    assert.ok(rows[0].includes('PNG') && rows[1].includes('PDF') && rows[2].includes('Drawing set'));
+    const rows = [...container.querySelectorAll('.export-row')];
+    const text = rows.map((r) => r.textContent);
+    assert.equal(rows.length, 7);
+    // The title block sits above the outputs: it is what they all carry.
+    assert.ok(text[0].includes('Title block'), 'title-block fields are reachable from the export menu');
+    assert.ok(text[1].includes('PNG') && text[2].includes('PDF') && text[3].includes('Drawing set'));
+    assert.ok(text[4].includes('SVG'), 'SVG export is offered');
+    assert.ok(text[5].includes('Illustrator'), 'Illustrator export is offered');
+    assert.ok(text[6].includes('DXF'), 'CAD export is offered');
+    // SVG and .ai carry layout, not survey coordinates, so they work without a
+    // drawing scale. A DXF cannot: in diagram units it would open at an
+    // arbitrary size, so the row is offered but disabled and says why.
+    assert.equal(rows[4].disabled, false);
+    assert.equal(rows[5].disabled, false);
+    assert.equal(rows[6].disabled, true);
+    assert.match(text[6], /drawing scale/i);
   } finally {
     unmount();
   }
@@ -202,6 +215,37 @@ test('legend spotlight: clicking a group label dims the other rooms and their li
     // Esc restores everything (spotlight sits in the Esc cascade).
     await act(async () => key('Escape'));
     assert.equal(container.querySelector('g.bubble.dim'), null, 'Esc clears the spotlight');
+  } finally {
+    unmount();
+  }
+});
+
+test('title block: the export menu edits the sheet fields and saves them', async () => {
+  const { container, unmount } = mount();
+  try {
+    const btn = [...container.querySelectorAll('.stage-actions button')].find((b) => b.textContent.includes('Export'));
+    await act(async () => btn.dispatchEvent(ev('click')));
+    const row = [...container.querySelectorAll('.export-row')].find((r) => r.textContent.includes('Title block'));
+    await act(async () => row.dispatchEvent(ev('click')));
+
+    const panel = container.querySelector('.titleblock-popover');
+    assert.ok(panel, 'the title-block panel opens');
+    const inputs = [...panel.querySelectorAll('input')];
+    const labels = [...panel.querySelectorAll('label span')].map((s2) => s2.textContent);
+    // BS EN ISO 7200 treats these as mandatory title-block data.
+    assert.deepEqual(labels, ['Drawing number', 'Revision', 'Status', 'Drawn by', 'Checked by', 'Issue date']);
+
+    await act(async () => typeInto(inputs[0], '1234-XX-00-DR-A-1001'));
+    await act(async () => typeInto(inputs[1], 'P02'));
+    const save = [...panel.querySelectorAll('button')].find((b) => b.textContent === 'Save');
+    await act(async () => save.dispatchEvent(ev('click')));
+
+    const put = fetchCalls.find((c) => c.url === '/api/projects/1' && c.options?.method === 'PUT' && /drawing_number/.test(String(c.options.body)));
+    assert.ok(put, 'the fields are persisted on the project');
+    const body = JSON.parse(put.options.body);
+    assert.equal(body.drawing_number, '1234-XX-00-DR-A-1001');
+    assert.equal(body.revision, 'P02');
+    assert.equal(body.drawn_by, '', 'untouched fields save as blank, not undefined');
   } finally {
     unmount();
   }

@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { db } from '../db.js';
 import { requireProject } from './projects.js';
 import { oneOf, clampNum } from '../validate.js';
-import { resolveAndPersist } from '../brief.js';
+import { resolveAndPersist, formulaErrorsFor, protectParentArea } from '../brief.js';
 import { logCreated, logRemoved, logSpaceDiff } from '../changelog.js';
 
 const isFormulaStr = (v) => typeof v === 'string' && v.trim().startsWith('=');
@@ -124,6 +124,10 @@ router.put('/spaces/:id', (req, res) => {
     ? (req.body.circ_pct != null ? clampNum(req.body.circ_pct, 0, 0.6, 0) : null)
     : space.circ_pct;
 
+  // Area lock: 1 = the typed figure rules and the outline is proportion only,
+  // 0 = the outline rules and the figure follows what it encloses.
+  const area_locked = 'area_locked' in req.body ? (req.body.area_locked ? 1 : 0) : space.area_locked;
+
   // area_formula (nullable): a leading-'=' expression, else cleared to a literal.
   const area_formula = 'area_formula' in req.body
     ? (isFormulaStr(req.body.area_formula) ? req.body.area_formula.trim() : null)
@@ -134,17 +138,37 @@ router.put('/spaces/:id', (req, res) => {
     `UPDATE spaces SET department = ?, name = ?, count = ?, target_area = ?, notes = ?,
      pin_x = ?, pin_y = ?, pin_json = ?, parent_id = ?, kind = ?, shape = ?, shape_json = ?,
      plan_json = ?, block_json = ?, image = ?, sort_order = ?, child_mode = ?, level = ?,
-     height_m = ?, circ_pct = ?, area_formula = ? WHERE id = ?`
+     height_m = ?, circ_pct = ?, area_formula = ?, area_locked = ? WHERE id = ?`
   ).run(
     department, name, safeCount, area, notes,
     pin_x, pin_y, pin_json, parent_id, kind, oneOf(shape, VALID_SHAPES, 'bubble'), shape_json,
     plan_json, block_json, image, sort_order, child_mode, level ?? '',
-    height_m, circ_pct, area_formula, space.id
+    height_m, circ_pct, area_formula, area_locked, space.id
   );
+  // Same rule as the Brief tree: a formula that does not evaluate is refused,
+  // not stored as a 0 m² room. Restore the row's previous programme fields so
+  // the last good area survives the rejected write.
+  const parentChanged = parent_id !== space.parent_id;
+  // Checked on a MOVE too: re-parenting under a space a formula references
+  // makes a cycle, and the row being moved need not be the one with the formula.
+  if (area_formula || parentChanged) {
+    const errs = formulaErrorsFor(space.project_id, 'spaces');
+    const err = errs.get(space.id) ?? (parentChanged ? [...errs.values()][0] : null);
+    if (err) {
+      db.prepare('UPDATE spaces SET target_area = ?, area_formula = ?, count = ?, parent_id = ? WHERE id = ?')
+        .run(space.target_area, space.area_formula, space.count, space.parent_id, space.id);
+      resolveAndPersist(space.project_id);
+      const msg = parentChanged && /circular/i.test(err)
+        ? `${err} — nesting “${name}” here makes an area formula depend on its own total. Move it elsewhere, or replace the formula with a figure.`
+        : err;
+      return res.status(400).json({ error: msg });
+    }
+  }
+  const protectedParent = parentChanged ? protectParentArea('spaces', parent_id) : null;
   resolveAndPersist(space.project_id); // re-derive formula areas + mirror baseline
   const updated = db.prepare('SELECT * FROM spaces WHERE id = ?').get(space.id);
   logSpaceDiff(space.project_id, 'design', space, updated); // programme fields only
-  res.json(updated);
+  res.json(protectedParent ? { ...updated, protectedParent } : updated);
 });
 
 // DELETE /api/spaces/:id — recursive subtree delete via CTE.

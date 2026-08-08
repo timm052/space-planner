@@ -3,6 +3,7 @@ import { oneOf, clampNum } from '../validate.js';
 import { db } from '../db.js';
 import { publicProject, IMAGE_META_COLS } from '../serialize.js';
 import { resolveAllAndPersist } from '../brief.js';
+import { blockingReason, convertProjectAreas } from '../units.js';
 
 const router = Router();
 
@@ -27,6 +28,7 @@ export const PROJECT_FIELDS = [
   'sat_image', 'sat_mpp', 'sat_opacity', 'sat_attribution', 'sat_visible', 'sat_x', 'sat_y',
   'north_deg', 'north_locked', 'bg_rot', 'sat_rot', 'category_colors', 'bubble_style', 'diagram_env',
   'level_heights', 'variables', 'circulation', 'benchmarks',
+  'drawing_number', 'revision', 'drawn_by', 'checked_by', 'issue_status', 'issue_date',
 ];
 
 const VALID_UNITS = new Set(['m2', 'ft2']);
@@ -102,7 +104,12 @@ router.get('/:id', (req, res) => {
     .prepare(`SELECT ${IMAGE_META_COLS} FROM images WHERE project_id = ? ORDER BY sort_order, id`)
     .all(project.id);
 
-  res.json({ project: publicProject(project), spaces, brief_spaces, snapshots, adjacencies, brief_adjacencies, images });
+  // Redline ink drawn over the drawing. Small enough to travel with the
+  // project; never mixed into `spaces`, so nothing that totals the programme
+  // can reach it.
+  const markups = db.prepare('SELECT * FROM markups WHERE project_id = ? ORDER BY id').all(project.id);
+
+  res.json({ project: publicProject(project), spaces, brief_spaces, snapshots, adjacencies, brief_adjacencies, images, markups });
 });
 
 // PUT /api/projects/:id
@@ -110,7 +117,24 @@ router.put('/:id', (req, res) => {
   const project = requireProject(req, res);
   if (!project) return;
   const updates = {};
-  if ('units' in req.body) req.body.units = oneOf(req.body.units, VALID_UNITS, 'm2');
+  // A units change CONVERTS every stored area rather than relabelling it.
+  // Relabelling is what made a 405 m² room read "405 ft²" against a true
+  // 4,359.4 — the whole schedule wrong by 10.76×. Converted here, before the
+  // column is written, so a failure leaves the project in its old units with
+  // its old numbers rather than half-way between the two.
+  let unitConversion = null;
+  if ('units' in req.body) {
+    req.body.units = oneOf(req.body.units, VALID_UNITS, 'm2');
+    if (req.body.units !== project.units) {
+      const blocked = blockingReason(project.id);
+      if (blocked) return res.status(400).json({ error: blocked });
+      try {
+        unitConversion = convertProjectAreas(project.id, project.units, req.body.units);
+      } catch (err) {
+        return res.status(500).json({ error: `Unit conversion failed, nothing was changed: ${err.message}` });
+      }
+    }
+  }
   if ('tolerance' in req.body) req.body.tolerance = clampNum(req.body.tolerance, 0, 1, 0.05);
   if ('grossing_target' in req.body) req.body.grossing_target = clampNum(req.body.grossing_target, 0, 1, 0.7);
   // Circulation allowance: nullable fraction (0..1); explicit null clears it.
@@ -144,7 +168,8 @@ router.put('/:id', (req, res) => {
   }
   // Editing variables re-derives formula areas in BOTH room trees.
   if ('variables' in updates) resolveAllAndPersist(project.id);
-  res.json(publicProject(getProjectStmt.get(project.id)));
+  const out = publicProject(getProjectStmt.get(project.id));
+  res.json(unitConversion ? { ...out, unitConversion } : out);
 });
 
 // DELETE /api/projects/:id

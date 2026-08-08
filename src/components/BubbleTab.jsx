@@ -4,8 +4,8 @@ import { fmtArea, areaToM2, distToMeters, distUnit, leafSpaces, rootContainer, i
 import { STATUS_LABEL, CATEGORY_FALLBACK, categoryColorWarning } from '../viz.js';
 // pdfExport is lazy-loaded on demand — keeps jsPDF out of the initial bundle.
 import { useHistory } from '../useHistory.js';
-import { SCALE_PRESETS, ratioToScale, scaleToRatio, zoomAbout } from '../scale.js';
-import { pinsOf, filterCss, parsePoly, regularPolygon, rectanglePolygon, outlinePoints, polygonArea, polygonCentroid, hullOfDiscs, simplifyOutline, normalizePolygon, balanceCellWeights, pointInPolygon, polygonSpansAtY } from '../geometry.js';
+import { SCALE_PRESETS, ratioToScale, scaleToRatio, zoomAbout, nearestPreset } from '../scale.js';
+import { pinsOf, filterCss, parsePoly, regularPolygon, rectanglePolygon, outlinePoints, polygonArea, polygonCentroid, hullOfDiscs, simplifyOutline, normalizePolygon, balanceCellWeights, pointInPolygon, polygonSpansAtY, drawnVsTarget } from '../geometry.js';
 import { pinPatch } from '../pins.js';
 import { edgeGap, adjacencyScore, linkSatisfied, closestInstancePair, aggregateByRoot, linkKey, CONCEPT_THRESHOLDS_U } from '../adjacency.js';
 import { orderedLevels, levelRankMap } from '../floors.js';
@@ -29,6 +29,10 @@ import { useLinks } from '../hooks/useLinks.js';
 import { useCategoryColors } from '../hooks/useCategoryColors.js';
 import { usePolyEditing } from '../hooks/usePolyEditing.js';
 import { useImageLayers } from '../hooks/useImageLayers.js';
+import { useMarkup } from '../hooks/useMarkup.js';
+import { useMeasure } from '../hooks/useMeasure.js';
+import { scaleStroke, parseStroke, bboxOf as markupBbox, noteParts, NO_MARKUP, PEN_COLORS, PEN_WIDTHS, NOTE_HEIGHTS } from '../markup.js';
+import { sheetFileStem } from '../sheet.js';
 import { bakeImage } from '../imageUtils.js';
 import { useTheme } from '../theme.jsx';
 import HelpPanel from './HelpPanel.jsx';
@@ -41,6 +45,7 @@ import { StageTopbar, MorePopover, ToolDock, ZoomControls } from './diagram/Diag
 import CommandPalette from './diagram/CommandPalette.jsx';
 import { LayersPopover, SatellitePanel, ScalePanel } from './diagram/LayersPanel.jsx';
 import StagePopover from './diagram/StagePopover.jsx';
+import TitleBlockPanel from './diagram/TitleBlockPanel.jsx';
 import { Empty } from './ui.jsx';
 import { confirmDialog } from './ConfirmDialog.jsx';
 
@@ -113,7 +118,7 @@ const ZOOM_MAX = 6;
 // Colour-by-status legend labels (vs the latest milestone) — shared vocabulary.
 const STATUS_LABELS = STATUS_LABEL;
 
-export default function BubbleTab({ project, spaces, adjacencies, images = [], snapshots = [], onChanged, selectedSpaceId = null, onSelectSpace, onPullToBrief = null, onGoTab = null }) {
+export default function BubbleTab({ project, spaces, adjacencies, images = [], markups = NO_MARKUP, snapshots = [], onChanged, selectedSpaceId = null, onSelectSpace, onPullToBrief = null, onGoTab = null }) {
   // Selection + link-tool state lives in one pure state machine (see
   // diagram/selection.js and diagram/linking.js). Transitions are applied via
   // applySel() below; the destructure keeps every read site unchanged.
@@ -155,6 +160,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
   const tickStore = useTickStore();
   const setTick = tickStore.bump;
   const [error, setError] = useState(null);
+  // PDF paper size: 'auto' (smallest page that fits) or a fixed ISO name.
+  const [sheetSize, setSheetSize] = useState('auto');
+  // Vector import: the hidden file input, and the last import's report.
+  const vectorRef = useRef(null);
+  const [vectorNote, setVectorNote] = useState(null);
   const [panel, setPanel] = useState(null); // 'layers' | 'sat' | null
   const [showHelp, setShowHelp] = useState(false);
   const [drafts, setDrafts] = useState({});
@@ -216,7 +226,19 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     setSel(next);
     for (const f of fx) {
       if (f.type === 'notify') onSelectSpace?.(f.id);
-      else if (f.type === 'maybeCreateLink' && !findPair(f.a, f.b, f.ia ?? 0, f.ib ?? 0)) createLink(f.a, f.b, f.kind, f.ia ?? 0, f.ib ?? 0);
+      else if (f.type === 'maybeCreateLink') {
+        const existing = findPair(f.a, f.b, f.ia ?? 0, f.ib ?? 0);
+        if (!existing) createLink(f.a, f.b, f.kind, f.ia ?? 0, f.ib ?? 0);
+        else {
+          // The pair is already linked. This used to do nothing at all — the
+          // two clicks landed, the tool disarmed, and no link appeared, which
+          // is indistinguishable from a click that missed. Select the existing
+          // link instead: it answers the question the user was asking ("are
+          // these two related?") and opens the bar to change or remove it.
+          selRef.current = { ...selRef.current, selLink: { space_a: existing.space_a, space_b: existing.space_b, inst_a: existing.inst_a ?? 0, inst_b: existing.inst_b ?? 0 } };
+          setSel(selRef.current);
+        }
+      }
     }
     // Every selection change funnels through here (canvas, rail, Brief sync) —
     // the interior sketch follows the selection onto its storey.
@@ -482,7 +504,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
   // switchyard below. Destructured names match the original call sites.
   const {
     calibrateLayer, moveLayer, rotateLayer, scalePoints, scaleDistance, applyLt,
-    satQuery, setSatQuery, satZoom, setSatZoom, satBusy,
+    satQuery, setSatQuery, satZoom, setSatZoom, satBusy, satLat,
     onUpload, layerSlider, toggleLayerVisible, deleteImageLayer, startCalibrate, applyScale, fetchSatellite,
     layerPointerDown, layerPointerMove, layerPointerUp,
   } = useImageLayers({
@@ -582,6 +604,28 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     isBuilding && (floorView === 'offset' || floorView === 'overlaid' || floorView === '3d' || floorView === 'all' || levels.includes(floorView))
       ? floorView
       : 'all';
+
+  // Redline markup. Scoped per environment, and per storey while a single floor
+  // is being edited — a note about the ground floor has no business showing over
+  // the first. The stacked/3-D overviews are not a storey, so they scope to ''.
+  // Declared here (not with the other hooks above) because it needs floorMode.
+  const markupLevel = isBuilding && levels.includes(floorMode) ? floorMode : '';
+  const {
+    pen: markupPen, setPen: setMarkupPen, strokes: markupStrokes, inkRef,
+    noteDraft, setNoteDraft, commitNote,
+    markupPointerDown, markupPointerMove, markupPointerUp, markupCancel,
+    clearScope: clearMarkup, rescaleAll: rescaleMarkup, hasMarkup,
+    importVector, sources: rawVectorSources, removeSource: removeVectorSource, rescaleSource: rescaleVectorSource,
+  } = useMarkup({
+    project, markups, env, level: markupLevel, active: sel.tool === 'markup',
+    toSvgCoords, onChanged, setError, setTick, history,
+  });
+
+  // Measure / dimension tool. Reads the drawing, never writes to it.
+  const {
+    liveRef: measureRef, committed: measureDone, measureLabel,
+    measurePointerDown, measurePointerMove, measurePointerUp, measureCancel,
+  } = useMeasure({ active: sel.tool === 'measure', toSvgCoords, effScale, units, setTick });
   useEffect(() => setPref('floorView', 'all'), [project.id]); // eslint-disable-line react-hooks/exhaustive-deps
   // Building's primary state is editing ONE floor: entering it (or opening a
   // multi-level project in it) lands on the ground floor; "all"/stacked are opt-in
@@ -699,6 +743,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
         applySel((s) => linking.setTool(s, 'select'));
       } else if (e.key.toLowerCase() === 'l' && !mod) {
         applySel((s) => linking.setTool(s, 'link'));
+      } else if (e.key.toLowerCase() === 'd' && !mod && !is3DRef.current) {
+        // Markup is a 2-D redline; the 3-D view has no plan to draw over.
+        applySel((s) => linking.setTool(s, 'markup'));
+      } else if (e.key.toLowerCase() === 'm' && !mod && !is3DRef.current) {
+        applySel((s) => linking.setTool(s, 'measure'));
       } else if (e.key.toLowerCase() === 'a' && !mod && caps.autoLayout) {
         runAutoLayout(); // authored Master plan / Building have no auto-layout
       } else if (e.key === 'Tab' && !mod) {
@@ -880,6 +929,41 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     setTick, toSvgCoords, shapeOf, areaUnits, selected, selectedInst,
     posPatch: polyPosPatch,
     spaceById: byId,
+    // 5b — the lock is per unit and ON unless the user turns it off, which is
+    // exactly how the app has always behaved. A formula-driven room is always
+    // locked: its area is computed, so a figure written back from the outline
+    // would be overwritten by the next resolve and the drag would silently do
+    // nothing.
+    areaLocked: (s) => !!(s.area_locked ?? 1) || !!s.area_formula,
+    // 5c — turn a drawn footprint into the figure the schedule carries.
+    //
+    // areaUnits is in diagram-units² while the stored figure is in project
+    // units, and the mapping between them depends on the environment and the
+    // drawing scale. The RATIO does not: both are areas, so scaling one scales
+    // the other by the same factor whatever the mapping is.
+    //
+    // Where the figure LIVES differs by what was drawn. A building envelope
+    // carries its drawn area in its layout slot (the same `a` the action bar's
+    // area field writes); a room carries it in target_area.
+    onAreaFromShape: (space, drawnUnits) => {
+      const wasUnits = areaUnits(space);
+      if (!(wasUnits > 0) || !(drawnUnits > 0)) return null;
+      const next = Math.round(ea(space) * (drawnUnits / wasUnits) * 100) / 100;
+      if (!(next > 0)) return null;
+      if (isContainerKind(space)) {
+        const idx = selected === space.id ? selectedInst : 0;
+        const n = nodesRef.current.get(`${space.id}:${idx}`);
+        if (!n) return null;
+        if (Math.abs((n.a ?? 0) - next) < 0.005) return null;
+        n.a = next;
+        return {
+          before: { [layoutCol]: space[layoutCol] ?? null },
+          after: { [layoutCol]: JSON.stringify({ ...authoredPinsOf(space), [idx]: planSlot(n) }) },
+        };
+      }
+      if (Math.abs(next - space.target_area) < 0.005) return null;
+      return { before: { target_area: space.target_area }, after: { target_area: next } };
+    },
     // Un-drawn building envelopes render (and seed as) the default rectangle.
     defaultOutline: (s) => (isEnvelope && isContainerKind(s) ? rectanglePolygon(1.4) : null),
     // Corners latch to neighbours and the metric grid, like the footprint they
@@ -1328,7 +1412,16 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
   function cellPointerDown(e, cell) {
     const root = byId.get(cell.rootId);
     if (!root) return;
-    onBubbleDown(e, { s: root, i: 0, key: `${cell.rootId}:0` }, { spaceId: cell.spaceId, idx: cell.i });
+    // Group first, then the member — the CAD convention for clicking into a
+    // block. The interior sketch covers the whole envelope it depicts, and a
+    // press on a cell used to resolve to the ROOM every time, so the envelope
+    // underneath could not be selected by clicking where it is. With the sketch
+    // on (the default) that put its own action bar out of reach: ✎ Shape,
+    // ⬡ Hull and the rotate field are all attached to the envelope, and every
+    // press landed on a room instead. Selecting the envelope first makes it
+    // reachable; once it is selected, a further press picks the room inside.
+    const inside = selRef.current.selected === cell.rootId;
+    onBubbleDown(e, { s: root, i: 0, key: `${cell.rootId}:0` }, inside ? { spaceId: cell.spaceId, idx: cell.i } : null);
   }
 
   // Seed drag — grabbed on the canvas, routed through the pointer switchyard.
@@ -2039,6 +2132,12 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
       if (!dragRef.current) panRef.current = { sx: e.clientX, sy: e.clientY, vx: viewRef.current.x, vy: viewRef.current.y, moved: false };
       return;
     }
+    // Ink first (modes.MODE_ORDER), but only ever claims the press while the
+    // Markup tool is selected — so every other gesture arbitrates unchanged
+    // when it is off. Deliberately after the right/middle-button branches:
+    // panning must keep working while you are drawing.
+    if (markupPointerDown(e)) return;
+    if (measurePointerDown(e)) return; // dimension drag — useMeasure
     if (layerPointerDown(e)) return; // scale-click / move / rotate a layer — useImageLayers
     if (panActive) {
       if (!dragRef.current) panRef.current = { sx: e.clientX, sy: e.clientY, vx: view.x, vy: view.y };
@@ -2123,6 +2222,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
       moveRafRef.current = 0;
       moveRef.current = null;
     }
+    if (markupCancel()) had = true;
+    if (measureCancel()) had = true;
     if (polyCancel()) had = true;
     const drag = dragRef.current;
     if (drag) {
@@ -2189,6 +2290,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     const rect = readRect();
     if (pinchRef.current) return void pinchMove(e); // two fingers own the view
     if (pointersRef.current.has(e.pointerId)) pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (markupPointerMove(e)) return; // freehand redline — handled by useMarkup
+    if (measurePointerMove(e)) return; // dimension drag — handled by useMeasure
     if (polyPointerMove(e)) return; // vertex drag — handled by usePolyEditing
     if (rotPointerMove(e)) return; // rotating a placed footprint
     if (resizePointerMove(e)) return; // area-lock resizing a building box
@@ -2347,6 +2450,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
       cancelAnimationFrame(moveRafRef.current);
       flushMove();
     }
+    if (markupPointerUp()) return; // redline release — commits the stroke
+    if (measurePointerUp()) return; // dimension release — keeps the reading on screen
     if (polyPointerUp()) return; // vertex drag release — handled by usePolyEditing
     if (await rotPointerUp()) return; // rotate release — persist plan_json rot
     if (await resizePointerUp()) return; // box resize release — persist w/h to block_json
@@ -2849,6 +2954,10 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
       // Uniform zoom about the viewport centre keeps bubbles aligned with images.
       const A = { x: viewRef.current.x + W / 2, y: viewRef.current.y + H / 2 };
       const tx = (p) => zoomAbout(p, A, f);
+      // Redline ink is authored in the same world as the drawing, so it rides
+      // the same transform — points AND pen width. Miss this and every mark
+      // silently slides off the plan the first time the scale changes.
+      await rescaleMarkup((s) => scaleStroke(s, A, f));
       for (const n of nodesRef.current.values()) {
         const t = tx(n);
         n.x = t.x;
@@ -3147,6 +3256,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
           // the colour) and wears its name above the outline, like the canvas.
           opacity: interiorCells.length ? 0.06 : project.bubble_opacity ?? 0.32,
           labelAbove: interiorCells.length > 0,
+          // Vector export puts envelopes and rooms on different CAD layers, so
+          // the scene has to say which this is.
+          isContainer: isContainerKind(s),
           label: instanceName(s, i),
           sublabel: fmtArea(ea(s), units),
         });
@@ -3154,6 +3266,26 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
     }
     if (bubbles.length === 0) return null;
     const bounds = sceneBounds(bubbles);
+
+    // Redline markup for THIS sheet's scope — the drawing set exports several
+    // sheets in one pass, so it has to come from the raw rows rather than from
+    // whatever the viewport happens to be showing.
+    const sheetAll = (markups || [])
+      .map(parseStroke)
+      .filter((s) => s && s.env === kind && (s.level || '') === (floor ?? ''));
+    // Notes travel as their own scene array: every exporter draws them as TEXT
+    // (with a leader), not as the one- or two-point polyline they are stored as.
+    const sheetMarkup = sheetAll.filter((s) => s.kind !== 'note');
+    const sheetNotes = sheetAll.map(noteParts).filter(Boolean);
+    // Widen the frame so a mark drawn outside the rooms is not silently cropped
+    // off the sheet. Ink is a comment someone expects to see on the print.
+    const inkBox = markupBbox(sheetAll);
+    if (inkBox) {
+      bounds.minX = Math.min(bounds.minX, inkBox.x0);
+      bounds.minY = Math.min(bounds.minY, inkBox.y0);
+      bounds.maxX = Math.max(bounds.maxX, inkBox.x1);
+      bounds.maxY = Math.max(bounds.maxY, inkBox.y1);
+    }
 
     // Site image layers belong to the master plan sheet only.
     const sceneLayers = [];
@@ -3206,6 +3338,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
       links,
       bubbles,
       cells,
+      markup: sheetMarkup,
+      notes: sheetNotes,
       // Category swatches so the sheet's colours decode on paper.
       legend: groups.map((g) => ({ label: g, color: colorForLabel(g) })),
       bubbleStyle,
@@ -3217,7 +3351,19 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
         stage: project.stage,
         sheet,
         scaleLabel: ratioLabel,
-        date: new Date().toISOString().slice(0, 10),
+        // "Auto" fits the drawing to the sheet, which lands on ratios like
+        // 1:1159 — a print nobody can scale off with a rule. It is also the
+        // DEFAULT, so it ships by accident. The sheet has to say so itself:
+        // the "≈" in the label is far too easy to read past.
+        nonStandardScale: metric && !nearestPreset(scaleToRatio(effScale), units).isStandard,
+        // The issue date if the sheet has been given one, otherwise the day it
+        // is printed — the old behaviour, and right for a working print.
+        date: project.issue_date || new Date().toISOString().slice(0, 10),
+        number: project.drawing_number || '',
+        revision: project.revision || '',
+        status: project.issue_status || '',
+        drawnBy: project.drawn_by || '',
+        checkedBy: project.checked_by || '',
       },
     };
   }
@@ -3231,9 +3377,67 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
       if (!scene) return setError('Nothing to export yet.');
       // Dynamic import keeps jsPDF out of the initial bundle.
       const { exportDiagramPdf } = await import('../pdfExport.js');
-      exportDiagramPdf(scene);
+      exportDiagramPdf(scene, { page: sheetSize === 'auto' ? null : sheetSize });
     } catch (err) {
       setError(`PDF export failed: ${err.message}`);
+    }
+  }
+
+  // SVG: editable vectors with text still text, for Illustrator / Affinity /
+  // InDesign. Unlike the DXF this does not need a drawing scale — a graphics
+  // recipient wants the layout, not survey coordinates — so it works from
+  // Concept too.
+  async function exportSvg() {
+    setError(null);
+    try {
+      const floor = isBuilding && levels.includes(floorMode) ? floorMode : null;
+      const scene = await buildSheetScene(env, { floor });
+      if (!scene) return setError('Nothing to export yet.');
+      const [{ buildSvg, downloadSvg }, { sheetMmPerUnit }] = await Promise.all([
+        import('../svgExport.js'), import('../pdfExport.js'),
+      ]);
+      const mmPerUnit = sheetMmPerUnit(scene, sheetSize === 'auto' ? null : sheetSize);
+      const svg = buildSvg(scene, { mmPerUnit, title: `${project.name} — ${scene.title.sheet}` });
+      if (!svg) return setError('Nothing to export yet.');
+      const slug = sheetFileStem(scene.title);
+      downloadSvg(svg, `${slug}_${env}${floor ? `_${floor.replace(/[^\w-]+/g, '_')}` : ''}.svg`);
+    } catch (err) {
+      setError(`SVG export failed: ${err.message}`);
+    }
+  }
+
+  // Illustrator. A modern .ai IS a PDF, so this is the PDF writer with the
+  // right extension and MIME type — Illustrator opens it fully editable.
+  async function exportAi() {
+    setError(null);
+    try {
+      const floor = isBuilding && levels.includes(floorMode) ? floorMode : null;
+      const scene = await buildSheetScene(env, { floor });
+      if (!scene) return setError('Nothing to export yet.');
+      const { exportDiagramAi } = await import('../pdfExport.js');
+      exportDiagramAi(scene, { page: sheetSize === 'auto' ? null : sheetSize });
+    } catch (err) {
+      setError(`Illustrator export failed: ${err.message}`);
+    }
+  }
+
+  // Vector export. Refuses without a drawing scale rather than writing a CAD
+  // file in diagram units, which would open at an arbitrary size and be worse
+  // than no file at all.
+  async function exportDxf() {
+    setError(null);
+    if (!effScale) return setError('Set a drawing scale before exporting CAD — a DXF has to be in real units.');
+    try {
+      const floor = isBuilding && levels.includes(floorMode) ? floorMode : null;
+      const scene = await buildSheetScene(env, { floor });
+      if (!scene) return setError('Nothing to export yet.');
+      const { buildDxf, downloadDxf } = await import('../dxfExport.js');
+      const dxf = buildDxf(scene, { effScale, title: project.name });
+      if (!dxf) return setError('Nothing to export yet.');
+      const slug = sheetFileStem(scene.title);
+      downloadDxf(dxf, `${slug}_${env}${floor ? `_${floor.replace(/[^\w-]+/g, '_')}` : ''}.dxf`);
+    } catch (err) {
+      setError(`DXF export failed: ${err.message}`);
     }
   }
 
@@ -3256,7 +3460,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
       }
       if (!sheets.length) return setError('Nothing to export yet.');
       const { exportDrawingSet } = await import('../pdfExport.js');
-      exportDrawingSet({ sheets, fileName: `${project.name.replace(/[^\w-]+/g, '_')}_drawing_set.pdf` });
+      exportDrawingSet({ sheets, fileName: `${project.name.replace(/[^\w-]+/g, '_')}_drawing_set.pdf`, page: sheetSize === 'auto' ? null : sheetSize });
     } catch (err) {
       setError(`PDF export failed: ${err.message}`);
     }
@@ -3422,6 +3626,21 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
           circ: circOf(byId.get(selected)),
         }
       : null;
+
+  // 5a — what the OUTLINE actually encloses, against the figure the schedule
+  // carries for it. Today an outline is stored normalised to unit area and
+  // scaled to the number, so these agree by construction and the readout
+  // simply says so. That is the point of showing it now: it establishes the
+  // measurement, and proves the invariant, BEFORE anything is allowed to
+  // depend on it. Once the area lock becomes optional the two can diverge, and
+  // this is where you will see it.
+  const selDrawn = (() => {
+    const s = selected != null ? byId.get(selected) : null;
+    if (!s || shapeOf(s) !== 'poly') return null;
+    const ring = polyVertsOf(s);
+    if (!ring || ring.length < 3) return null;
+    return drawnVsTarget(ring, areaUnits(s));
+  })();
 
   // Per-env empty-state hint (dismissible per project+env for the session).
   const hintKey = `${project.id}:${env}`;
@@ -3810,6 +4029,31 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
           {/* ⤓ Export menu — one entry point for every output. */}
           {panel === 'export' && (
             <StagePopover className="export-popover" onClose={() => setPanel(null)}>
+              {/* Sheet size. Auto picks the smallest ISO page that holds the
+                  drawing at true scale, which is the right default — but a
+                  client or an authority expects a particular size whatever
+                  happens to be on it, and there was no way to say so. */}
+              <label className="export-sheet">
+                <span className="export-sheet-label">Sheet</span>
+                <select
+                  className="ctrl-select"
+                  value={sheetSize}
+                  onChange={(e) => setSheetSize(e.target.value)}
+                  title="Paper size for PDF sheets. Auto fits the drawing; a fixed size never enlarges past true scale, only reduces."
+                >
+                  <option value="auto">Auto (fit)</option>
+                  {['A4', 'A3', 'A2', 'A1', 'A0'].map((p) => <option key={p} value={p}>{p} landscape</option>)}
+                </select>
+              </label>
+              {/* The sheet's identity, edited where the sheet is made. */}
+              <button className="export-row" onClick={() => setPanel('titleblock')}>
+                <span className="export-name">⊞ Title block…</span>
+                <span className="export-sub">
+                  {project.drawing_number
+                    ? `${project.drawing_number}${project.revision ? ` rev ${project.revision}` : ''}`
+                    : 'drawing number, revision, status, who drew and checked it'}
+                </span>
+              </button>
               <button className="export-row" onClick={() => { setPanel(null); exportPng(); }}>
                 <span className="export-name">↓ PNG image</span>
                 <span className="export-sub">the current view at 2× — 3-D included</span>
@@ -3822,7 +4066,34 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
                 <span className="export-name">↓ Drawing set</span>
                 <span className="export-sub">concept + master plan + every floor, one PDF</span>
               </button>
+              <button className="export-row" onClick={() => { setPanel(null); exportSvg(); }}>
+                <span className="export-name">↓ SVG (vector)</span>
+                <span className="export-sub">editable shapes with live text — Affinity, Figma, InDesign</span>
+              </button>
+              <button className="export-row" onClick={() => { setPanel(null); exportAi(); }}>
+                <span className="export-name">↓ Illustrator (.ai)</span>
+                <span className="export-sub">PDF-compatible .ai — opens fully editable</span>
+              </button>
+              <button
+                className="export-row"
+                onClick={() => { setPanel(null); exportDxf(); }}
+                disabled={!effScale}
+                title={effScale ? 'Vector geometry in real metres, on named layers' : 'Set a drawing scale first — a CAD file needs real units'}
+              >
+                <span className="export-name">↓ DXF (CAD)</span>
+                <span className="export-sub">
+                  {effScale ? 'footprints, names and areas in metres, on named layers' : 'needs a drawing scale — pick one in the toolbar'}
+                </span>
+              </button>
             </StagePopover>
+          )}
+
+          {panel === 'titleblock' && (
+            <TitleBlockPanel
+              project={project}
+              onSave={(fields) => saveProject(fields)}
+              onClose={() => setPanel('export')}
+            />
           )}
 
           {panel === 'more' && (
@@ -3917,12 +4188,41 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
               fileRef={fileRef}
               onUpload={onUpload}
               onAddSatellite={() => setPanel('sat')}
+              vectorRef={vectorRef}
+              onImportVector={async (e) => {
+                const file = e.target.files?.[0];
+                e.target.value = '';
+                if (!file) return;
+                const centre = { x: viewRef.current.x + W / 2, y: viewRef.current.y + H / 2 };
+                const res = await importVector(file, { effScale, centre });
+                if (!res) return;
+                // Report what came in AND what did not. An import that quietly
+                // drops half a drawing is the failure people discover late.
+                const unread = Object.entries(res.unread || {}).map(([k, n]) => `${n} ${k}`).join(', ');
+                setVectorNote(
+                  `${res.name}: ${res.imported} shape${res.imported === 1 ? '' : 's'} imported`
+                  + (res.unitsKnown && res.widthM ? ` · ${res.widthM < 10 ? res.widthM.toFixed(2) : Math.round(res.widthM)} m wide` : ' · no real size in the file, placed at 1:1 — check it against the scale bar')
+                  + (unread ? ` · not read: ${unread}` : '')
+                );
+              }}
+              vectorSources={(rawVectorSources || []).map((v) => ({
+                ...v,
+                widthM: v.widthUnits != null && effScale ? v.widthUnits * effScale : null,
+              }))}
+              onRemoveVectorSource={removeVectorSource}
+              onRescaleVectorSource={(name, widthM) => rescaleVectorSource(name, widthM, effScale)}
+              vectorNote={vectorNote}
+              onOffset={(im, patch) => {
+                for (const [k, v] of Object.entries(patch)) layerSlider(im, k, v);
+              }}
+              effScale={effScale}
               onClose={() => setPanel(null)}
             />
           )}
 
           {caps.layers === 'edit' && panel === 'sat' && (
             <SatellitePanel
+              satLat={satLat}
               satQuery={satQuery}
               setSatQuery={setSatQuery}
               satZoom={satZoom}
@@ -3971,6 +4271,19 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
               showOnion={isBuilding && hasLevels && editingFloor != null}
               onion={onion}
               onToggleOnion={() => setPref('onion', !onion)}
+              showMarkup={!is3D}
+              showMeasure={!is3D}
+              markupPen={markupPen}
+              onMarkupPen={setMarkupPen}
+              penColors={PEN_COLORS}
+              penWidths={PEN_WIDTHS}
+              noteHeights={NOTE_HEIGHTS}
+              noteDraft={noteDraft}
+              onNoteDraft={setNoteDraft}
+              onCommitNote={commitNote}
+              hasMarkup={hasMarkup}
+              onClearMarkup={clearMarkup}
+              markupScopeNote={markupLevel ? `this floor (${markupLevel})` : 'this environment'}
               onRecentre={fitView}
             />
 
@@ -4216,6 +4529,12 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
             instPin={instPin}
             ea={ea}
             scaleLabelFor={scaleLabelFor}
+            markupStrokes={markupStrokes}
+            inkRef={inkRef}
+            noteDraft={noteDraft}
+            measureRef={measureRef}
+            measureDone={measureDone}
+            measureLabel={measureLabel}
             onSvgPointerDown={onSvgPointerDown}
             onSvgContextMenu={(e) => {
               // The canvas owns right-click (pan / room menu) — never the browser menu.
@@ -4275,6 +4594,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], s
             onAlign={alignSelection}
             onRotateSelection={rotateSelection}
             envelope={selEnvelope}
+            drawn={selDrawn}
+            onAreaLock={(space, locked) =>
+              commitSpace(space, { area_locked: locked ? 1 : 0 }, locked ? 'lock area' : 'unlock area')}
             onEnvelopeArea={saveEnvelopeArea}
             onEnvelopeHull={matchEnvelopeToHull}
             onEnvelopeCirc={(space, v) =>

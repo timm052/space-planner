@@ -244,10 +244,21 @@ export const BUILDING_COLORS = {
 // area exceeding the brief is the thing to flag), on target GREEN, under
 // target TEAL, no data MUTED. The hexes equal --bad / --good / --accent2 /
 // --muted so canvas code (which needs literal colours) and CSS-var code agree.
-export const STATUS_LABEL = { over: 'Over target', on: 'On target', under: 'Under target', missing: 'No milestone data' };
-export const STATUS_HEX = { over: '#e5675f', on: '#4cc38a', under: '#57c7d4', missing: '#8d96a8' };
-// Fixed display order (over → on → under → missing) for legends and swatches.
-export const STATUS_ORDER = ['over', 'on', 'under', 'missing'];
+// `unmatched` is not a compliance verdict — it is the ABSENCE of one. The room
+// has no counterpart in the Brief, so there is no agreed figure to measure it
+// against, and reporting it as "on target" (which is what falling back to its
+// own design target produced) is the one outcome nobody could defend. It gets
+// its own amber so it reads as "answer this", not as a pass or a fail.
+export const STATUS_LABEL = {
+  over: 'Over target', on: 'On target', under: 'Under target',
+  unmatched: 'Not in the Brief', missing: 'No milestone data',
+};
+export const STATUS_HEX = {
+  over: '#e5675f', on: '#4cc38a', under: '#57c7d4',
+  unmatched: '#f5a524', missing: '#8d96a8',
+};
+// Fixed display order (over → on → under → unmatched → missing).
+export const STATUS_ORDER = ['over', 'on', 'under', 'unmatched', 'missing'];
 
 // Status → CSS color variable (theme-adaptive form of STATUS_HEX).
 export const STATUS_COLOR = {

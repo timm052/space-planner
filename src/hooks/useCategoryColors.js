@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { rootContainer, isContainerKind } from '../compute.js';
-import { STATUS_LABEL, STATUS_HEX, STATUS_ORDER as STATUS_KEYS, categoryColor } from '../viz.js';
+import { STATUS_LABEL, STATUS_HEX, STATUS_ORDER as STATUS_KEYS, categoryColor, categoryColorWarning } from '../viz.js';
 
 // Fixed default colours for the compliance-status colour mode (recolourable
 // via the legend like any label). Sourced from viz.js so the diagram lens, the
@@ -67,7 +67,9 @@ export function useCategoryColors({ project, leaves, byId, colorBy, statusOf = n
     }
   }, [project.category_colors]);
   const effColors = { ...savedColors, ...localColors };
-  const colorForLabel = (label) => {
+
+  /** The colour a label would get with no regard for its neighbours. */
+  const naturalColor = (label) => {
     if (effColors[label]) return effColors[label];
     if (STATUS_COLORS[label]) return STATUS_COLORS[label];
     const i = groups.indexOf(label);
@@ -85,6 +87,47 @@ export function useCategoryColors({ project, leaves, byId, colorBy, statusOf = n
     for (let k = 0; k < label.length; k++) h = (h * 31 + label.charCodeAt(k)) | 0;
     return palette[Math.abs(h) % palette.length];
   };
+
+  /**
+   * Assigned colours with clashes resolved.
+   *
+   * The app already DETECTED a clash and told you about it — "Mixed use is too
+   * close to Community to tell apart" — then left you to fix it by hand, on a
+   * legend, one colour at a time. Since the test is already written, the
+   * assignment can just step past a collision instead.
+   *
+   * Two rules keep this predictable. A colour the user chose is never moved:
+   * their pick is the answer, and the warning still shows if it collides.
+   * And a label only ever moves FORWARD through the palette, so the result is
+   * a pure function of the group list — the same programme colours the same
+   * way every time, rather than shuffling as rooms are added.
+   */
+  // Value keys, hoisted out of the dependency list: the memo has to re-run when
+  // the group list or a custom colour CHANGES, not when its array/object
+  // identity does (both are rebuilt every render).
+  const groupsKey = groups.join('\u0000'); // NUL: a label can contain anything else
+  const colorsKey = JSON.stringify(effColors);
+  const assigned = useMemo(() => {
+    const out = {};
+    const taken = []; // [{ label, hex }] in assignment order
+    for (const label of groups) {
+      const natural = naturalColor(label);
+      const isCustom = !!effColors[label] || !!STATUS_COLORS[label];
+      let hex = natural;
+      if (!isCustom && categoryColorWarning(natural, taken)) {
+        // Walk the palette for the first entry that reads distinctly against
+        // everything already placed. If none does (a very long legend), keep
+        // the natural colour — the legend's own warning still stands.
+        const alt = palette.find((p) => !categoryColorWarning(p, taken));
+        if (alt) hex = alt;
+      }
+      out[label] = hex;
+      taken.push({ label, hex });
+    }
+    return out;
+  }, [groupsKey, colorsKey, colorBy, palette]);
+
+  const colorForLabel = (label) => assigned[label] ?? naturalColor(label);
   const colorOf = (s) => colorForLabel(groupKey(s));
 
   function setCategoryColor(label, color) {

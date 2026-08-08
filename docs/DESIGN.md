@@ -145,8 +145,13 @@ which controls exist where.
 - **Furniture**: legend, control clusters, scale bar, north rose and the
   contextual action bar all float as glass. The action bar takes three forms —
   single room, multiple rooms, selected link.
-- **Interaction**: Select (`V`) and Link (`L`) are the only modes; pan is a
-  transient gesture (hold Space or right-drag); `Ctrl/Cmd-K` opens the palette.
+- **Markup** — freehand redlines over the plan (`D`), in a fixed four-colour
+  palette at three widths. Authored in diagram units like the geometry, so ink
+  stays on what it was drawn over through pan, zoom and a change of drawing
+  scale, and prints at the weight it was drawn. Scoped per environment and, while
+  a single floor is being edited, per storey; **not** part of a design option.
+- **Interaction**: Select (`V`), Link (`L`) and Markup (`D`) are the modes; pan is
+  a transient gesture (hold Space or right-drag); `Ctrl/Cmd-K` opens the palette.
   `HelpPanel.jsx` is the canonical, page- and environment-aware keymap — update
   it whenever the interaction model changes.
 
@@ -160,6 +165,23 @@ which controls exist where.
   and the PDF. If you need a size, import it — don't re-derive it in a renderer.
 - **Scene primitives carry semantic state** (`selected`, `dim`, `related`,
   `tight`), never colours. Theming stays in CSS.
+- **Areas are stored in the project's units, so a units change must CONVERT.**
+  A ft² project storing 4,359 and displaying "4,359 ft²" is correct; what was
+  wrong was the switch, which relabelled 405 m² as "405 ft²" — every figure out
+  by 10.76×. `server/units.js` converts both room trees, milestone areas and
+  gross figures, and the areas frozen inside revisions and options. It refuses a
+  project with formulas or variables, because their literals are unit-bearing
+  (`0.45` is m² per student) and nothing records which numbers are areas —
+  guessing there is exactly the silent corruption this exists to prevent.
+- **Markup is not geometry.** Redline ink lives in its own table, never in
+  `spaces`, and nothing that totals the programme can reach it — a mark can
+  never change an area, a total or a compliance figure. It renders over the
+  drawing with `pointer-events: none`, and its mode in `MODE_ORDER` is modal:
+  it claims a press only while the Markup tool is live, so arbitration for every
+  other gesture is unchanged when it is off. On a sheet it is labelled as markup,
+  so a redlined print is never mistaken for an issued drawing. Its palette is
+  fixed hex rather than tokens, because a mark must mean the same thing in light,
+  in dark and in a PDF.
 - **New colour or spacing becomes a token**, so SVG, WebGL and PDF stay
   consistent.
 - **Labels are decluttered, not just fitted.** A room too small to read is left
