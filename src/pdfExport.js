@@ -103,6 +103,36 @@ export function exportDiagramPdf(scene, { page = null } = {}) {
   doc.save(`${safe}_bubble_diagram.pdf`);
 }
 
+/**
+ * The same sheet as an Adobe Illustrator file.
+ *
+ * Since Illustrator 9 the .ai format has been "PDF-compatible": the file IS a
+ * PDF, carrying Illustrator's private data alongside, which is why Acrobat and
+ * Preview open .ai directly. So writing one means writing a PDF and naming it
+ * .ai — that is not a trick, it is the format. Illustrator opens the result and
+ * every object is editable.
+ *
+ * Returns the mm-per-unit used, so a caller can report the true scale.
+ */
+export function exportDiagramAi(scene, { page = null } = {}) {
+  const layout = layoutSheet(scene, page);
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: [layout.page.w, layout.page.h] });
+  renderSheet(doc, scene, layout);
+  const safe = (scene.title.name || 'diagram').replace(/[^\w-]+/g, '_');
+  const blob = doc.output('blob');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([blob], { type: 'application/postscript' }));
+  a.download = `${safe}_${(scene.title.sheet || 'sheet').replace(/[^\w-]+/g, '_')}.ai`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  return layout;
+}
+
+/** Millimetres per diagram unit for a sheet — shared with the SVG exporter. */
+export function sheetMmPerUnit(scene, page = null) {
+  return layoutSheet(scene, page).mmPerUnit;
+}
+
 // The drawing set: several sheets (concept · master plan · one per floor) in
 // one PDF, each page sized for its own content and scale.
 export function exportDrawingSet({ sheets, fileName = 'drawing_set.pdf', page = null }) {

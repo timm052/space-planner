@@ -5,7 +5,7 @@ import { STATUS_LABEL, CATEGORY_FALLBACK, categoryColorWarning } from '../viz.js
 // pdfExport is lazy-loaded on demand — keeps jsPDF out of the initial bundle.
 import { useHistory } from '../useHistory.js';
 import { SCALE_PRESETS, ratioToScale, scaleToRatio, zoomAbout, nearestPreset } from '../scale.js';
-import { pinsOf, filterCss, parsePoly, regularPolygon, rectanglePolygon, outlinePoints, polygonArea, polygonCentroid, hullOfDiscs, simplifyOutline, normalizePolygon, balanceCellWeights, pointInPolygon, polygonSpansAtY } from '../geometry.js';
+import { pinsOf, filterCss, parsePoly, regularPolygon, rectanglePolygon, outlinePoints, polygonArea, polygonCentroid, hullOfDiscs, simplifyOutline, normalizePolygon, balanceCellWeights, pointInPolygon, polygonSpansAtY, drawnVsTarget } from '../geometry.js';
 import { pinPatch } from '../pins.js';
 import { edgeGap, adjacencyScore, linkSatisfied, closestInstancePair, aggregateByRoot, linkKey, CONCEPT_THRESHOLDS_U } from '../adjacency.js';
 import { orderedLevels, levelRankMap } from '../floors.js';
@@ -160,6 +160,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
   const [error, setError] = useState(null);
   // PDF paper size: 'auto' (smallest page that fits) or a fixed ISO name.
   const [sheetSize, setSheetSize] = useState('auto');
+  // Vector import: the hidden file input, and the last import's report.
+  const vectorRef = useRef(null);
+  const [vectorNote, setVectorNote] = useState(null);
   const [panel, setPanel] = useState(null); // 'layers' | 'sat' | null
   const [showHelp, setShowHelp] = useState(false);
   const [drafts, setDrafts] = useState({});
@@ -609,6 +612,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
     pen: markupPen, setPen: setMarkupPen, strokes: markupStrokes, inkRef,
     markupPointerDown, markupPointerMove, markupPointerUp, markupCancel,
     clearScope: clearMarkup, rescaleAll: rescaleMarkup, hasMarkup,
+    importVector, sources: rawVectorSources, removeSource: removeVectorSource, rescaleSource: rescaleVectorSource,
   } = useMarkup({
     project, markups, env, level: markupLevel, active: sel.tool === 'markup',
     toSvgCoords, onChanged, setError, setTick, history,
@@ -3329,6 +3333,44 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
     }
   }
 
+  // SVG: editable vectors with text still text, for Illustrator / Affinity /
+  // InDesign. Unlike the DXF this does not need a drawing scale — a graphics
+  // recipient wants the layout, not survey coordinates — so it works from
+  // Concept too.
+  async function exportSvg() {
+    setError(null);
+    try {
+      const floor = isBuilding && levels.includes(floorMode) ? floorMode : null;
+      const scene = await buildSheetScene(env, { floor });
+      if (!scene) return setError('Nothing to export yet.');
+      const [{ buildSvg, downloadSvg }, { sheetMmPerUnit }] = await Promise.all([
+        import('../svgExport.js'), import('../pdfExport.js'),
+      ]);
+      const mmPerUnit = sheetMmPerUnit(scene, sheetSize === 'auto' ? null : sheetSize);
+      const svg = buildSvg(scene, { mmPerUnit, title: `${project.name} — ${scene.title.sheet}` });
+      if (!svg) return setError('Nothing to export yet.');
+      const slug = project.name.replace(/[^\w-]+/g, '_');
+      downloadSvg(svg, `${slug}_${env}${floor ? `_${floor.replace(/[^\w-]+/g, '_')}` : ''}.svg`);
+    } catch (err) {
+      setError(`SVG export failed: ${err.message}`);
+    }
+  }
+
+  // Illustrator. A modern .ai IS a PDF, so this is the PDF writer with the
+  // right extension and MIME type — Illustrator opens it fully editable.
+  async function exportAi() {
+    setError(null);
+    try {
+      const floor = isBuilding && levels.includes(floorMode) ? floorMode : null;
+      const scene = await buildSheetScene(env, { floor });
+      if (!scene) return setError('Nothing to export yet.');
+      const { exportDiagramAi } = await import('../pdfExport.js');
+      exportDiagramAi(scene, { page: sheetSize === 'auto' ? null : sheetSize });
+    } catch (err) {
+      setError(`Illustrator export failed: ${err.message}`);
+    }
+  }
+
   // Vector export. Refuses without a drawing scale rather than writing a CAD
   // file in diagram units, which would open at an arbitrary size and be worse
   // than no file at all.
@@ -3534,6 +3576,21 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
           circ: circOf(byId.get(selected)),
         }
       : null;
+
+  // 5a — what the OUTLINE actually encloses, against the figure the schedule
+  // carries for it. Today an outline is stored normalised to unit area and
+  // scaled to the number, so these agree by construction and the readout
+  // simply says so. That is the point of showing it now: it establishes the
+  // measurement, and proves the invariant, BEFORE anything is allowed to
+  // depend on it. Once the area lock becomes optional the two can diverge, and
+  // this is where you will see it.
+  const selDrawn = (() => {
+    const s = selected != null ? byId.get(selected) : null;
+    if (!s || shapeOf(s) !== 'poly') return null;
+    const ring = polyVertsOf(s);
+    if (!ring || ring.length < 3) return null;
+    return drawnVsTarget(ring, areaUnits(s));
+  })();
 
   // Per-env empty-state hint (dismissible per project+env for the session).
   const hintKey = `${project.id}:${env}`;
@@ -3950,6 +4007,14 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
                 <span className="export-name">↓ Drawing set</span>
                 <span className="export-sub">concept + master plan + every floor, one PDF</span>
               </button>
+              <button className="export-row" onClick={() => { setPanel(null); exportSvg(); }}>
+                <span className="export-name">↓ SVG (vector)</span>
+                <span className="export-sub">editable shapes with live text — Affinity, Figma, InDesign</span>
+              </button>
+              <button className="export-row" onClick={() => { setPanel(null); exportAi(); }}>
+                <span className="export-name">↓ Illustrator (.ai)</span>
+                <span className="export-sub">PDF-compatible .ai — opens fully editable</span>
+              </button>
               <button
                 className="export-row"
                 onClick={() => { setPanel(null); exportDxf(); }}
@@ -4056,6 +4121,30 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
               fileRef={fileRef}
               onUpload={onUpload}
               onAddSatellite={() => setPanel('sat')}
+              vectorRef={vectorRef}
+              onImportVector={async (e) => {
+                const file = e.target.files?.[0];
+                e.target.value = '';
+                if (!file) return;
+                const centre = { x: viewRef.current.x + W / 2, y: viewRef.current.y + H / 2 };
+                const res = await importVector(file, { effScale, centre });
+                if (!res) return;
+                // Report what came in AND what did not. An import that quietly
+                // drops half a drawing is the failure people discover late.
+                const unread = Object.entries(res.unread || {}).map(([k, n]) => `${n} ${k}`).join(', ');
+                setVectorNote(
+                  `${res.name}: ${res.imported} shape${res.imported === 1 ? '' : 's'} imported`
+                  + (res.unitsKnown && res.widthM ? ` · ${res.widthM < 10 ? res.widthM.toFixed(2) : Math.round(res.widthM)} m wide` : ' · no real size in the file, placed at 1:1 — check it against the scale bar')
+                  + (unread ? ` · not read: ${unread}` : '')
+                );
+              }}
+              vectorSources={(rawVectorSources || []).map((v) => ({
+                ...v,
+                widthM: v.widthUnits != null && effScale ? v.widthUnits * effScale : null,
+              }))}
+              onRemoveVectorSource={removeVectorSource}
+              onRescaleVectorSource={(name, widthM) => rescaleVectorSource(name, widthM, effScale)}
+              vectorNote={vectorNote}
               onOffset={(im, patch) => {
                 for (const [k, v] of Object.entries(patch)) layerSlider(im, k, v);
               }}
@@ -4433,6 +4522,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
             onAlign={alignSelection}
             onRotateSelection={rotateSelection}
             envelope={selEnvelope}
+            drawn={selDrawn}
             onEnvelopeArea={saveEnvelopeArea}
             onEnvelopeHull={matchEnvelopeToHull}
             onEnvelopeCirc={(space, v) =>

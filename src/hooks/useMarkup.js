@@ -1,6 +1,13 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { api } from '../api.js';
 import { DEFAULT_PEN, NO_MARKUP, parseStroke, roundPoints, simplify } from '../markup.js';
+import { parseVector, placeVector, realWidthM } from '../vectorImport.js';
+
+// Imported survey geometry reads as reference, not as someone's redline: a
+// muted blue-grey, thin, so it sits behind the design rather than competing
+// with it.
+const SURVEY_COLOR = '#7b8794';
+const SURVEY_WIDTH = 1.5;
 
 /**
  * Redline markup for the 2-D viewport: the pen state, the in-flight stroke, and
@@ -161,6 +168,144 @@ export function useMarkup({
     }
   }, [project.id, scope, history, refresh, setError]);
 
+  /**
+   * Import a vector file (DXF / SVG / AI / PDF) as an underlay.
+   *
+   * REFERENCE geometry: it never contributes to an area, a total or a
+   * compliance figure — the app has no constraint objects, so an imported
+   * tree-protection circle is a circle. It is here to be traced and aligned
+   * against, and it says so in the panel.
+   *
+   * @returns {Promise<{imported:number, skipped:number, widthM:number|null,
+   *   unitsKnown:boolean, unread:object, name:string}|null>}
+   */
+  const importVector = useCallback(
+    async (file, { effScale, centre }) => {
+      if (!file) return null;
+      if (!(effScale > 0)) {
+        setError('Set a drawing scale before importing vectors — the file has to land at a real size.');
+        return null;
+      }
+      let parsed;
+      try {
+        const isBinary = /\.(ai|pdf)$/i.test(file.name);
+        const content = isBinary ? new Uint8Array(await file.arrayBuffer()) : await file.text();
+        parsed = await parseVector(content, file.name);
+      } catch (e) {
+        setError(`Could not read ${file.name}: ${e.message}`);
+        return null;
+      }
+      if (!parsed || !parsed.count) {
+        setError(`No geometry found in ${file.name}. Supported: DXF, SVG, and PDF-compatible Illustrator files.`);
+        return null;
+      }
+      const placed = placeVector(parsed, effScale, centre);
+      try {
+        const res = await api.importMarkups(project.id, {
+          markups: placed.map((pl) => ({
+            ...scope,
+            kind: 'survey',
+            color: SURVEY_COLOR,
+            width: SURVEY_WIDTH,
+            points: pl.points,
+            src_layer: pl.layer,
+            src_name: file.name,
+          })),
+        });
+        history.record({
+          label: `import ${file.name}`,
+          undo: async () => { await api.removeMarkupSource(project.id, { src_name: file.name }); await refresh(); },
+          redo: async () => { await api.restoreMarkups(project.id, { markups: res.markups }); await refresh(); },
+        });
+        await refresh();
+        return {
+          imported: res.imported,
+          skipped: res.skipped,
+          widthM: realWidthM(parsed),
+          unitsKnown: parsed.unitsKnown,
+          unread: parsed.skipped || {},
+          format: parsed.format,
+          name: file.name,
+        };
+      } catch (e) {
+        setError(e.message);
+        return null;
+      }
+    },
+    [project.id, scope, history, refresh, setError]
+  );
+
+  /** Imported sources present in this scope, for the panel's list. */
+  const sources = useMemo(() => {
+    const m = new Map();
+    for (const row of markups || []) {
+      if (row.kind !== 'survey' || !row.src_name) continue;
+      const e = m.get(row.src_name) || { name: row.src_name, count: 0, layers: new Set(), minX: Infinity, maxX: -Infinity };
+      e.count++;
+      if (row.src_layer) e.layers.add(row.src_layer);
+      const parsed = parseStroke(row);
+      if (parsed) for (const [x] of parsed.points) { if (x < e.minX) e.minX = x; if (x > e.maxX) e.maxX = x; }
+      m.set(row.src_name, e);
+    }
+    return [...m.values()].map((e) => ({
+      ...e,
+      layers: [...e.layers].sort(),
+      widthUnits: Number.isFinite(e.minX) ? e.maxX - e.minX : null,
+    }));
+  }, [markups]);
+
+  /**
+   * Resize a whole import to a known real-world width.
+   *
+   * SVG and PDF state a PAPER size, not a site size — a plan exported at
+   * 1:1000 onto a 264 mm sheet honestly says it is 264 mm wide, and the
+   * importer honours that, so it lands 0.26 m across and effectively invisible.
+   * There is no way to infer the drawing's scale from the file, so the user
+   * supplies the one dimension they know and everything follows.
+   */
+  const rescaleSource = useCallback(async (name, trueWidthM, effScale) => {
+    const rows = (markups || []).filter((m) => m.src_name === name).map(parseStroke).filter(Boolean);
+    if (!rows.length || !(trueWidthM > 0) || !(effScale > 0)) return;
+    let minX = Infinity; let maxX = -Infinity; let minY = Infinity; let maxY = -Infinity;
+    for (const r of rows) for (const [x, y] of r.points) {
+      if (x < minX) minX = x; if (x > maxX) maxX = x;
+      if (y < minY) minY = y; if (y > maxY) maxY = y;
+    }
+    const currentM = (maxX - minX) * effScale;
+    if (!(currentM > 0)) return;
+    const f = trueWidthM / currentM;
+    if (Math.abs(f - 1) < 1e-6) return;
+    // Scale about the import's own centre so it stays where it was placed.
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    try {
+      await Promise.all(rows.map((r) => api.updateMarkup(r.id, {
+        points: roundPoints(r.points.map(([x, y]) => [cx + (x - cx) * f, cy + (y - cy) * f]), 2),
+        width: r.width,
+        color: r.color,
+      }).catch(() => null)));
+      await refresh();
+    } catch (e) {
+      setError(e.message);
+    }
+  }, [markups, refresh, setError]);
+
+  const removeSource = useCallback(async (name) => {
+    try {
+      const { markups: removed } = await api.removeMarkupSource(project.id, { src_name: name });
+      if (removed?.length) {
+        history.record({
+          label: 'remove import',
+          undo: async () => { await api.restoreMarkups(project.id, { markups: removed }); await refresh(); },
+          redo: async () => { await api.removeMarkupSource(project.id, { src_name: name }); await refresh(); },
+        });
+      }
+      await refresh();
+    } catch (e) {
+      setError(e.message);
+    }
+  }, [project.id, history, refresh, setError]);
+
   // ---------- pointer delegates (called by the shell switchyard) ----------
 
   /**
@@ -234,7 +379,7 @@ export function useMarkup({
   return {
     pen, setPen, strokes, inkRef,
     markupPointerDown, markupPointerMove, markupPointerUp, markupCancel,
-    clearScope, rescaleAll,
+    clearScope, rescaleAll, importVector, sources, removeSource, rescaleSource,
     hasMarkup: strokes.length > 0,
   };
 }

@@ -2,6 +2,7 @@ import { Empty } from '../ui.jsx';
 import { distUnit } from '../../compute.js';
 import LayerRow from './LayerRow.jsx';
 import StagePopover from './StagePopover.jsx';
+import { VECTOR_ACCEPT } from '../../vectorImport.js';
 
 /**
  * The image-layer overlays: the ⧉ Layers popover (one LayerRow per image +
@@ -28,6 +29,12 @@ export function LayersPopover({
   onAddSatellite,
   onOffset = null,
   effScale = null,
+  vectorRef = null,
+  onImportVector = null,
+  vectorSources = [],
+  onRemoveVectorSource = null,
+  onRescaleVectorSource = null,
+  vectorNote = null,
   onClose,
 }) {
   return (
@@ -57,11 +64,62 @@ export function LayersPopover({
           />
         ))}
       </div>
+      {/* Imported vector underlays, listed by source file so a whole drawing
+          can be removed in one action. Labelled as reference on purpose: the
+          app has no constraint objects, so imported geometry is something to
+          trace and align against, not something that knows what it is. */}
+      {vectorSources.length > 0 && (
+        <div className="vector-sources">
+          <div className="vector-sources-head">Site plans (reference geometry — not part of any area)</div>
+          {vectorSources.map((v) => (
+            <div className="vector-source" key={v.name}>
+              <span className="vector-source-name" title={v.layers.length ? `Layers: ${v.layers.join(', ')}` : undefined}>
+                ⬚ {v.name}
+              </span>
+              <span className="vector-source-meta mono">{v.count} shape{v.count === 1 ? '' : 's'}</span>
+              {onRescaleVectorSource && (
+                <label className="vector-width" title={`True width of this drawing on the ground, in ${distUnit(units)}. SVG and PDF state a PAPER size, so a plan drawn at 1:1000 arrives a thousand times too small until you say how wide it really is.`}>
+                  <input
+                    type="number" min="0.01" step="any"
+                    defaultValue={v.widthM != null ? +v.widthM.toFixed(2) : ''}
+                    placeholder="width"
+                    onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                    onBlur={(e) => {
+                      const val = Number(e.target.value);
+                      if (val > 0 && Math.abs(val - (v.widthM ?? 0)) > 1e-6) onRescaleVectorSource(v.name, val);
+                    }}
+                  />
+                  <span className="muted">{distUnit(units)}</span>
+                </label>
+              )}
+              <button
+                className="btn small ghost danger"
+                onClick={() => onRemoveVectorSource?.(v.name)}
+                title={`Remove everything imported from ${v.name}`}
+              >✕</button>
+            </div>
+          ))}
+        </div>
+      )}
+      {vectorNote && <div className="vector-note">{vectorNote}</div>}
       <div className="layers-add">
         <button className="btn small" onClick={() => fileRef.current?.click()}>＋ Add image</button>
         <button className="btn small" onClick={onAddSatellite}>＋ Add satellite</button>
+        {onImportVector && (
+          <button
+            className="btn small"
+            onClick={() => vectorRef?.current?.click()}
+            disabled={!effScale}
+            title={effScale
+              ? 'Import a DXF, SVG or Illustrator drawing as vector reference geometry'
+              : 'Set a drawing scale first — imported vectors have to land at a real size'}
+          >＋ Import vectors</button>
+        )}
       </div>
       <input ref={fileRef} type="file" accept="image/*" hidden onChange={onUpload} />
+      {onImportVector && (
+        <input ref={vectorRef} type="file" accept={VECTOR_ACCEPT} hidden onChange={onImportVector} />
+      )}
       <p className="hint popover-hint">
         Add as many images as you like. Calibrate each on its own and they share the diagram scale.
         Use <strong>Move</strong> and <strong>Rotate</strong> (then drag the canvas) to align a layer.

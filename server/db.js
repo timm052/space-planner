@@ -322,6 +322,14 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS markups_scope ON markups (project_id, env, level);
 `);
 
+// Imported vector underlays ride in the same table as redlines: both are
+// reference over the drawing that never touches an area or a total, and they
+// therefore want identical rendering, scoping, undo and export. `src_layer`
+// keeps the source drawing's layer name so an import can be shown, hidden or
+// removed a layer at a time; `src_name` groups a single import together.
+ensureColumn('markups', 'src_layer', 'src_layer TEXT');
+ensureColumn('markups', 'src_name', 'src_name TEXT');
+
 // Design options — named saves of the whole design (spaces + adjacencies) so
 // Option A/B schemes can be compared against one Brief and swapped in.
 db.exec(`

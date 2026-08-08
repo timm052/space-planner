@@ -94,6 +94,10 @@ export const api = {
   updateMarkup: (id, data) => request(`/api/markups/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   // Resolves to the removed row, so a delete can be undone by handing it back.
   deleteMarkup: (id) => request(`/api/markups/${id}`, { method: 'DELETE' }),
+  importMarkups: (projectId, data) =>
+    request(`/api/projects/${projectId}/markups/bulk`, { method: 'POST', body: JSON.stringify(data) }),
+  removeMarkupSource: (projectId, data) =>
+    request(`/api/projects/${projectId}/markups/remove-source`, { method: 'POST', body: JSON.stringify(data) }),
   clearMarkups: (projectId, scope) =>
     request(`/api/projects/${projectId}/markups/clear`, { method: 'POST', body: JSON.stringify(scope) }),
   restoreMarkups: (projectId, data) =>

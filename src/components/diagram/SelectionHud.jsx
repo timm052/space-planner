@@ -36,6 +36,7 @@ export default function SelectionHud({
   // geometry is a drawn footprint); Building shows a 90° rotate instead and hides
   // Pin (no sim to protect against).
   showShapeTools,
+  drawn = null, // 5a: what the outline encloses, vs the figure carried for it
   showRotate90,
   onRotate90,
   // Master plan — numeric rotation for a drawn footprint (the ⟲ drag handle
@@ -208,6 +209,22 @@ export default function SelectionHud({
       <div className="action-bar" onClick={(e) => e.stopPropagation()}>
         <span className="swatch" style={{ background: colorOf(sel) }} />
         <span className="action-name">{envelope ? '🏢 ' : ''}{sel.name}{selCount > 1 ? ` ${instanceLabel(selectedInst)}` : ''}</span>
+        {/* 5a — the drawn area beside the stated one. They agree while the
+            outline is area-locked, and this is where a divergence will show
+            the moment that lock becomes optional. */}
+        {drawn && (
+          <span
+            className={`drawn-chip ${Math.abs(drawn.pct) > 0.005 ? 'off' : ''}`}
+            title={
+              Math.abs(drawn.pct) > 0.005
+                ? `The outline encloses ${Math.round(drawn.drawn).toLocaleString()} against a stated ${Math.round(drawn.target).toLocaleString()} — ${(drawn.pct * 100).toFixed(1)}%.`
+                : 'The outline encloses exactly the area carried for it.'
+            }
+          >
+            drawn {Math.round(drawn.drawn).toLocaleString()}
+            {Math.abs(drawn.pct) > 0.005 ? ` (${drawn.pct > 0 ? '+' : ''}${(drawn.pct * 100).toFixed(1)}%)` : ' ✓'}
+          </span>
+        )}
         {envelope ? (
           <>
             <input

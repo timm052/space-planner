@@ -1957,3 +1957,18 @@ tr.rel-met .rel-pair { opacity: 0.75; }
 /* Sheet-size picker in the export menu. */
 .export-sheet { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 10px 8px; border-bottom: 1px solid var(--glass-border); }
 .export-sheet-label { font-size: 11.5px; color: var(--muted); letter-spacing: 0.04em; }
+
+/* 5a — drawn-vs-stated area chip on the action bar. Quiet while they agree;
+   it only earns attention when the outline and the number disagree. */
+.drawn-chip { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10.5px; color: var(--muted); padding: 2px 6px; border-radius: var(--r-sm); background: var(--panel2); white-space: nowrap; }
+.drawn-chip.off { color: var(--warn-text, #f5a524); background: rgba(245, 165, 36, 0.14); }
+
+/* Imported vector underlays, grouped by source file. */
+.vector-sources { border-top: 1px solid var(--glass-border); margin-top: 8px; padding-top: 8px; }
+.vector-sources-head { font-size: 10.5px; color: var(--muted); letter-spacing: 0.03em; margin-bottom: 6px; }
+.vector-source { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+.vector-source-name { flex: 1; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vector-source-meta { font-size: 10.5px; color: var(--muted); }
+.vector-note { font-size: 11px; color: var(--muted); padding: 6px 2px 0; line-height: 1.45; }
+.vector-width { display: inline-flex; align-items: center; gap: 3px; font-size: 10.5px; color: var(--muted); }
+.vector-width input { width: 56px; padding: 3px 5px; font-size: 11.5px; text-align: right; }

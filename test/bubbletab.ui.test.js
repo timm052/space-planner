@@ -133,14 +133,18 @@ test('export menu: one ⤓ Export button opens PNG / PDF / set / DXF rows', asyn
     await act(async () => btn.dispatchEvent(ev('click')));
     const rows = [...container.querySelectorAll('.export-row')];
     const text = rows.map((r) => r.textContent);
-    assert.equal(rows.length, 4);
+    assert.equal(rows.length, 6);
     assert.ok(text[0].includes('PNG') && text[1].includes('PDF') && text[2].includes('Drawing set'));
-    assert.ok(text[3].includes('DXF'), 'vector export is offered');
-    // The Concept env has no drawing scale, and a CAD file in diagram units
-    // would open at an arbitrary size — so the row is offered but disabled,
-    // and says what to do about it.
-    assert.equal(rows[3].disabled, true);
-    assert.match(text[3], /drawing scale/i);
+    assert.ok(text[3].includes('SVG'), 'SVG export is offered');
+    assert.ok(text[4].includes('Illustrator'), 'Illustrator export is offered');
+    assert.ok(text[5].includes('DXF'), 'CAD export is offered');
+    // SVG and .ai carry layout, not survey coordinates, so they work without a
+    // drawing scale. A DXF cannot: in diagram units it would open at an
+    // arbitrary size, so the row is offered but disabled and says why.
+    assert.equal(rows[3].disabled, false);
+    assert.equal(rows[4].disabled, false);
+    assert.equal(rows[5].disabled, true);
+    assert.match(text[5], /drawing scale/i);
   } finally {
     unmount();
   }
