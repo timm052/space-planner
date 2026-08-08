@@ -317,7 +317,8 @@ export function ToolDock({
   snapEdges = true, snapGrid = true, onToggleSnapEdges, onToggleSnapGrid,
   showInterior = false, interior = true, onToggleInterior,
   showOnion = false, onion = false, onToggleOnion,
-  showMarkup = false, markupPen = null, onMarkupPen, penColors = [], penWidths = [],
+  showMarkup = false, markupPen = null, onMarkupPen, penColors = [], penWidths = [], noteHeights = [],
+  noteDraft = null, onNoteDraft, onCommitNote,
   hasMarkup = false, onClearMarkup, markupScopeNote = 'this environment',
   showMeasure = false,
   onRecentre,
@@ -366,6 +367,23 @@ export function ToolDock({
           grow a colour picker for everyone else. */}
       {showMarkup && tool === 'markup' && markupPen && (
         <div className="pen-tray" role="group" aria-label="Markup pen">
+          {/* Ink or words. Both are markup and neither changes an area — the
+              difference is only whether the comment is legible to someone who
+              wasn't in the room. */}
+          <div className="pen-modes seg-sm" role="group" aria-label="Markup kind">
+            <button
+              className={(markupPen.mode ?? 'ink') === 'ink' ? 'active' : ''}
+              onClick={() => onMarkupPen({ ...markupPen, mode: 'ink', width: penWidths[1] })}
+              aria-pressed={(markupPen.mode ?? 'ink') === 'ink'}
+              title="Freehand ink — drag to draw"
+            >✎</button>
+            <button
+              className={markupPen.mode === 'note' ? 'active' : ''}
+              onClick={() => onMarkupPen({ ...markupPen, mode: 'note', width: noteHeights[1] })}
+              aria-pressed={markupPen.mode === 'note'}
+              title="Note — click to place text, or drag from the thing you mean to add a leader"
+            >T</button>
+          </div>
           <div className="pen-colors">
             {penColors.map(([hex, label]) => (
               <button
@@ -379,15 +397,21 @@ export function ToolDock({
             ))}
           </div>
           <div className="pen-widths">
-            {penWidths.map((w, i) => (
+            {(markupPen.mode === 'note' ? noteHeights : penWidths).map((w, i) => (
               <button
                 key={w}
                 className={`pen-width ${markupPen.width === w ? 'active' : ''}`}
                 onClick={() => onMarkupPen({ ...markupPen, width: w })}
                 aria-pressed={markupPen.width === w}
-                title={['Fine', 'Medium', 'Broad'][i] ?? `${w}`}
+                title={
+                  markupPen.mode === 'note'
+                    ? (['Small', 'Medium', 'Large'][i] ?? `${w}`)
+                    : (['Fine', 'Medium', 'Broad'][i] ?? `${w}`)
+                }
               >
-                <span className="pen-width-dot" style={{ '--dot': `${4 + i * 3}px` }} />
+                {markupPen.mode === 'note'
+                  ? <span className="pen-note-size" style={{ fontSize: `${8 + i * 3}px` }}>T</span>
+                  : <span className="pen-width-dot" style={{ '--dot': `${4 + i * 3}px` }} />}
               </button>
             ))}
           </div>
@@ -397,6 +421,28 @@ export function ToolDock({
             disabled={!hasMarkup}
             title={hasMarkup ? `Clear all markup on ${markupScopeNote} (one undo step)` : 'No markup to clear'}
           >Clear</button>
+        </div>
+      )}
+      {/* The note being written. It appears only once a note has been placed,
+          and the canvas previews it where it will land as it is typed. */}
+      {showMarkup && tool === 'markup' && noteDraft && (
+        <div className="note-editor">
+          <input
+            className="ctrl-input"
+            autoFocus
+            value={noteDraft.text}
+            placeholder="Note text — Enter to place, Esc to cancel"
+            onChange={(e) => onNoteDraft({ ...noteDraft, text: e.target.value })}
+            onKeyDown={(e) => {
+              // Shift+Enter breaks the line: a note is often two.
+              if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onCommitNote(); }
+              else if (e.key === 'Enter') { e.preventDefault(); onNoteDraft({ ...noteDraft, text: `${noteDraft.text}
+` }); }
+              else if (e.key === 'Escape') { e.preventDefault(); onNoteDraft(null); }
+            }}
+          />
+          <button className="btn small primary" onClick={onCommitNote} disabled={!noteDraft.text.trim()}>Place</button>
+          <button className="btn small ghost" onClick={() => onNoteDraft(null)}>Cancel</button>
         </div>
       )}
       <div className="tool-dock-sep" />

@@ -448,6 +448,31 @@
   background: currentColor;
 }
 .pen-clear { width: 100%; font-size: 10px; padding: 2px 0; }
+/* Ink vs words. Two buttons, same tray, because both are markup. */
+.pen-modes { display: flex; }
+.pen-modes button { min-width: 20px; padding: 2px 6px; font-size: 12px; line-height: 1.2; }
+.pen-note-size { font-weight: 700; line-height: 1; }
+
+/* Sheet notes — text over the drawing, in diagram units like the ink, so a
+   note stays on what it annotates and prints at the height it was written. */
+.markup-note text {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-weight: 500;
+  paint-order: stroke;
+  /* A hairline of canvas behind the glyphs keeps a note legible over a busy
+     satellite underlay without hiding what it points at. */
+  stroke: var(--canvas-bg);
+  stroke-width: 0.18em;
+  stroke-linejoin: round;
+}
+.markup-note.pending text { opacity: 0.75; }
+.markup-leader { stroke-linecap: round; }
+.markup-leader.live { opacity: 0.7; stroke-dasharray: 4 3; }
+
+/* The note being typed, in the tool dock under the pen tray. */
+.note-editor { display: flex; flex-direction: column; gap: 4px; padding: 6px 2px 2px; }
+.note-editor .ctrl-input { width: 150px; font-size: 11px; }
+.note-editor .btn { font-size: 10px; padding: 2px 0; }
 
 /* Stage legend → flat square swatches on glass (the legend keeps colour inputs). */
 .stage-legend { background: var(--glass); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border-color: var(--glass-border); box-shadow: var(--shadow); }
@@ -1972,3 +1997,23 @@ tr.rel-met .rel-pair { opacity: 0.75; }
 .vector-note { font-size: 11px; color: var(--muted); padding: 6px 2px 0; line-height: 1.45; }
 .vector-width { display: inline-flex; align-items: center; gap: 3px; font-size: 10.5px; color: var(--muted); }
 .vector-width input { width: 56px; padding: 3px 5px; font-size: 11.5px; text-align: right; }
+
+/* Title-block fields, opened from the export menu. The width has to beat
+   `.stage-chrome .stage-popover { width: 100% }`, which is why it is scoped the
+   same way the layers and "more" popovers are — a form this narrow stretched
+   across the whole canvas otherwise. */
+.stage-popover.titleblock-popover,
+.stage-chrome .titleblock-popover { width: 400px; }
+.titleblock-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; padding: 4px 0 12px; }
+.titleblock-grid label { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.titleblock-grid label.wide { grid-column: 1 / -1; }
+.titleblock-grid label span {
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 600;
+}
+.titleblock-grid .ctrl-input { width: 100%; min-width: 0; }
+.popover-note { font-size: 11.5px; color: var(--muted); margin: 0 0 6px; }
+.popover-actions { display: flex; gap: 8px; justify-content: flex-end; }

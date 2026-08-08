@@ -6,7 +6,9 @@ import { requireProject } from './projects.js';
 const router = Router();
 
 const VALID_ENVS = new Set(['concept', 'masterplan', 'building']);
-const VALID_KINDS = new Set(['ink', 'survey']);
+const VALID_KINDS = new Set(['ink', 'survey', 'note']);
+// A note is an annotation, not a document: past this it belongs in the brief.
+const MAX_NOTE = 400;
 // A stroke longer than this is a runaway pointer stream, not a mark someone
 // meant to make; the client already simplifies before posting.
 const MAX_POINTS = 4000;
@@ -40,11 +42,17 @@ function readStroke(body) {
   }
   if (!clean.length) return { error: 'A stroke needs at least one finite point' };
   const colour = String(body.color ?? '#e5484d');
+  const kind = oneOf(body.kind, VALID_KINDS, 'ink');
+  // A note with nothing written on it is an invisible mark the user cannot
+  // find again to delete, so it is refused rather than stored.
+  const noteText = String(body.note_text ?? '').replace(/\r/g, '').trim().slice(0, MAX_NOTE);
+  if (kind === 'note' && !noteText) return { error: 'A note needs some text' };
   return {
     row: {
       env: oneOf(body.env, VALID_ENVS, 'concept'),
       level: String(body.level ?? ''),
-      kind: oneOf(body.kind, VALID_KINDS, 'ink'),
+      kind,
+      note_text: noteText || null,
       // Hex only — the palette is fixed so a mark reads the same in a PDF as on
       // screen, and so nothing user-supplied lands in an SVG paint attribute.
       color: /^#[0-9a-fA-F]{6}$/.test(colour) ? colour : '#e5484d',
@@ -57,7 +65,9 @@ function readStroke(body) {
 }
 
 const insert = () =>
-  db.prepare('INSERT INTO markups (project_id, env, level, kind, color, width, points, src_layer, src_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+  db.prepare(
+    'INSERT INTO markups (project_id, env, level, kind, color, width, points, src_layer, src_name, note_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  );
 
 // POST /api/projects/:id/markups — add one stroke.
 router.post('/projects/:id/markups', (req, res) => {
@@ -65,7 +75,7 @@ router.post('/projects/:id/markups', (req, res) => {
   if (!project) return;
   const { row, error } = readStroke(req.body);
   if (error) return res.status(400).json({ error });
-  const r = insert().run(project.id, row.env, row.level, row.kind, row.color, row.width, row.points, row.src_layer, row.src_name);
+  const r = insert().run(project.id, row.env, row.level, row.kind, row.color, row.width, row.points, row.src_layer, row.src_name, row.note_text);
   res.status(201).json(db.prepare('SELECT * FROM markups WHERE id = ?').get(r.lastInsertRowid));
 });
 
@@ -92,7 +102,7 @@ router.post('/projects/:id/markups/bulk', (req, res) => {
   db.exec('BEGIN');
   try {
     for (const row of rows) {
-      stmt.run(project.id, row.env, row.level, row.kind, row.color, row.width, row.points, row.src_layer, row.src_name);
+      stmt.run(project.id, row.env, row.level, row.kind, row.color, row.width, row.points, row.src_layer, row.src_name, row.note_text);
     }
     db.exec('COMMIT');
   } catch (err) {
@@ -147,7 +157,7 @@ router.post('/projects/:id/markups/restore', (req, res) => {
   const rows = Array.isArray(req.body?.markups) ? req.body.markups : [];
   if (!rows.length) return res.json({ markups: [] });
   const withId = db.prepare(
-    'INSERT OR IGNORE INTO markups (id, project_id, env, level, kind, color, width, points, src_layer, src_name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    'INSERT OR IGNORE INTO markups (id, project_id, env, level, kind, color, width, points, src_layer, src_name, note_text, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
   );
   db.exec('BEGIN');
   try {
@@ -165,6 +175,7 @@ router.post('/projects/:id/markups/restore', (req, res) => {
         row.points,
         row.src_layer,
         row.src_name,
+        row.note_text,
         raw.created_at ?? new Date().toISOString().slice(0, 19).replace('T', ' ')
       );
     }
@@ -183,8 +194,8 @@ router.put('/markups/:id', (req, res) => {
   if (!existing) return res.status(404).json({ error: 'Markup not found' });
   const { row, error } = readStroke({ ...existing, ...req.body });
   if (error) return res.status(400).json({ error });
-  db.prepare('UPDATE markups SET points = ?, width = ?, color = ? WHERE id = ?')
-    .run(row.points, row.width, row.color, existing.id);
+  db.prepare('UPDATE markups SET points = ?, width = ?, color = ?, note_text = ? WHERE id = ?')
+    .run(row.points, row.width, row.color, row.note_text, existing.id);
   res.json(db.prepare('SELECT * FROM markups WHERE id = ?').get(existing.id));
 });
 

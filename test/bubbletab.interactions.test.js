@@ -361,3 +361,136 @@ test('scale calibration walks two clicks to the distance form and cancels cleanl
     unmount();
   }
 });
+
+// ---- sheet notes ---------------------------------------------------------
+// The note tool is the same Markup tool with words instead of ink. These pin
+// the gesture (click = no leader, drag = leader back to what you meant) and
+// that nothing about it touches the programme.
+
+function markupNoteMode(container) {
+  const dock = [...container.querySelectorAll('.tool-btn')];
+  const markup = dock.find((b) => /Markup/.test(b.title || ''));
+  act(() => markup.dispatchEvent(ev('click')));
+  const toText = [...container.querySelectorAll('.pen-modes button')].find((b) => b.textContent === 'T');
+  act(() => toText.dispatchEvent(ev('click')));
+}
+
+const typeInto = (input, text) => {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+  setter.call(input, text);
+  input.dispatchEvent(new window.Event('input', { bubbles: true }));
+};
+
+test('a note: click places it, the typed words are what gets stored', async () => {
+  const { container, svg, unmount } = mount();
+  try {
+    markupNoteMode(container);
+    await act(async () => {
+      svg.dispatchEvent(ev('pointerdown', { clientX: 300, clientY: 200 }));
+      svg.dispatchEvent(ev('pointerup', { clientX: 300, clientY: 200 }));
+    });
+    const field = container.querySelector('.note-editor input');
+    assert.ok(field, 'placing a note opens the text field');
+    await act(async () => typeInto(field, 'Check this level'));
+    // The note previews on the canvas before it is committed.
+    assert.match(container.querySelector('.markup-note').textContent, /Check this level/);
+
+    const place = [...container.querySelectorAll('.note-editor button')].find((b) => b.textContent === 'Place');
+    await act(async () => place.dispatchEvent(ev('click')));
+
+    const post = fetchCalls.find((c) => /\/markups$/.test(c.url) && c.options?.method === 'POST');
+    assert.ok(post, 'the note posted');
+    const body = JSON.parse(post.options.body);
+    assert.equal(body.kind, 'note');
+    assert.equal(body.note_text, 'Check this level');
+    assert.equal(body.points.length, 1, 'a click gives a note with no leader');
+    assert.equal(container.querySelector('.note-editor'), null, 'the field closes once placed');
+  } finally {
+    unmount();
+  }
+});
+
+test('dragging a note stores a leader from what you meant to where the words sit', async () => {
+  const { container, svg, unmount } = mount();
+  try {
+    markupNoteMode(container);
+    await act(async () => {
+      svg.dispatchEvent(ev('pointerdown', { clientX: 200, clientY: 150 }));
+      svg.dispatchEvent(ev('pointermove', { clientX: 340, clientY: 260 }));
+      svg.dispatchEvent(ev('pointerup', { clientX: 340, clientY: 260 }));
+    });
+    const field = container.querySelector('.note-editor input');
+    await act(async () => typeInto(field, 'Clash'));
+    const place = [...container.querySelectorAll('.note-editor button')].find((b) => b.textContent === 'Place');
+    await act(async () => place.dispatchEvent(ev('click')));
+
+    const body = JSON.parse(fetchCalls.find((c) => /\/markups$/.test(c.url) && c.options?.method === 'POST').options.body);
+    // [words, target] — the drag ENDS where the text goes and points back to
+    // where it started, which is the thing being talked about.
+    assert.equal(body.points.length, 2);
+    assert.deepEqual(body.points[0], [340, 260]);
+    assert.deepEqual(body.points[1], [200, 150]);
+  } finally {
+    unmount();
+  }
+});
+
+test('an abandoned note leaves nothing behind', async () => {
+  const { container, svg, unmount } = mount();
+  try {
+    markupNoteMode(container);
+    await act(async () => {
+      svg.dispatchEvent(ev('pointerdown', { clientX: 300, clientY: 200 }));
+      svg.dispatchEvent(ev('pointerup', { clientX: 300, clientY: 200 }));
+    });
+    const cancel = [...container.querySelectorAll('.note-editor button')].find((b) => b.textContent === 'Cancel');
+    await act(async () => cancel.dispatchEvent(ev('click')));
+    assert.equal(container.querySelector('.note-editor'), null);
+    assert.equal(container.querySelector('.markup-note'), null, 'no invisible mark is left on the drawing');
+    assert.equal(fetchCalls.filter((c) => /\/markups$/.test(c.url) && c.options?.method === 'POST').length, 0);
+  } finally {
+    unmount();
+  }
+});
+
+test('a note never becomes programme data', async () => {
+  const { container, svg, unmount } = mount();
+  try {
+    markupNoteMode(container);
+    await act(async () => {
+      svg.dispatchEvent(ev('pointerdown', { clientX: 300, clientY: 200 }));
+      svg.dispatchEvent(ev('pointerup', { clientX: 300, clientY: 200 }));
+    });
+    await act(async () => typeInto(container.querySelector('.note-editor input'), 'Note'));
+    const place = [...container.querySelectorAll('.note-editor button')].find((b) => b.textContent === 'Place');
+    await act(async () => place.dispatchEvent(ev('click')));
+    // Not a space, not an area, not an adjacency — the whole premise of markup.
+    assert.equal(fetchCalls.filter((c) => /\/spaces/.test(c.url)).length, 0);
+    assert.equal(fetchCalls.filter((c) => /adjacenc/.test(c.url)).length, 0);
+  } finally {
+    unmount();
+  }
+});
+
+test('Escape abandons the note even when the cascade was built before it existed', async () => {
+  // The Escape handler lives in a keyboard effect that cannot list every piece
+  // of gesture state in its dependencies, so the draft is read from a ref at
+  // call time. Without that, Escape fell straight through to clearing the
+  // selection and left the note field open.
+  const { container, svg, unmount } = mount();
+  try {
+    markupNoteMode(container);
+    await act(async () => {
+      svg.dispatchEvent(ev('pointerdown', { clientX: 300, clientY: 200 }));
+      svg.dispatchEvent(ev('pointerup', { clientX: 300, clientY: 200 }));
+    });
+    assert.ok(container.querySelector('.note-editor'), 'the field is open');
+    await act(async () => {
+      window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    });
+    assert.equal(container.querySelector('.note-editor'), null, 'Escape closed it');
+    assert.equal(fetchCalls.filter((c) => /\/markups$/.test(c.url) && c.options?.method === 'POST').length, 0);
+  } finally {
+    unmount();
+  }
+});

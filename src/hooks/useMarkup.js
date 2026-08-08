@@ -53,6 +53,18 @@ export function useMarkup({
   // pointermove — the in-flight line is the ref above, drawn via the tick).
   const [pendingAdds, setPendingAdds] = useState([]);
   const [pendingRemovals, setPendingRemovals] = useState(() => new Set());
+  // A note being written. Placed by the gesture, then typed in the pen tray:
+  // { x, y, leader: {x,y}|null, text }. Nothing is stored until it has words on
+  // it, so an accidental click leaves nothing behind to hunt for and delete.
+  const [noteDraft, setNoteDraft] = useState(null);
+  // Mirror in a ref: the shell's Escape cascade lives in a keyboard effect whose
+  // dependency list cannot list every piece of gesture state, so a handler
+  // captured before a note was placed would read `noteDraft` as null and let
+  // Escape fall through to clearing the selection. Same fix as useMeasure's
+  // committedRef — a live gesture must be readable at call time, not at the
+  // time the handler was created.
+  const noteDraftRef = useRef(null);
+  noteDraftRef.current = noteDraft;
 
   const scope = useMemo(() => ({ env, level: level || '' }), [env, level]);
 
@@ -130,6 +142,54 @@ export function useMarkup({
     },
     [project.id, scope, history, refresh, setError]
   );
+
+  /**
+   * Commit the note being written. Same table, same undo, same export path as
+   * ink — a note is a redline that happens to be legible.
+   */
+  const commitNote = useCallback(async () => {
+    const draft = noteDraftRef.current;
+    const text = (draft?.text || '').trim();
+    if (!draft || !text) { setNoteDraft(null); return; }
+    setNoteDraft(null);
+    // Rounded like ink: two decimals of a diagram unit is far below what any
+    // output can resolve, and the raw pointer floats were 17 digits each.
+    const points = roundPoints(
+      draft.leader ? [[draft.x, draft.y], [draft.leader.x, draft.leader.y]] : [[draft.x, draft.y]],
+      2
+    );
+    const style = { kind: 'note', color: draft.color, width: draft.height, note_text: text };
+    const tmpId = `tmp:${Date.now()}`;
+    const optimistic = { id: tmpId, ...scope, kind: 'note', text, color: draft.color, width: draft.height, points, pending: true };
+    setPendingAdds((prev) => [...prev, optimistic]);
+    try {
+      const row = await api.createMarkup(project.id, { ...scope, ...style, points });
+      const saved = parseStroke(row);
+      setPendingAdds((prev) => [...prev.filter((s) => s.id !== tmpId), ...(saved ? [saved] : [])]);
+      history.record({
+        label: 'note',
+        undo: async () => {
+          setPendingRemovals((prev) => new Set(prev).add(row.id));
+          setPendingAdds((prev) => prev.filter((s) => s.id !== row.id));
+          await api.deleteMarkup(row.id);
+          await refresh();
+        },
+        redo: async () => {
+          await api.restoreMarkups(project.id, { markups: [row] });
+          setPendingRemovals((prev) => {
+            const next = new Set(prev);
+            next.delete(row.id);
+            return next;
+          });
+          await refresh();
+        },
+      });
+      await refresh();
+    } catch (e) {
+      setPendingAdds((prev) => prev.filter((s) => s.id !== tmpId));
+      setError(e.message);
+    }
+  }, [project.id, scope, history, refresh, setError]);
 
   /** Remove every stroke in the current scope, as one undoable step. */
   const clearScope = useCallback(async () => {
@@ -316,6 +376,14 @@ export function useMarkup({
   function markupPointerDown(e) {
     if (!active || e.button !== 0) return false;
     const p = toSvgCoords(e);
+    // In note mode the press starts a leader: press on the thing being talked
+    // about, release where the words should sit. A click with no drag is a
+    // note with no leader, which is the common case and costs no extra gesture.
+    if (penRef.current.mode === 'note') {
+      inkRef.current = { ...penRef.current, note: true, points: [[p.x, p.y]] };
+      setTick((t) => t + 1);
+      return true;
+    }
     inkRef.current = { ...penRef.current, points: [[p.x, p.y]] };
     setTick((t) => t + 1);
     return true;
@@ -326,6 +394,12 @@ export function useMarkup({
     const ink = inkRef.current;
     if (!ink) return false;
     const p = toSvgCoords(e);
+    // A leader has exactly two ends; the second one follows the pointer.
+    if (ink.note) {
+      ink.points[1] = [p.x, p.y];
+      setTick((t) => t + 1);
+      return true;
+    }
     const last = ink.points[ink.points.length - 1];
     // Drop samples the pointer barely moved through — freehand hardware emits
     // duplicates when the hand pauses, and they add nothing but path length.
@@ -341,12 +415,33 @@ export function useMarkup({
     if (!ink) return false;
     inkRef.current = null;
     setTick((t) => t + 1);
+    if (ink.note) {
+      const [start, end] = ink.points;
+      // Under a nudge's worth of travel is a click, not a drag: the note sits
+      // where the pointer went down and points at nothing.
+      const drag = end && Math.hypot(end[0] - start[0], end[1] - start[1]) > ink.width;
+      setNoteDraft({
+        x: drag ? end[0] : start[0],
+        y: drag ? end[1] : start[1],
+        leader: drag ? { x: start[0], y: start[1] } : null,
+        color: ink.color,
+        height: ink.width,
+        text: '',
+      });
+      return true;
+    }
     if (ink.points.length) addStroke(ink.points, { color: ink.color, width: ink.width });
     return true;
   }
 
   /** Abandon the stroke without committing it — Escape, or a pointercancel. */
   function markupCancel() {
+    // Escape abandons whichever is live: the note being typed first, since that
+    // is what has the user's attention.
+    if (noteDraftRef.current) {
+      setNoteDraft(null);
+      return true;
+    }
     if (!inkRef.current) return false;
     inkRef.current = null;
     setTick((t) => t + 1);
@@ -378,6 +473,7 @@ export function useMarkup({
 
   return {
     pen, setPen, strokes, inkRef,
+    noteDraft, setNoteDraft, commitNote,
     markupPointerDown, markupPointerMove, markupPointerUp, markupCancel,
     clearScope, rescaleAll, importVector, sources, removeSource, rescaleSource,
     hasMarkup: strokes.length > 0,

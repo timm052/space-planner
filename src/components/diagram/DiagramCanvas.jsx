@@ -5,7 +5,7 @@ import { hullOfDiscs, smoothHullPath, filterCss, polygonPath, polyBounds, polygo
 import { darkHex, labelInk, pocheInk } from '../../viz.js';
 import { fitLabel, measureText } from '../../textfit.js';
 import { TickLayer } from '../../hooks/useTick.js';
-import { toPath as markupPath } from '../../markup.js';
+import { toPath as markupPath, noteParts } from '../../markup.js';
 import { boxExtents } from './scenes.js';
 
 // three.js + react-three-fiber are the bulk of the main bundle; the 3-D view
@@ -107,6 +107,45 @@ const BubbleLabel = memo(function BubbleLabel({ label, r, areaStr, ink, zoom = 1
 /** Stroke path builder, aliased so the canvas reads at a glance. */
 const toMarkupPath = markupPath;
 
+/**
+ * A sheet note: the words, plus a leader to whatever they are about.
+ *
+ * Drawn in DIAGRAM UNITS like the ink it belongs with, so a note stays on the
+ * thing it annotates and prints at the height it was written at. Multi-line
+ * text is laid out by hand because SVG has no wrapping — the author's own line
+ * breaks are the layout, which is what a hand annotation does anyway.
+ */
+function MarkupNote({ note, pending = false }) {
+  if (!note) return null;
+  const { x, y, leader, text, height, color } = note;
+  const lines = String(text).split('\n');
+  const lineH = height * 1.25;
+  // The leader lands on the side the words are on, so it never crosses them.
+  const anchor = leader && leader.x > x ? 'end' : 'start';
+  const gap = height * 0.4;
+  return (
+    <g className={`markup-note${pending ? ' pending' : ''}`}>
+      {leader && (
+        <>
+          <line
+            className="markup-leader"
+            x1={leader.x} y1={leader.y}
+            x2={anchor === 'end' ? x + gap : x - gap} y2={y}
+            stroke={color}
+            strokeWidth={Math.max(0.6, height / 8)}
+          />
+          <circle cx={leader.x} cy={leader.y} r={Math.max(0.9, height / 5)} fill={color} />
+        </>
+      )}
+      <text x={x} y={y} textAnchor={anchor} fill={color} style={{ fontSize: height }}>
+        {lines.map((line, i) => (
+          <tspan key={i} x={x} dy={i === 0 ? 0 : lineH}>{line}</tspan>
+        ))}
+      </text>
+    </g>
+  );
+}
+
 export default function DiagramCanvas({
   tickStore,
   theme = 'dark',
@@ -179,6 +218,7 @@ export default function DiagramCanvas({
   // a point per pointermove and must not re-render the shell on each).
   markupStrokes = [],
   inkRef = null,
+  noteDraft = null,
   // Measure tool: the in-flight drag (a ref, per-move) and the last reading.
   measureRef = null,
   measureDone = null,
@@ -1272,23 +1312,44 @@ click to select · drag to move the building · drag the dot to re-plan the room
                 layer must never intercept one. An overlay swallowing presses
                 on the handles beneath it is exactly how the interior-sketch
                 seed rings broke vertex editing. */}
-            {(markupStrokes.length > 0 || inkRef?.current) && (
+            {(markupStrokes.length > 0 || inkRef?.current || noteDraft) && (
               <g className="markup-layer" pointerEvents="none" aria-hidden="true">
                 {markupStrokes.map((s) => (
-                  <path
-                    key={s.id}
-                    className={`markup-stroke${s.pending ? ' pending' : ''}`}
-                    d={toMarkupPath(s.points)}
-                    stroke={s.color}
-                    strokeWidth={s.width}
-                  />
+                  s.kind === 'note'
+                    ? <MarkupNote key={s.id} note={noteParts(s)} pending={s.pending} />
+                    : (
+                      <path
+                        key={s.id}
+                        className={`markup-stroke${s.pending ? ' pending' : ''}`}
+                        d={toMarkupPath(s.points)}
+                        stroke={s.color}
+                        strokeWidth={s.width}
+                      />
+                    )
                 ))}
-                {inkRef?.current && (
+                {inkRef?.current && !inkRef.current.note && (
                   <path
                     className="markup-stroke live"
                     d={toMarkupPath(inkRef.current.points)}
                     stroke={inkRef.current.color}
                     strokeWidth={inkRef.current.width}
+                  />
+                )}
+                {/* The leader being dragged, before there are any words yet. */}
+                {inkRef?.current?.note && inkRef.current.points[1] && (
+                  <line
+                    className="markup-leader live"
+                    x1={inkRef.current.points[0][0]} y1={inkRef.current.points[0][1]}
+                    x2={inkRef.current.points[1][0]} y2={inkRef.current.points[1][1]}
+                    stroke={inkRef.current.color}
+                    strokeWidth={Math.max(1, inkRef.current.width / 8)}
+                  />
+                )}
+                {/* The note being typed, previewed where it will land. */}
+                {noteDraft && (
+                  <MarkupNote
+                    note={{ ...noteDraft, text: noteDraft.text || 'Note…' }}
+                    pending
                   />
                 )}
               </g>

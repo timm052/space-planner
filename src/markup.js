@@ -25,7 +25,36 @@ export const PEN_COLORS = [
   ['#30a46c', 'Green'],
 ];
 
-export const DEFAULT_PEN = { color: PEN_COLORS[0][0], width: PEN_WIDTHS[1] };
+/**
+ * Note text heights, in diagram units. One unit is ~0.2646 mm on paper at 1:1,
+ * so these print at roughly 2.1 / 3.2 / 4.8 mm — the range a hand annotation
+ * occupies on a drawing, small enough not to fight the plan and large enough to
+ * survive a reduction to A4.
+ */
+export const NOTE_HEIGHTS = [8, 12, 18];
+
+export const DEFAULT_PEN = { mode: 'ink', color: PEN_COLORS[0][0], width: PEN_WIDTHS[1] };
+
+/**
+ * Split a note into where its text sits and what it points at.
+ *
+ * A note is stored as [[textX, textY]] alone, or [[textX, textY], [tx, ty]]
+ * when it carries a leader. Returns null for anything that isn't a note, so a
+ * caller can map over every stroke without pre-filtering.
+ */
+export function noteParts(stroke) {
+  if (!stroke || stroke.kind !== 'note' || !stroke.points?.length) return null;
+  const [at, target] = stroke.points;
+  return {
+    x: at[0],
+    y: at[1],
+    // A leader that lands on its own anchor is not a leader.
+    leader: target && (target[0] !== at[0] || target[1] !== at[1]) ? { x: target[0], y: target[1] } : null,
+    text: stroke.text || '',
+    height: stroke.width,
+    color: stroke.color,
+  };
+}
 
 /**
  * Stable identity for "this project has no markup". A fresh `[]` default makes
@@ -169,6 +198,8 @@ export function parseStroke(row) {
     id: row.id,
     env: row.env,
     level: row.level ?? '',
+    kind: row.kind || 'ink',
+    text: row.note_text || '',
     color: row.color || DEFAULT_PEN.color,
     width: Number(row.width) || DEFAULT_PEN.width,
     points: clean,

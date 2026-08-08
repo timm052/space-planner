@@ -28,6 +28,7 @@ export const PROJECT_FIELDS = [
   'sat_image', 'sat_mpp', 'sat_opacity', 'sat_attribution', 'sat_visible', 'sat_x', 'sat_y',
   'north_deg', 'north_locked', 'bg_rot', 'sat_rot', 'category_colors', 'bubble_style', 'diagram_env',
   'level_heights', 'variables', 'circulation', 'benchmarks',
+  'drawing_number', 'revision', 'drawn_by', 'checked_by', 'issue_status', 'issue_date',
 ];
 
 const VALID_UNITS = new Set(['m2', 'ft2']);

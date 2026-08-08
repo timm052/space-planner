@@ -11,6 +11,8 @@
 // dimension. Groups are named the way the DXF layers are, because that is what
 // becomes a layer in Illustrator.
 
+import { sheetNote } from './sheet.js';
+
 const esc = (s) => String(s ?? '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -105,10 +107,32 @@ export function buildSvg(scene, { mmPerUnit = 0.2645833, title = 'Drawing' } = {
     out.push('</g>');
   }
 
+  // Sheet notes: text as text, with a leader to what they point at, so the
+  // recipient can retype or restyle them like anything else in the file.
+  if (scene.notes?.length) {
+    out.push('<g id="ANNO-NOTE" font-family="Inter, Helvetica, Arial, sans-serif">');
+    for (const nt of scene.notes) {
+      const size = nt.height * mmPerUnit;
+      const anchor = nt.leader && nt.leader.x > nt.x ? 'end' : 'start';
+      const gap = size * 0.4;
+      if (nt.leader) {
+        const footX = anchor === 'end' ? X(nt.x) + gap : X(nt.x) - gap;
+        out.push(`<line x1="${n(X(nt.leader.x))}" y1="${n(Y(nt.leader.y))}" x2="${n(footX)}" y2="${n(Y(nt.y))}" stroke="${esc(nt.color)}" stroke-width="${n(Math.max(0.1, size / 8))}"/>`);
+        out.push(`<circle cx="${n(X(nt.leader.x))}" cy="${n(Y(nt.leader.y))}" r="${n(Math.max(0.15, size / 5))}" fill="${esc(nt.color)}"/>`);
+      }
+      const lines = String(nt.text || '').split('\n');
+      const spans = lines
+        .map((line, i) => `<tspan x="${n(X(nt.x))}" dy="${i === 0 ? 0 : n(size * 1.25)}">${esc(line)}</tspan>`)
+        .join('');
+      out.push(`<text x="${n(X(nt.x))}" y="${n(Y(nt.y))}" font-size="${n(size)}" text-anchor="${anchor}" fill="${esc(nt.color)}">${spans}</text>`);
+    }
+    out.push('</g>');
+  }
+
   if (scene.title) {
     const t = scene.title;
     out.push('<g id="ANNO-SHEET" font-family="Inter, Helvetica, Arial, sans-serif" fill="#333333">');
-    out.push(`<text x="${n(pad)}" y="${n(h - 2.5)}" font-size="3">${esc(`${t.name || ''} — ${t.sheet || ''} — ${t.scaleLabel || ''}`)}</text>`);
+    out.push(`<text x="${n(pad)}" y="${n(h - 2.5)}" font-size="3">${esc(sheetNote(t))}</text>`);
     if (scene.markup?.length) {
       out.push(`<text x="${n(w - pad)}" y="${n(h - 2.5)}" font-size="2.4" text-anchor="end" fill="#999999">Coloured lines are markup — not drawn geometry</text>`);
     }

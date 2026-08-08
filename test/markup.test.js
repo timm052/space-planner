@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  simplify, roundPoints, toPath, scaleStroke, bboxOf, parseStroke,
+  simplify, roundPoints, toPath, scaleStroke, bboxOf, parseStroke, noteParts,
   PEN_WIDTHS, PEN_COLORS, DEFAULT_PEN,
 } from '../src/markup.js';
 
@@ -119,7 +119,10 @@ test('bboxOf is null when there is nothing drawn', () => {
 
 test('parseStroke reads a stored row', () => {
   const s = parseStroke({ id: 7, env: 'masterplan', level: 'Ground', color: '#3e63dd', width: 5, points: '[[1,2],[3,4]]' });
-  assert.deepEqual(s, { id: 7, env: 'masterplan', level: 'Ground', color: '#3e63dd', width: 5, points: [[1, 2], [3, 4]] });
+  assert.deepEqual(s, {
+    id: 7, env: 'masterplan', level: 'Ground', kind: 'ink', text: '',
+    color: '#3e63dd', width: 5, points: [[1, 2], [3, 4]],
+  });
 });
 
 test('parseStroke rejects unusable payloads rather than throwing', () => {
@@ -147,4 +150,46 @@ test('the pen palette is fixed hex so it survives into a PDF', () => {
   for (const [hex] of PEN_COLORS) assert.match(hex, /^#[0-9a-f]{6}$/i);
   assert.ok(PEN_WIDTHS.every((w) => w > 0));
   assert.ok(PEN_COLORS.some(([hex]) => hex === DEFAULT_PEN.color));
+});
+
+// ---- sheet notes ---------------------------------------------------------
+// A note is markup: it never touches an area, it scopes to an environment and
+// storey, it undoes and exports with the ink. Only its rendering differs.
+
+test('a note carries its words, its height and what it points at', () => {
+  const n = noteParts(parseStroke({
+    id: 3, kind: 'note', note_text: 'Check level here', color: '#e5484d', width: 12,
+    points: '[[40,20],[10,60]]',
+  }));
+  assert.equal(n.text, 'Check level here');
+  assert.equal(n.height, 12);
+  assert.deepEqual({ x: n.x, y: n.y }, { x: 40, y: 20 });
+  assert.deepEqual(n.leader, { x: 10, y: 60 });
+});
+
+test('a note placed with a click has no leader', () => {
+  const n = noteParts(parseStroke({ id: 4, kind: 'note', note_text: 'Note', width: 8, points: '[[5,5]]' }));
+  assert.equal(n.leader, null);
+});
+
+test('a leader landing on its own anchor is not a leader', () => {
+  // A click that registers a hair of movement must not draw a zero-length
+  // leader stub next to the words.
+  const n = noteParts(parseStroke({ id: 5, kind: 'note', note_text: 'N', width: 8, points: '[[5,5],[5,5]]' }));
+  assert.equal(n.leader, null);
+});
+
+test('noteParts ignores anything that is not a note', () => {
+  assert.equal(noteParts(parseStroke({ id: 6, points: '[[1,2],[3,4]]' })), null);
+  assert.equal(noteParts(null), null);
+});
+
+test('a note keeps its paper size through a drawing-scale change', () => {
+  // width IS the text height for a note, and scaleStroke already scales width
+  // — which is the whole reason the height lives there rather than in its own
+  // column. Halve the scale and the note stays the same size on the print.
+  const note = parseStroke({ id: 8, kind: 'note', note_text: 'N', width: 12, points: '[[10,10],[20,20]]' });
+  const out = scaleStroke(note, { x: 0, y: 0 }, 2);
+  assert.equal(out.width, 24);
+  assert.deepEqual(out.points, [[20, 20], [40, 40]]);
 });

@@ -31,7 +31,8 @@ import { usePolyEditing } from '../hooks/usePolyEditing.js';
 import { useImageLayers } from '../hooks/useImageLayers.js';
 import { useMarkup } from '../hooks/useMarkup.js';
 import { useMeasure } from '../hooks/useMeasure.js';
-import { scaleStroke, parseStroke, bboxOf as markupBbox, NO_MARKUP, PEN_COLORS, PEN_WIDTHS } from '../markup.js';
+import { scaleStroke, parseStroke, bboxOf as markupBbox, noteParts, NO_MARKUP, PEN_COLORS, PEN_WIDTHS, NOTE_HEIGHTS } from '../markup.js';
+import { sheetFileStem } from '../sheet.js';
 import { bakeImage } from '../imageUtils.js';
 import { useTheme } from '../theme.jsx';
 import HelpPanel from './HelpPanel.jsx';
@@ -44,6 +45,7 @@ import { StageTopbar, MorePopover, ToolDock, ZoomControls } from './diagram/Diag
 import CommandPalette from './diagram/CommandPalette.jsx';
 import { LayersPopover, SatellitePanel, ScalePanel } from './diagram/LayersPanel.jsx';
 import StagePopover from './diagram/StagePopover.jsx';
+import TitleBlockPanel from './diagram/TitleBlockPanel.jsx';
 import { Empty } from './ui.jsx';
 import { confirmDialog } from './ConfirmDialog.jsx';
 
@@ -610,6 +612,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
   const markupLevel = isBuilding && levels.includes(floorMode) ? floorMode : '';
   const {
     pen: markupPen, setPen: setMarkupPen, strokes: markupStrokes, inkRef,
+    noteDraft, setNoteDraft, commitNote,
     markupPointerDown, markupPointerMove, markupPointerUp, markupCancel,
     clearScope: clearMarkup, rescaleAll: rescaleMarkup, hasMarkup,
     importVector, sources: rawVectorSources, removeSource: removeVectorSource, rescaleSource: rescaleVectorSource,
@@ -3232,12 +3235,16 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
     // Redline markup for THIS sheet's scope — the drawing set exports several
     // sheets in one pass, so it has to come from the raw rows rather than from
     // whatever the viewport happens to be showing.
-    const sheetMarkup = (markups || [])
+    const sheetAll = (markups || [])
       .map(parseStroke)
       .filter((s) => s && s.env === kind && (s.level || '') === (floor ?? ''));
+    // Notes travel as their own scene array: every exporter draws them as TEXT
+    // (with a leader), not as the one- or two-point polyline they are stored as.
+    const sheetMarkup = sheetAll.filter((s) => s.kind !== 'note');
+    const sheetNotes = sheetAll.map(noteParts).filter(Boolean);
     // Widen the frame so a mark drawn outside the rooms is not silently cropped
     // off the sheet. Ink is a comment someone expects to see on the print.
-    const inkBox = markupBbox(sheetMarkup);
+    const inkBox = markupBbox(sheetAll);
     if (inkBox) {
       bounds.minX = Math.min(bounds.minX, inkBox.x0);
       bounds.minY = Math.min(bounds.minY, inkBox.y0);
@@ -3297,6 +3304,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
       bubbles,
       cells,
       markup: sheetMarkup,
+      notes: sheetNotes,
       // Category swatches so the sheet's colours decode on paper.
       legend: groups.map((g) => ({ label: g, color: colorForLabel(g) })),
       bubbleStyle,
@@ -3313,7 +3321,14 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
         // DEFAULT, so it ships by accident. The sheet has to say so itself:
         // the "≈" in the label is far too easy to read past.
         nonStandardScale: metric && !nearestPreset(scaleToRatio(effScale), units).isStandard,
-        date: new Date().toISOString().slice(0, 10),
+        // The issue date if the sheet has been given one, otherwise the day it
+        // is printed — the old behaviour, and right for a working print.
+        date: project.issue_date || new Date().toISOString().slice(0, 10),
+        number: project.drawing_number || '',
+        revision: project.revision || '',
+        status: project.issue_status || '',
+        drawnBy: project.drawn_by || '',
+        checkedBy: project.checked_by || '',
       },
     };
   }
@@ -3349,7 +3364,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
       const mmPerUnit = sheetMmPerUnit(scene, sheetSize === 'auto' ? null : sheetSize);
       const svg = buildSvg(scene, { mmPerUnit, title: `${project.name} — ${scene.title.sheet}` });
       if (!svg) return setError('Nothing to export yet.');
-      const slug = project.name.replace(/[^\w-]+/g, '_');
+      const slug = sheetFileStem(scene.title);
       downloadSvg(svg, `${slug}_${env}${floor ? `_${floor.replace(/[^\w-]+/g, '_')}` : ''}.svg`);
     } catch (err) {
       setError(`SVG export failed: ${err.message}`);
@@ -3384,7 +3399,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
       const { buildDxf, downloadDxf } = await import('../dxfExport.js');
       const dxf = buildDxf(scene, { effScale, title: project.name });
       if (!dxf) return setError('Nothing to export yet.');
-      const slug = project.name.replace(/[^\w-]+/g, '_');
+      const slug = sheetFileStem(scene.title);
       downloadDxf(dxf, `${slug}_${env}${floor ? `_${floor.replace(/[^\w-]+/g, '_')}` : ''}.dxf`);
     } catch (err) {
       setError(`DXF export failed: ${err.message}`);
@@ -3995,6 +4010,15 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
                   {['A4', 'A3', 'A2', 'A1', 'A0'].map((p) => <option key={p} value={p}>{p} landscape</option>)}
                 </select>
               </label>
+              {/* The sheet's identity, edited where the sheet is made. */}
+              <button className="export-row" onClick={() => setPanel('titleblock')}>
+                <span className="export-name">⊞ Title block…</span>
+                <span className="export-sub">
+                  {project.drawing_number
+                    ? `${project.drawing_number}${project.revision ? ` rev ${project.revision}` : ''}`
+                    : 'drawing number, revision, status, who drew and checked it'}
+                </span>
+              </button>
               <button className="export-row" onClick={() => { setPanel(null); exportPng(); }}>
                 <span className="export-name">↓ PNG image</span>
                 <span className="export-sub">the current view at 2× — 3-D included</span>
@@ -4027,6 +4051,14 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
                 </span>
               </button>
             </StagePopover>
+          )}
+
+          {panel === 'titleblock' && (
+            <TitleBlockPanel
+              project={project}
+              onSave={(fields) => saveProject(fields)}
+              onClose={() => setPanel('export')}
+            />
           )}
 
           {panel === 'more' && (
@@ -4210,6 +4242,10 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
               onMarkupPen={setMarkupPen}
               penColors={PEN_COLORS}
               penWidths={PEN_WIDTHS}
+              noteHeights={NOTE_HEIGHTS}
+              noteDraft={noteDraft}
+              onNoteDraft={setNoteDraft}
+              onCommitNote={commitNote}
               hasMarkup={hasMarkup}
               onClearMarkup={clearMarkup}
               markupScopeNote={markupLevel ? `this floor (${markupLevel})` : 'this environment'}
@@ -4460,6 +4496,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
             scaleLabelFor={scaleLabelFor}
             markupStrokes={markupStrokes}
             inkRef={inkRef}
+            noteDraft={noteDraft}
             measureRef={measureRef}
             measureDone={measureDone}
             measureLabel={measureLabel}

@@ -16,6 +16,8 @@
 // METRES (`$INSUNITS` 6), because a CAD file with no real scale is as useless
 // as a raster. Y is negated: SVG counts downward, CAD counts up.
 
+import { sheetNote } from './sheet.js';
+
 /** Layer table — names follow the "discipline-object" habit CAD users expect. */
 const LAYERS = [
   ['SITE-ENVELOPE', 5], // building envelopes — blue
@@ -24,6 +26,7 @@ const LAYERS = [
   ['ANNO-AREA', 8], // area figures — grey
   ['ANNO-LINK', 4], // adjacency relationships — cyan
   ['ANNO-MARKUP', 1], // redlines — red
+  ['ANNO-NOTE', 1], // sheet notes and their leaders — red, with the redlines
   ['ANNO-SHEET', 2], // title, scale note — yellow
 ];
 
@@ -123,12 +126,24 @@ export function buildDxf(scene, { effScale, title = 'BriefTrack export' } = {}) 
     poly('ANNO-MARKUP', (m.points || []).map(([x, y]) => ({ x, y })), false);
   }
 
+  // Sheet notes become TEXT entities on their own layer, with the leader as a
+  // line — a CAD recipient can freeze ANNO-NOTE and still have the geometry.
+  // Heights are in metres (like every other label here); the per-line offset is
+  // in scene units, because that is what the x/y arguments are.
+  for (const nt of scene.notes || []) {
+    if (nt.leader) poly('ANNO-NOTE', [{ x: nt.leader.x, y: nt.leader.y }, { x: nt.x, y: nt.y }], false);
+    const lines = String(nt.text || '').split('\n');
+    lines.forEach((ln, i) => {
+      text('ANNO-NOTE', nt.x, nt.y + i * nt.height * 1.25, nt.height * effScale, ln, 0);
+    });
+  }
+
   // A scale note in the drawing itself. A CAD file is in real units, so the
   // ratio is only advisory — but a sheet exported at a non-standard scale is
   // worth saying out loud here too.
   if (scene.title) {
     const y = b.maxY + (b.maxY - b.minY) * 0.04 + 2;
-    text('ANNO-SHEET', b.minX, y, 1.2, `${scene.title.name || ''} — ${scene.title.sheet || ''} — ${scene.title.scaleLabel || ''}`, 0);
+    text('ANNO-SHEET', b.minX, y, 1.2, sheetNote(scene.title), 0);
   }
 
   g(0, 'ENDSEC');

@@ -176,10 +176,11 @@ const SECTIONS = [
     items: [
       ['What it is', 'The ✎ Markup tool (D) draws freehand redlines over the plan — circling a clash, sketching an idea, marking something up for a colleague. It is a comment on the drawing, never part of it: markup can never change an area, a total or a compliance figure.'],
       ['Pen', 'While the tool is live the dock shows four colours and three widths. A stroke is committed when you release; Escape mid-stroke abandons it.'],
+      ['Notes', 'Switch the tray from ✎ to T and the same tool writes words instead. Click to place a note; drag FROM the thing you mean TO where the words should sit and it gets a leader pointing back at it. Type in the field that appears — Enter places it, Shift+Enter breaks the line, Escape abandons it. A note is markup like any other: it changes no area and no total.'],
       ['Where it lives', 'Markup belongs to the environment you drew it in, and — while you are editing a single floor — to that storey, so a ground-floor note does not float over the first. It is not part of a design option, so switching Option A ⇄ B leaves your redlines alone.'],
       ['It moves with the drawing', 'Ink is authored in the drawing’s own coordinates, so it stays on whatever you drew it over through pan, zoom and a change of drawing scale — and prints at the weight you drew it.'],
       ['Removing it', 'Ctrl+Z undoes the last stroke. “Clear” removes every mark in the current scope as a single undoable step.'],
-      ['On the sheet', 'Markup exports with the PDF, over the drawing, and the sheet says so in the legend — so a marked-up print is never mistaken for an issued drawing.'],
+      ['On the sheet', 'Markup exports with every output — PDF, SVG, .ai and DXF — over the drawing, with notes as real text on their own layer. The sheet says so in the legend, so a marked-up print is never mistaken for an issued drawing.'],
     ],
   },
   {
@@ -189,6 +190,7 @@ const SECTIONS = [
     items: [
       ['Export menu', 'Everything ships from the ⤓ Export button: a PNG of the current view (2×, 3-D included), a PDF sheet of the open environment, or the full drawing set.'],
       ['PDF sheet', 'The concept diagram exports as an NTS sheet; master plan and floor sheets are scale-accurate with title block, scale bar and north.'],
+      ['Title block', '⊞ Title block… in the export menu sets the drawing number, revision, status, issue date and who drew and checked it — the fields BS EN ISO 7200 treats as mandatory. They print on every output, and a numbered sheet names its own file after the number and revision so two issues file side by side.'],
       ['Drawing set', 'Concept sheet, master plan sheet and one sheet per floor — a single PDF built from each environment’s saved layout.'],
       ['Undo / redo', 'Moves, placements, links, shapes and area edits are undoable — ↶/↷ or Ctrl+Z / Ctrl+Shift+Z. History is per environment session.'],
     ],

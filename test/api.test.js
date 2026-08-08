@@ -168,6 +168,37 @@ test('POST /api/projects/:id/markups stores a stroke and it comes back in the bu
   assert.equal(body.spaces.length, 0);
 });
 
+test('a sheet note stores its words and survives a delete/restore round trip', async () => {
+  const id = await newProject();
+  const created = await api('POST', `/api/projects/${id}/markups`, {
+    env: 'masterplan', kind: 'note', note_text: '  Level change to confirm  ', width: 12,
+    color: '#e5484d', points: [[40, 20], [10, 60]],
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.kind, 'note');
+  assert.equal(created.body.note_text, 'Level change to confirm', 'trimmed, not stored raw');
+  // A note is markup, so it is in the markup list and nowhere near the programme.
+  const bundle = (await api('GET', `/api/projects/${id}`)).body;
+  assert.equal(bundle.markups.length, 1);
+  assert.equal(bundle.spaces.length, 0);
+
+  const removed = (await api('DELETE', `/api/markups/${created.body.id}`)).body;
+  assert.equal((await api('GET', `/api/projects/${id}`)).body.markups.length, 0);
+  await api('POST', `/api/projects/${id}/markups/restore`, { markups: [removed] });
+  const back = (await api('GET', `/api/projects/${id}`)).body.markups[0];
+  assert.equal(back.note_text, 'Level change to confirm', 'the words come back with the note');
+  assert.equal(back.kind, 'note');
+});
+
+test('a note with nothing written on it is refused', async () => {
+  // An empty note is an invisible mark: the user cannot find it again to
+  // delete it, and it prints as a blank leader pointing at nothing.
+  const id = await newProject();
+  const res = await api('POST', `/api/projects/${id}/markups`, { kind: 'note', note_text: '   ', points: [[1, 1]] });
+  assert.equal(res.status, 400);
+  assert.match(res.body.error, /needs some text/);
+});
+
 test('markup rejects an empty or unusable stroke', async () => {
   const id = await newProject();
   assert.equal((await api('POST', `/api/projects/${id}/markups`, { points: [] })).status, 400);
