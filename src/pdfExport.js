@@ -37,7 +37,9 @@ function imageFormat(dataUrl) {
 
 // Pick the page + mm-per-unit for one sheet: the smallest ISO page that holds
 // the content at true scale (or, in relative/NTS mode, fit the content to A3).
-function layoutSheet(scene) {
+export { PAGES };
+
+function layoutSheet(scene, forcePage = null) {
   const { bounds } = scene;
   const contentWUnits = Math.max(1, bounds.maxX - bounds.minX);
   const contentHUnits = Math.max(1, bounds.maxY - bounds.minY);
@@ -46,6 +48,30 @@ function layoutSheet(scene) {
   let mmPerUnit = MM_PER_UNIT;
   let reduced = null;
   let page = null;
+
+  // An explicitly chosen sheet wins. Auto-fitting to the smallest page that
+  // holds the drawing is the right default, but a client or an authority
+  // expects a particular size regardless of how much happens to be on it —
+  // and there was no way to say so.
+  const forced = forcePage && PAGES.find((p) => p.name === forcePage);
+  if (forced) {
+    page = forced;
+    const availW = page.w - 2 * MARGIN;
+    const availH = page.h - 2 * MARGIN - TITLE_H;
+    if (toScale) {
+      const fit = Math.min(availW / contentWUnits, availH / contentHUnits);
+      // Only ever reduce: a drawing that fits stays at true scale, so the
+      // stated ratio keeps meaning what it says.
+      if (fit < mmPerUnit) {
+        reduced = mmPerUnit / fit;
+        mmPerUnit = fit;
+      }
+    } else {
+      mmPerUnit = Math.min(availW / contentWUnits, availH / contentHUnits);
+    }
+    return { page, mmPerUnit, reduced };
+  }
+
   if (toScale) {
     const needW = contentWUnits * mmPerUnit + 2 * MARGIN;
     const needH = contentHUnits * mmPerUnit + 2 * MARGIN + TITLE_H;
@@ -69,8 +95,8 @@ function layoutSheet(scene) {
 }
 
 // One environment's drawing as a single sheet.
-export function exportDiagramPdf(scene) {
-  const layout = layoutSheet(scene);
+export function exportDiagramPdf(scene, { page = null } = {}) {
+  const layout = layoutSheet(scene, page);
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: [layout.page.w, layout.page.h] });
   renderSheet(doc, scene, layout);
   const safe = (scene.title.name || 'diagram').replace(/[^\w-]+/g, '_');
@@ -79,9 +105,11 @@ export function exportDiagramPdf(scene) {
 
 // The drawing set: several sheets (concept · master plan · one per floor) in
 // one PDF, each page sized for its own content and scale.
-export function exportDrawingSet({ sheets, fileName = 'drawing_set.pdf' }) {
+export function exportDrawingSet({ sheets, fileName = 'drawing_set.pdf', page = null }) {
   if (!sheets.length) return;
-  const layouts = sheets.map(layoutSheet);
+  // Every sheet in a set takes the same size when one is chosen — a set that
+  // changes paper part-way through is not a set.
+  const layouts = sheets.map((sc) => layoutSheet(sc, page));
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: [layouts[0].page.w, layouts[0].page.h] });
   sheets.forEach((scene, i) => {
     if (i > 0) doc.addPage([layouts[i].page.w, layouts[i].page.h], 'landscape');

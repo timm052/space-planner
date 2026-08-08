@@ -158,6 +158,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
   const tickStore = useTickStore();
   const setTick = tickStore.bump;
   const [error, setError] = useState(null);
+  // PDF paper size: 'auto' (smallest page that fits) or a fixed ISO name.
+  const [sheetSize, setSheetSize] = useState('auto');
   const [panel, setPanel] = useState(null); // 'layers' | 'sat' | null
   const [showHelp, setShowHelp] = useState(false);
   const [drafts, setDrafts] = useState({});
@@ -3321,7 +3323,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
       if (!scene) return setError('Nothing to export yet.');
       // Dynamic import keeps jsPDF out of the initial bundle.
       const { exportDiagramPdf } = await import('../pdfExport.js');
-      exportDiagramPdf(scene);
+      exportDiagramPdf(scene, { page: sheetSize === 'auto' ? null : sheetSize });
     } catch (err) {
       setError(`PDF export failed: ${err.message}`);
     }
@@ -3366,7 +3368,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
       }
       if (!sheets.length) return setError('Nothing to export yet.');
       const { exportDrawingSet } = await import('../pdfExport.js');
-      exportDrawingSet({ sheets, fileName: `${project.name.replace(/[^\w-]+/g, '_')}_drawing_set.pdf` });
+      exportDrawingSet({ sheets, fileName: `${project.name.replace(/[^\w-]+/g, '_')}_drawing_set.pdf`, page: sheetSize === 'auto' ? null : sheetSize });
     } catch (err) {
       setError(`PDF export failed: ${err.message}`);
     }
@@ -3920,6 +3922,22 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
           {/* ⤓ Export menu — one entry point for every output. */}
           {panel === 'export' && (
             <StagePopover className="export-popover" onClose={() => setPanel(null)}>
+              {/* Sheet size. Auto picks the smallest ISO page that holds the
+                  drawing at true scale, which is the right default — but a
+                  client or an authority expects a particular size whatever
+                  happens to be on it, and there was no way to say so. */}
+              <label className="export-sheet">
+                <span className="export-sheet-label">Sheet</span>
+                <select
+                  className="ctrl-select"
+                  value={sheetSize}
+                  onChange={(e) => setSheetSize(e.target.value)}
+                  title="Paper size for PDF sheets. Auto fits the drawing; a fixed size never enlarges past true scale, only reduces."
+                >
+                  <option value="auto">Auto (fit)</option>
+                  {['A4', 'A3', 'A2', 'A1', 'A0'].map((p) => <option key={p} value={p}>{p} landscape</option>)}
+                </select>
+              </label>
               <button className="export-row" onClick={() => { setPanel(null); exportPng(); }}>
                 <span className="export-name">↓ PNG image</span>
                 <span className="export-sub">the current view at 2× — 3-D included</span>
