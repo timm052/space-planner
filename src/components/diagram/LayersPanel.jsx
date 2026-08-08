@@ -71,16 +71,36 @@ export function LayersPopover({
 }
 
 /** The ＋ Add satellite form: address → Esri World Imagery at a chosen zoom. */
-export function SatellitePanel({ satQuery, setSatQuery, satZoom, setSatZoom, satBusy, onFetch, onCancel }) {
+/**
+ * Ground sample distance for a web-mercator zoom at a given latitude, in metres
+ * per pixel. 156543.03 m/px is the equator at z0; every level halves it, and
+ * cos(latitude) accounts for the projection's stretch away from the equator.
+ */
+export function groundSampleDistance(zoom, lat = 0) {
+  return (156543.03392 * Math.cos((lat * Math.PI) / 180)) / 2 ** Number(zoom);
+}
+
+export function SatellitePanel({ satQuery, setSatQuery, satZoom, setSatZoom, satBusy, satLat = null, onFetch, onCancel }) {
+  // What resolution you are actually getting. Four opaque presets told you the
+  // extent but never the detail, so there was no way to know whether the
+  // imagery would carry a site plan or just a locality — and 0.5 m/px is
+  // trace-quality, not survey-quality. Latitude matters: the same zoom is
+  // roughly half as detailed at 60° as at the equator.
+  const gsd = groundSampleDistance(satZoom, satLat ?? 0);
   return (
     <form className="stage-popover sat-panel" onSubmit={onFetch}>
       <input placeholder="Site address or place (e.g. 1 Macquarie St, Sydney)" value={satQuery} onChange={(e) => setSatQuery(e.target.value)} required />
       <select value={satZoom} onChange={(e) => setSatZoom(e.target.value)}>
+        <option value="15">Locality (~3 km)</option>
         <option value="16">Wide (~1.5 km)</option>
         <option value="17">Area (~750 m)</option>
         <option value="18">Site (~380 m)</option>
         <option value="19">Close (~190 m)</option>
+        <option value="20">Detail (~95 m)</option>
       </select>
+      <span className="sat-gsd mono" title={`Ground sample distance${satLat == null ? ' at the equator — refetch after a search for the figure at your site' : ''}. Below about 0.3 m/px an outline can be traced with confidence; above it, treat the image as context.`}>
+        ≈ {gsd < 1 ? gsd.toFixed(2) : gsd.toFixed(1)} m/px
+      </span>
       <button className="btn primary small" disabled={satBusy}>
         {satBusy ? 'Fetching…' : 'Fetch imagery'}
       </button>

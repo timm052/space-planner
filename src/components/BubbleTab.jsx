@@ -497,7 +497,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
   // switchyard below. Destructured names match the original call sites.
   const {
     calibrateLayer, moveLayer, rotateLayer, scalePoints, scaleDistance, applyLt,
-    satQuery, setSatQuery, satZoom, setSatZoom, satBusy,
+    satQuery, setSatQuery, satZoom, setSatZoom, satBusy, satLat,
     onUpload, layerSlider, toggleLayerVisible, deleteImageLayer, startCalibrate, applyScale, fetchSatellite,
     layerPointerDown, layerPointerMove, layerPointerUp,
   } = useImageLayers({
@@ -4014,6 +4014,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
 
           {caps.layers === 'edit' && panel === 'sat' && (
             <SatellitePanel
+              satLat={satLat}
               satQuery={satQuery}
               setSatQuery={setSatQuery}
               satZoom={satZoom}

@@ -55,6 +55,10 @@ export function useImageLayers({
   }
 
   const [satQuery, setSatQuery] = useState('');
+  // Latitude of the last successful geocode, so the resolution readout is the
+  // one for THIS site rather than the equator — the same zoom is about half as
+  // detailed at 60° as at 0°.
+  const [satLat, setSatLat] = useState(null);
   const [satZoom, setSatZoom] = useState(18);
   const [satBusy, setSatBusy] = useState(false);
   const [, forceChrome] = useState(0); // re-render chrome for optimistic in-place edits (layer sliders)
@@ -157,6 +161,7 @@ export function useImageLayers({
     setError(null);
     try {
       const loc = await api.geocode(satQuery);
+      setSatLat(loc.lat);
       const z = Number(satZoom);
       const n = 2 ** z;
       const latR = (loc.lat * Math.PI) / 180;
@@ -300,7 +305,7 @@ export function useImageLayers({
     // layer-tool modes + transition applier
     calibrateLayer, moveLayer, rotateLayer, scalePoints, scaleDistance, applyLt,
     // satellite panel state
-    satQuery, setSatQuery, satZoom, setSatZoom, satBusy,
+    satQuery, setSatQuery, satZoom, setSatZoom, satBusy, satLat,
     // actions
     onUpload, layerSlider, toggleLayerVisible, deleteImageLayer, startCalibrate, applyScale, fetchSatellite,
     // pointer delegates

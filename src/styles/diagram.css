@@ -831,6 +831,8 @@
 
 .sat-panel, .scale-panel { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; }
 .sat-panel input { flex: 1; min-width: 220px; }
+/* Resolution readout — what detail this zoom actually buys you. */
+.sat-gsd { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
 .sat-panel select { width: auto; }
 .scale-panel input { width: 110px; }
 .scale-panel { color: var(--warn-text); }
