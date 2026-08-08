@@ -144,17 +144,23 @@ router.put('/spaces/:id', (req, res) => {
   // Same rule as the Brief tree: a formula that does not evaluate is refused,
   // not stored as a 0 m² room. Restore the row's previous programme fields so
   // the last good area survives the rejected write.
-  if (area_formula) {
-    const err = formulaErrorsFor(space.project_id, 'spaces').get(space.id);
+  const parentChanged = parent_id !== space.parent_id;
+  // Checked on a MOVE too: re-parenting under a space a formula references
+  // makes a cycle, and the row being moved need not be the one with the formula.
+  if (area_formula || parentChanged) {
+    const errs = formulaErrorsFor(space.project_id, 'spaces');
+    const err = errs.get(space.id) ?? (parentChanged ? [...errs.values()][0] : null);
     if (err) {
-      db.prepare('UPDATE spaces SET target_area = ?, area_formula = ?, count = ? WHERE id = ?')
-        .run(space.target_area, space.area_formula, space.count, space.id);
+      db.prepare('UPDATE spaces SET target_area = ?, area_formula = ?, count = ?, parent_id = ? WHERE id = ?')
+        .run(space.target_area, space.area_formula, space.count, space.parent_id, space.id);
       resolveAndPersist(space.project_id);
-      return res.status(400).json({ error: err });
+      const msg = parentChanged && /circular/i.test(err)
+        ? `${err} — nesting “${name}” here makes an area formula depend on its own total. Move it elsewhere, or replace the formula with a figure.`
+        : err;
+      return res.status(400).json({ error: msg });
     }
   }
-  const protectedParent =
-    parent_id !== space.parent_id ? protectParentArea('spaces', parent_id) : null;
+  const protectedParent = parentChanged ? protectParentArea('spaces', parent_id) : null;
   resolveAndPersist(space.project_id); // re-derive formula areas + mirror baseline
   const updated = db.prepare('SELECT * FROM spaces WHERE id = ?').get(space.id);
   logSpaceDiff(space.project_id, 'design', space, updated); // programme fields only

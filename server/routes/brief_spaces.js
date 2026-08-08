@@ -98,8 +98,14 @@ router.put('/brief-spaces/:id', (req, res) => {
   // used to set the room's area to 0 m² and let that zero flow into the design
   // and the issued milestone — a typo silently deleting a room from the
   // programme. The write is rolled back so the last good area survives.
-  if (area_formula) {
-    const err = formulaErrorsFor(space.project_id, 'brief_spaces').get(space.id);
+  const parentChanged = parent_id !== space.parent_id;
+  // Re-checked on a MOVE as well as a formula edit: re-parenting a row under a
+  // space its formula references creates a cycle just as surely as writing a
+  // bad expression, and the row doing the moving need not be the one that
+  // carries the formula.
+  if (area_formula || parentChanged) {
+    const errs = formulaErrorsFor(space.project_id, 'brief_spaces');
+    const err = errs.get(space.id) ?? (parentChanged ? [...errs.values()][0] : null);
     if (err) {
       db.prepare(
         `UPDATE brief_spaces SET department = ?, name = ?, count = ?, target_area = ?, notes = ?,
@@ -109,12 +115,16 @@ router.put('/brief-spaces/:id', (req, res) => {
         space.parent_id, space.kind, space.image, space.sort_order, space.child_mode, space.level ?? '', space.area_formula, space.id
       );
       resolveBriefAndPersist(space.project_id);
-      return res.status(400).json({ error: err });
+      // "Circular reference between spaces" is accurate and useless on its own
+      // when the user's action was a drag: say what the move did.
+      const msg = parentChanged && /circular/i.test(err)
+        ? `${err} — nesting “${name}” here makes an area formula depend on its own total. Move it elsewhere, or replace the formula with a figure.`
+        : err;
+      return res.status(400).json({ error: msg });
     }
   }
   // Nesting under a space that carries its own area must not silently drop it.
-  const protectedParent =
-    parent_id !== space.parent_id ? protectParentArea('brief_spaces', parent_id) : null;
+  const protectedParent = parentChanged ? protectParentArea('brief_spaces', parent_id) : null;
   resolveBriefAndPersist(space.project_id);
   const updated = db.prepare('SELECT * FROM brief_spaces WHERE id = ?').get(space.id);
   logSpaceDiff(space.project_id, 'brief', space, updated); // programme fields only

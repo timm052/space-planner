@@ -1029,3 +1029,31 @@ test('an option saved before params existed leaves the live ones alone', async (
   assert.equal(load.body.paramsRestored, null);
   assert.equal((await api('GET', `/api/projects/${id}`)).body.project.grossing_target, 0.55);
 });
+
+test('re-parenting into a formula cycle is refused, and says what the move did', async () => {
+  const id = await newProject();
+  const lab = await api('POST', `/api/projects/${id}/spaces`, { name: 'Lab', count: 6, target_area: 90 });
+  const prep = await api('POST', `/api/projects/${id}/spaces`, { name: 'Prep', count: 1, target_area: 30 });
+  // Prep's area is a share of Lab's total — fine while they are siblings.
+  const f = await api('PUT', `/api/spaces/${prep.body.id}`, { area_formula: '=5% * [Lab]' });
+  assert.equal(f.status, 200);
+  // Nesting Prep UNDER Lab makes Lab a container whose total includes Prep,
+  // so Prep's formula would depend on itself.
+  const moved = await api('PUT', `/api/spaces/${prep.body.id}`, { parent_id: lab.body.id });
+  assert.equal(moved.status, 400);
+  assert.match(moved.body.error, /circular/i);
+  assert.match(moved.body.error, /nesting/i); // names the action, not just the condition
+  // …and the move did not stick.
+  const { body } = await api('GET', `/api/projects/${id}`);
+  assert.equal(body.spaces.find((s) => s.id === prep.body.id).parent_id, null);
+});
+
+test('an ordinary re-parent with no formulas is unaffected', async () => {
+  const id = await newProject();
+  const a = await api('POST', `/api/projects/${id}/spaces`, { name: 'Block', kind: 'building', target_area: 0 });
+  const b = await api('POST', `/api/projects/${id}/spaces`, { name: 'Room', count: 1, target_area: 40 });
+  const moved = await api('PUT', `/api/spaces/${b.body.id}`, { parent_id: a.body.id });
+  assert.equal(moved.status, 200);
+  const { body } = await api('GET', `/api/projects/${id}`);
+  assert.equal(body.spaces.find((s) => s.id === b.body.id).parent_id, a.body.id);
+});

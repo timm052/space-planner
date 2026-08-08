@@ -219,7 +219,19 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
     setSel(next);
     for (const f of fx) {
       if (f.type === 'notify') onSelectSpace?.(f.id);
-      else if (f.type === 'maybeCreateLink' && !findPair(f.a, f.b, f.ia ?? 0, f.ib ?? 0)) createLink(f.a, f.b, f.kind, f.ia ?? 0, f.ib ?? 0);
+      else if (f.type === 'maybeCreateLink') {
+        const existing = findPair(f.a, f.b, f.ia ?? 0, f.ib ?? 0);
+        if (!existing) createLink(f.a, f.b, f.kind, f.ia ?? 0, f.ib ?? 0);
+        else {
+          // The pair is already linked. This used to do nothing at all — the
+          // two clicks landed, the tool disarmed, and no link appeared, which
+          // is indistinguishable from a click that missed. Select the existing
+          // link instead: it answers the question the user was asking ("are
+          // these two related?") and opens the bar to change or remove it.
+          selRef.current = { ...selRef.current, selLink: { space_a: existing.space_a, space_b: existing.space_b, inst_a: existing.inst_a ?? 0, inst_b: existing.inst_b ?? 0 } };
+          setSel(selRef.current);
+        }
+      }
     }
     // Every selection change funnels through here (canvas, rail, Brief sync) —
     // the interior sketch follows the selection onto its storey.
@@ -1356,7 +1368,16 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
   function cellPointerDown(e, cell) {
     const root = byId.get(cell.rootId);
     if (!root) return;
-    onBubbleDown(e, { s: root, i: 0, key: `${cell.rootId}:0` }, { spaceId: cell.spaceId, idx: cell.i });
+    // Group first, then the member — the CAD convention for clicking into a
+    // block. The interior sketch covers the whole envelope it depicts, and a
+    // press on a cell used to resolve to the ROOM every time, so the envelope
+    // underneath could not be selected by clicking where it is. With the sketch
+    // on (the default) that put its own action bar out of reach: ✎ Shape,
+    // ⬡ Hull and the rotate field are all attached to the envelope, and every
+    // press landed on a room instead. Selecting the envelope first makes it
+    // reachable; once it is selected, a further press picks the room inside.
+    const inside = selRef.current.selected === cell.rootId;
+    onBubbleDown(e, { s: root, i: 0, key: `${cell.rootId}:0` }, inside ? { spaceId: cell.spaceId, idx: cell.i } : null);
   }
 
   // Seed drag — grabbed on the canvas, routed through the pointer switchyard.
