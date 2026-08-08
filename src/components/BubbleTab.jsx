@@ -1052,7 +1052,22 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
   // Rotate a placed footprint by dragging its rotate handle (Shift = 15° snap).
   // Master-plan only; the handle is drawn just above box/poly shapes. Grabs its
   // own pointer and routes move/up through the shell switchyard (like poly).
+  /**
+   * Is a MODAL tool holding the canvas?
+   *
+   * Markup and Measure sit at the top of modes.MODE_ORDER: while one is
+   * selected it owns every press, so nothing else may arm a gesture. The
+   * handlers below run BEFORE the SVG's (events go child → parent), so each
+   * one has to ask for itself — a child that arms a drag and then lets the
+   * modal claim the press leaves that drag live with no release coming.
+   */
+  function modalTool() {
+    const t = selRef.current.tool;
+    return t === 'markup' || t === 'measure';
+  }
+
   function rotHandleDown(e, o) {
+    if (modalTool()) return; // let the press through to the pen / rule
     e.stopPropagation();
     const n = nodesRef.current.get(o.key);
     if (!n) return;
@@ -1096,6 +1111,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
   // `scx, scy` ∈ {-1,+1} are the grabbed corner's signs.
   const MIN_SIDE = 8; // diagram units — keeps a resized box from collapsing
   function resizeHandleDown(e, o, scx, scy) {
+    if (modalTool()) return;
     e.stopPropagation();
     const n = nodesRef.current.get(o.key);
     if (!n) return;
@@ -1426,6 +1442,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
 
   // Seed drag — grabbed on the canvas, routed through the pointer switchyard.
   function seedHandleDown(e, cell) {
+    if (modalTool()) return;
     e.stopPropagation();
     try { e.target.setPointerCapture?.(e.pointerId); } catch { /* synthetic pointer */ }
     seedRef.current = { key: cell.key, spaceId: cell.spaceId, idx: cell.i, rootId: cell.rootId, moved: false };
@@ -2136,8 +2153,16 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
     // Markup tool is selected — so every other gesture arbitrates unchanged
     // when it is off. Deliberately after the right/middle-button branches:
     // panning must keep working while you are drawing.
-    if (markupPointerDown(e)) return;
-    if (measurePointerDown(e)) return; // dimension drag — useMeasure
+    if (markupPointerDown(e) || measurePointerDown(e)) {
+      // The modal tool owns the whole gesture from here. Anything a child
+      // handler armed before this ran has to go with it: the modal up-handler
+      // returns first, so a drag left in the ref is never released and the room
+      // follows the cursor afterwards with no button down.
+      dragRef.current = null;
+      linkDragRef.current = null;
+      marqueeRef.current = null;
+      return;
+    }
     if (layerPointerDown(e)) return; // scale-click / move / rotate a layer — useImageLayers
     if (panActive) {
       if (!dragRef.current) panRef.current = { sx: e.clientX, sy: e.clientY, vx: view.x, vy: view.y };
@@ -2543,7 +2568,10 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
       startRightPan(e);
       return;
     }
-    if (scalePoints || panActive || moveLayer || rotateLayer) return;
+    // Someone else owns the canvas — calibrating, panning, moving a layer, or a
+    // modal drawing tool. Return WITHOUT stopping propagation, so the press
+    // still reaches the SVG handler and the tool that owns it gets its gesture.
+    if (scalePoints || panActive || moveLayer || rotateLayer || modalTool()) return;
     if (e.shiftKey) {
       // Shift-click toggles a bubble in the multi-selection (no drag, no marquee).
       e.stopPropagation();

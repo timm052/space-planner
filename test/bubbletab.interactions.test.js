@@ -605,3 +605,106 @@ test('the lock toggle offers the two readings and persists the choice', async ()
     unmount();
   }
 });
+
+// ---- a modal tool owns the canvas ----------------------------------------
+// Markup and Measure sit at the top of MODE_ORDER: while one is selected, a
+// press on a ROOM is a stroke, not a grab. The bubble handler runs before the
+// SVG's (events go child -> parent), so it used to arm a room drag that the
+// modal claim then early-returned past. Nothing cleared it: the modal
+// up-handler returns first, so the release never reached the drag and the room
+// followed the cursor afterwards with the button already up.
+
+function pickTool(container, re) {
+  const btn = [...container.querySelectorAll('.tool-btn')].find((b) => re.test(b.title || ''));
+  assert.ok(btn, `${re} tool is in the dock`);
+  act(() => btn.dispatchEvent(ev('click')));
+}
+
+for (const [label, re] of [['Markup', /Markup/], ['Measure', /Measure/]]) {
+  test(`${label}: pressing a room draws, it does not drag the room`, async () => {
+    const { container, svg, unmount } = mount();
+    try {
+      pickTool(container, re);
+      const bubble = container.querySelector('g.bubble[data-space-id="2"]');
+      const start = posOf(bubble);
+      await act(async () => {
+        bubble.dispatchEvent(ev('pointerdown', { clientX: start.x, clientY: start.y }));
+        svg.dispatchEvent(ev('pointermove', { clientX: start.x + 80, clientY: start.y + 60 }));
+        svg.dispatchEvent(ev('pointerup', { clientX: start.x + 80, clientY: start.y + 60 }));
+      });
+      const after = posOf(container.querySelector('g.bubble[data-space-id="2"]'));
+      assert.deepEqual(after, start, 'the room stayed where it was');
+      const moved = fetchCalls.some((c) => /\/api\/spaces\/2$/.test(c.url) && /pin_json|plan_json|block_json/.test(String(c.options?.body)));
+      assert.equal(moved, false, 'and no position was persisted');
+    } finally {
+      unmount();
+    }
+  });
+
+  test(`${label}: the release ends the gesture, so nothing trails the cursor`, async () => {
+    // The second symptom of the same bug: after the stuck press, a plain
+    // pointermove with no button down still moved the room.
+    const { container, svg, unmount } = mount();
+    try {
+      pickTool(container, re);
+      const bubble = container.querySelector('g.bubble[data-space-id="2"]');
+      const start = posOf(bubble);
+      await act(async () => {
+        bubble.dispatchEvent(ev('pointerdown', { clientX: start.x, clientY: start.y }));
+        svg.dispatchEvent(ev('pointermove', { clientX: start.x + 40, clientY: start.y + 40 }));
+        svg.dispatchEvent(ev('pointerup', { clientX: start.x + 40, clientY: start.y + 40 }));
+      });
+      // Button up. Waving the pointer across the canvas must move nothing.
+      await act(async () => {
+        svg.dispatchEvent(ev('pointermove', { clientX: start.x + 260, clientY: start.y + 200 }));
+        svg.dispatchEvent(ev('pointermove', { clientX: start.x + 380, clientY: start.y + 300 }));
+      });
+      await act(async () => flushFrames());
+      assert.deepEqual(
+        posOf(container.querySelector('g.bubble[data-space-id="2"]')), start,
+        'the room did not follow the cursor after the release'
+      );
+    } finally {
+      unmount();
+    }
+  });
+}
+
+test('with the Markup tool off, pressing a room still drags it', async () => {
+  // The guard must be modal, not a general ban: the select tool is unchanged.
+  const { container, svg, unmount } = mount();
+  try {
+    const bubble = container.querySelector('g.bubble[data-space-id="2"]');
+    const start = posOf(bubble);
+    await act(async () => {
+      bubble.dispatchEvent(ev('pointerdown', { clientX: start.x, clientY: start.y }));
+      svg.dispatchEvent(ev('pointermove', { clientX: start.x + 80, clientY: start.y + 60 }));
+      svg.dispatchEvent(ev('pointerup', { clientX: start.x + 80, clientY: start.y + 60 }));
+    });
+    const after = posOf(container.querySelector('g.bubble[data-space-id="2"]'));
+    assert.notDeepEqual(after, start, 'the room moved');
+  } finally {
+    unmount();
+  }
+});
+
+test('Markup: a press on a room still commits a stroke', async () => {
+  // The room must not swallow the press either — the whole point of returning
+  // without stopPropagation is that the ink layer underneath still gets it.
+  const { container, svg, unmount } = mount();
+  try {
+    pickTool(container, /Markup/);
+    const bubble = container.querySelector('g.bubble[data-space-id="2"]');
+    const start = posOf(bubble);
+    await act(async () => {
+      bubble.dispatchEvent(ev('pointerdown', { clientX: start.x, clientY: start.y }));
+      svg.dispatchEvent(ev('pointermove', { clientX: start.x + 30, clientY: start.y + 20 }));
+      svg.dispatchEvent(ev('pointermove', { clientX: start.x + 60, clientY: start.y + 50 }));
+      svg.dispatchEvent(ev('pointerup', { clientX: start.x + 60, clientY: start.y + 50 }));
+    });
+    const post = fetchCalls.find((c) => /\/markups$/.test(c.url) && c.options?.method === 'POST');
+    assert.ok(post, 'the stroke was drawn over the room, not lost to it');
+  } finally {
+    unmount();
+  }
+});
