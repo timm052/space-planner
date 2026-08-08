@@ -3212,6 +3212,9 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
           // the colour) and wears its name above the outline, like the canvas.
           opacity: interiorCells.length ? 0.06 : project.bubble_opacity ?? 0.32,
           labelAbove: interiorCells.length > 0,
+          // Vector export puts envelopes and rooms on different CAD layers, so
+          // the scene has to say which this is.
+          isContainer: isContainerKind(s),
           label: instanceName(s, i),
           sublabel: fmtArea(ea(s), units),
         });
@@ -3321,6 +3324,26 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
       exportDiagramPdf(scene);
     } catch (err) {
       setError(`PDF export failed: ${err.message}`);
+    }
+  }
+
+  // Vector export. Refuses without a drawing scale rather than writing a CAD
+  // file in diagram units, which would open at an arbitrary size and be worse
+  // than no file at all.
+  async function exportDxf() {
+    setError(null);
+    if (!effScale) return setError('Set a drawing scale before exporting CAD — a DXF has to be in real units.');
+    try {
+      const floor = isBuilding && levels.includes(floorMode) ? floorMode : null;
+      const scene = await buildSheetScene(env, { floor });
+      if (!scene) return setError('Nothing to export yet.');
+      const { buildDxf, downloadDxf } = await import('../dxfExport.js');
+      const dxf = buildDxf(scene, { effScale, title: project.name });
+      if (!dxf) return setError('Nothing to export yet.');
+      const slug = project.name.replace(/[^\w-]+/g, '_');
+      downloadDxf(dxf, `${slug}_${env}${floor ? `_${floor.replace(/[^\w-]+/g, '_')}` : ''}.dxf`);
+    } catch (err) {
+      setError(`DXF export failed: ${err.message}`);
     }
   }
 
@@ -3908,6 +3931,17 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
               <button className="export-row" onClick={() => { setPanel(null); exportSet(); }}>
                 <span className="export-name">↓ Drawing set</span>
                 <span className="export-sub">concept + master plan + every floor, one PDF</span>
+              </button>
+              <button
+                className="export-row"
+                onClick={() => { setPanel(null); exportDxf(); }}
+                disabled={!effScale}
+                title={effScale ? 'Vector geometry in real metres, on named layers' : 'Set a drawing scale first — a CAD file needs real units'}
+              >
+                <span className="export-name">↓ DXF (CAD)</span>
+                <span className="export-sub">
+                  {effScale ? 'footprints, names and areas in metres, on named layers' : 'needs a drawing scale — pick one in the toolbar'}
+                </span>
               </button>
             </StagePopover>
           )}

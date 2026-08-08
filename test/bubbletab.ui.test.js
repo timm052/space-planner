@@ -125,15 +125,22 @@ test('palette commands: switching environment persists the new env', async () =>
   }
 });
 
-test('export menu: one ⤓ Export button opens PNG / PDF / drawing-set rows', async () => {
+test('export menu: one ⤓ Export button opens PNG / PDF / set / DXF rows', async () => {
   const { container, unmount } = mount();
   try {
     const btn = [...container.querySelectorAll('.stage-actions button')].find((b) => b.textContent.includes('Export'));
     assert.ok(btn, 'single Export button replaces the three export buttons');
     await act(async () => btn.dispatchEvent(ev('click')));
-    const rows = [...container.querySelectorAll('.export-row')].map((r) => r.textContent);
-    assert.equal(rows.length, 3);
-    assert.ok(rows[0].includes('PNG') && rows[1].includes('PDF') && rows[2].includes('Drawing set'));
+    const rows = [...container.querySelectorAll('.export-row')];
+    const text = rows.map((r) => r.textContent);
+    assert.equal(rows.length, 4);
+    assert.ok(text[0].includes('PNG') && text[1].includes('PDF') && text[2].includes('Drawing set'));
+    assert.ok(text[3].includes('DXF'), 'vector export is offered');
+    // The Concept env has no drawing scale, and a CAD file in diagram units
+    // would open at an arbitrary size — so the row is offered but disabled,
+    // and says what to do about it.
+    assert.equal(rows[3].disabled, true);
+    assert.match(text[3], /drawing scale/i);
   } finally {
     unmount();
   }
