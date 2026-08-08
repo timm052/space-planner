@@ -316,19 +316,29 @@ export function parseImport(text) {
       cat: findIdx(/categ|dept|department/),
       count: findIdx(/count|qty|quantity|^no\.?$/),
       area: findIdx(/area/),
+      // Levels gate per-floor editing, the stacking readout and the 3-D view,
+      // and could only be set one room at a time in the edit form. A schedule
+      // that already carries a storey column had it thrown away on import,
+      // which is a wall of data entry standing between a paste and the whole
+      // Building environment.
+      level: findIdx(/level|storey|story|floor/),
     };
     rows = rows.slice(1);
   }
 
   const items = rows.map((cells, i) => {
-    let name, cat, count, area;
+    let name, cat, count, area, level;
     if (idx) {
       name = cells[idx.name];
       cat = idx.cat >= 0 ? cells[idx.cat] : '';
       count = idx.count >= 0 ? cells[idx.count] : '';
       area = cells[idx.area];
+      level = idx.level >= 0 ? cells[idx.level] : '';
     } else if (cells.length === 2) [name, area] = cells;
     else if (cells.length === 3) [name, cat, area] = cells;
+    // Positional: a 5th column is the storey. Only read with a header row
+    // absent, where column order is the only thing to go on.
+    else if (cells.length >= 5) [name, cat, count, area, level] = cells;
     else [name, cat, count, area] = cells;
     const isFormula = String(area ?? '').trim().startsWith('=');
     const areaNum = Number(String(area ?? '').replace(/[, ]/g, ''));
@@ -339,6 +349,7 @@ export function parseImport(text) {
       category: (cat || '').trim() || 'General',
       count: Math.max(1, Math.trunc(Number(count) || 1)),
       area: isFormula ? String(area).trim() : areaNum,
+      level: (level || '').trim(),
       isFormula,
       ok,
     };
@@ -375,6 +386,7 @@ function ImportDialog({ project, onDone, onClose }) {
           count: r.count,
           target_area: r.isFormula ? 0 : r.area,
           area_formula: r.isFormula ? r.area : null,
+          level: r.level || '',
         });
       }
       onDone(); onClose();
@@ -384,14 +396,15 @@ function ImportDialog({ project, onDone, onClose }) {
   return (
     <Overlay title="Import a schedule into the Brief" wide onClose={onClose}>
       <p className="modal-body">
-        Paste rows from Excel / Sheets / CSV. Columns: <b>name</b>, category, count, <b>area ({unit})</b> —
+        Paste rows from Excel / Sheets / CSV. Columns: <b>name</b>, category, count, <b>area ({unit})</b>, level —
         a header row is recognised, and the area may be an <code>=formula</code>.
+        A <b>level</b> column (or “storey” / “floor”) unlocks per-floor editing and the 3-D view.
       </p>
       <div className="modal-fields" style={{ flexDirection: 'column' }}>
         <textarea
           className="import-paste"
           rows={7}
-          placeholder={'Entrance Foyer\tPublic\t1\t110\nMeeting Rooms\tCommunity\t3\t28'}
+          placeholder={'Entrance Foyer\tPublic\t1\t110\tGround\nMeeting Rooms\tCommunity\t3\t28\tFirst'}
           value={text}
           onChange={(e) => setText(e.target.value)}
           autoFocus
@@ -415,7 +428,7 @@ function ImportDialog({ project, onDone, onClose }) {
           )}
           {parsed.good.slice(0, 8).map((r) => (
             <div className="diff-row" key={r.line} style={{ cursor: 'default' }}>
-              <span className="diff-name">{r.name} <span className="muted">· {r.category}{r.count > 1 ? ` · ×${r.count}` : ''}</span></span>
+              <span className="diff-name">{r.name} <span className="muted">· {r.category}{r.count > 1 ? ` · ×${r.count}` : ''}{r.level ? ` · ${r.level}` : ''}</span></span>
               <span className="diff-val">{r.isFormula ? r.area : fmtArea(r.count * r.area, project.units)}</span>
             </div>
           ))}

@@ -360,6 +360,11 @@
 }
 .tool-dock-sep { height: 1px; background: var(--glass-border); margin: 1px 4px; }
 
+/* Overlap count — a canvas-level warning, beside the drawing not in the rail,
+   because it is about what is drawn rather than about the schedule. */
+.overlap-chip rect { fill: var(--panel); stroke: var(--bad); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.overlap-chip text { fill: var(--bad); font-size: 11px; dominant-baseline: middle; }
+
 /* ---- Measure tool ------------------------------------------------------ */
 /* Screen-space, unlike markup: a dimension is an instrument reading the
    drawing, so its line weight must not change with the camera. */
@@ -820,6 +825,9 @@
 .opacity-mini input[type='range'] { width: 78px; }
 .rot-field { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); }
 .rot-field input { width: 44px; padding: 4px 6px; font-size: 12px; }
+/* Layer position, typeable like its rotation. */
+.xy-field { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; color: var(--muted); }
+.xy-field input { width: 46px; padding: 4px 5px; font-size: 12px; }
 
 .sat-panel, .scale-panel { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; }
 .sat-panel input { flex: 1; min-width: 220px; }
@@ -1422,6 +1430,9 @@ kbd {
 /* ---------- brief: nesting modes, levels, edit controls ---------- */
 .row-tag { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: var(--r-pill); font-size: 10px; background: var(--panel3); color: var(--muted); vertical-align: middle; }
 .row-tag.mode { background: rgba(87, 199, 212, 0.16); color: var(--accent2-text); }
+/* 'Grouped' on a row that carries its own area: that area is being excluded
+   from every total. Amber — it is a fact to notice, not an error. */
+.row-tag.mode.warn { background: rgba(245, 165, 36, 0.18); color: var(--warn-text, #f5a524); }
 .edit-extra { display: flex; flex-direction: column; gap: 4px; align-items: stretch; }
 .edit-extra .mode-select, .edit-extra .level-input, .edit-extra .parent-select { font-size: 12px; width: 100%; }
 

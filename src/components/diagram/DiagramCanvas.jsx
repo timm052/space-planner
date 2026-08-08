@@ -1247,6 +1247,25 @@ click to select · drag to move the building · drag the dot to re-plan the room
               </text>
             )}
 
+            {/* Overlap readout. The scan already marked the offending footprints
+                with a danger outline, but a dashed red stroke among a dozen
+                outlines is easy to scan straight past — and there was no count
+                anywhere in the app, so nothing told you to go looking. Overlapping
+                envelopes is the most common error on a site layout; it deserves a
+                number. Screen-space, like the scale bar it sits beside. */}
+            {overlapKeys.size > 0 && (
+              <g
+                className="overlap-chip"
+                transform={`translate(${originX + 20}, ${originY + chromeH + 14}) scale(${1 / zoom})`}
+                pointerEvents="none"
+              >
+                <rect x={0} y={-11} width={overlapKeys.size > 9 ? 168 : 160} height={18} rx={4} />
+                <text x={9} y={2}>
+                  ⚠ {overlapKeys.size} footprint{overlapKeys.size === 1 ? '' : 's'} overlapping
+                </text>
+              </g>
+            )}
+
             {/* Redline markup — over the drawing, under the marquee.
                 pointerEvents="none" is load-bearing: the ink tool takes its
                 press from the SVG itself (modes.MODE_ORDER 'ink'), so this

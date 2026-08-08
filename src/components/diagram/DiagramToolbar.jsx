@@ -35,9 +35,11 @@ function AdjacencyBadge({ store, compute, dataKey, active, onToggle, scopeNote =
     <button
       className={`adj-badge ${active ? 'active' : ''}`}
       onClick={onToggle}
-      title={`${result.met}/${result.total} relationships satisfied — click to highlight the ${result.unmet.length} unmet${scopeNote ? `\n${scopeNote}` : ''}`}
+      title={`${result.met} of ${result.total} relationships satisfied — click to highlight the ${result.unmet.length} unmet.\nThe % is a weighted score: required links count double, and a near-miss earns partial credit, so it does not equal ${result.met}/${result.total}.${scopeNote ? `\n${scopeNote}` : ''}`}
     >
-      <span className="adj-dot" /> {result.score == null ? '—' : `${Math.round(result.score * 100)}%`} adjacency
+      {/* "weighted" because it is NOT the met/total fraction, and a reader who
+          assumes it is will not be able to reconcile the two numbers. */}
+      <span className="adj-dot" /> {result.score == null ? '—' : `${Math.round(result.score * 100)}%`} weighted
     </button>
   );
 }

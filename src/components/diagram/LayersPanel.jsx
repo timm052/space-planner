@@ -26,6 +26,8 @@ export function LayersPopover({
   fileRef,
   onUpload,
   onAddSatellite,
+  onOffset = null,
+  effScale = null,
   onClose,
 }) {
   return (
@@ -50,6 +52,8 @@ export function LayersPopover({
             rotating={rotateLayer === im.id}
             onFilter={(v) => onFilter(im, v)}
             onDelete={() => onDelete(im.id)}
+            onOffset={onOffset ? (patch) => onOffset(im, patch) : null}
+            effScale={effScale}
           />
         ))}
       </div>

@@ -3983,6 +3983,10 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
               fileRef={fileRef}
               onUpload={onUpload}
               onAddSatellite={() => setPanel('sat')}
+              onOffset={(im, patch) => {
+                for (const [k, v] of Object.entries(patch)) layerSlider(im, k, v);
+              }}
+              effScale={effScale}
               onClose={() => setPanel(null)}
             />
           )}

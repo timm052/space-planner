@@ -1460,8 +1460,20 @@ export default function BriefTab({
                         <span className="kind-icon">{s.kind === 'building' ? '🏢' : isContainerRow(s) ? '▦' : '·'}</span>
                         <span className={isContainerRow(s) ? 'container-name' : ''}>{s.name}</span>
                         {s.level ? <span className="row-tag" title="Building level">{s.level}</span> : null}
+                        {/* The mode governs whether this row's OWN area counts,
+                            and 'group' — the mode that stops it counting — was
+                            the one case left unlabelled. So a laboratory whose
+                            6 × 90 m² had silently left every total looked
+                            identical to one that had not. Flag it, and say what
+                            it costs. */}
                         {hasChildren(s) && s.kind === 'space' && (s.child_mode === 'within' || s.child_mode === 'attached') ? (
                           <span className="row-tag mode" title="How nested spaces relate to this one">{CHILD_MODE_LABEL[s.child_mode]}</span>
+                        ) : null}
+                        {hasChildren(s) && s.kind === 'space' && s.child_mode === 'group' && targetTotal(s) > 0 ? (
+                          <span
+                            className="row-tag mode warn"
+                            title={`Grouped — this row's own ${fmtArea(targetTotal(s), project.units)} is NOT counted; the total comes from its children. Edit it and choose "Within its own area" to count it.`}
+                          >Grouped</span>
                         ) : null}
                         {s.notes ? <span className="row-flag" title="Has notes">📝</span> : null}
                         {s.image ? <span className="row-flag" title="Has reference image">🖼</span> : null}

@@ -244,8 +244,27 @@ export default function DiagramRail({
             <span className="sec-tag t-accent2">{stackData && stackData.length > 0 ? 'A·03' : 'A·02'}</span>
             <span className="sec-title">Adjacency</span>
           </div>
+          {/* The headline is the SATISFACTION count with its denominator said
+              out loud. It used to read "1 req · 2 des" — how many links you
+              declared — while the toolbar showed "50% adjacency" (a weighted
+              mean of graded credit) and its tooltip a third figure, "2/3
+              satisfied". Three numbers, three denominators, none of them
+              named. The declaration counts stay, demoted to where they belong. */}
           <span className="muted mono rail-head-count">
-            {selectedSpace ? `${relList.length} · ${selectedSpace.name}` : `${reqCount} req · ${desCount} des`}
+            {selectedSpace
+              ? `${relList.length} · ${selectedSpace.name}`
+              : (() => {
+                  // linkStates is keyed per ROOM instance. The envelope master
+                  // plan lists aggregated building-to-building links instead,
+                  // whose ids are synthetic and whose ends are container ids, so
+                  // none of them resolve — fall back to the declaration counts
+                  // there rather than reporting a confident "0 of N met".
+                  if (!linkStates || relList.length === 0) return `${reqCount} req · ${desCount} des`;
+                  const states = relList.map((l) => linkStates.get(linkKey(l.space_a, l.inst_a, l.space_b, l.inst_b)));
+                  if (states.every((s) => s == null)) return `${reqCount} req · ${desCount} des`;
+                  const met = states.filter((s) => s === 'met').length;
+                  return `${met} of ${relList.length} met · ${reqCount} req · ${desCount} des`;
+                })()}
           </span>
         </div>
         {selectedSpace && (
