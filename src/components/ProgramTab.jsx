@@ -16,6 +16,7 @@ const briefStore = {
   create: api.createBriefSpace,
   update: api.updateBriefSpace,
   remove: api.deleteBriefSpace,
+  restore: api.restoreBriefSpaces,
 };
 
 export default function ProgramTab({

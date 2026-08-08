@@ -130,3 +130,90 @@ test('duplicate clones a space via createSpace', () => {
     unmount();
   }
 });
+
+// ---- undo/redo for structural edits -------------------------------------
+// Deleting a building in the schedule used to be irreversible: the row and
+// everything nested inside it went, and the only way back was to retype it.
+
+// A store stub standing in for the API layer, recording what it was asked to do.
+function stubStore(removed) {
+  const calls = [];
+  return {
+    calls,
+    create: async (projectId, data) => { calls.push(['create', data]); return { id: 99, ...data }; },
+    update: async (id, data) => { calls.push(['update', id, data]); return { id, ...data }; },
+    remove: async (id) => { calls.push(['remove', id]); return removed; },
+    restore: async (projectId, data) => { calls.push(['restore', projectId, data]); return data; },
+  };
+}
+
+const undoBtn = (c) => c.querySelector('.brief-history button');
+const redoBtn = (c) => c.querySelectorAll('.brief-history button')[1];
+
+test('deleting a room is undoable: the removed subtree is handed straight back', async () => {
+  // Two rows come back from the DELETE — the building and its child — so the
+  // undo has to restore the whole subtree, not just the row that was clicked.
+  const removed = { brief_spaces: [{ id: 1, name: 'Main' }, { id: 2, name: 'Lobby', parent_id: 1 }] };
+  const store = stubStore(removed);
+  const { container, schedule, unmount } = mount({ mode: 'brief', store });
+  try {
+    schedule();
+    assert.equal(undoBtn(container).disabled, true, 'nothing to undo before an edit');
+    const row = [...container.querySelectorAll('.brief-table tbody tr')].find((r) => /Lobby/.test(r.textContent));
+    const del = [...row.querySelectorAll('.row-btn')].find((b) => b.title === 'Remove');
+    await act(async () => del.dispatchEvent(new window.MouseEvent('click', { bubbles: true })));
+    assert.deepEqual(store.calls.at(-1), ['remove', 2]);
+    assert.equal(undoBtn(container).disabled, false, 'the delete is now undoable');
+
+    await act(async () => undoBtn(container).dispatchEvent(new window.MouseEvent('click', { bubbles: true })));
+    const restore = store.calls.at(-1);
+    assert.equal(restore[0], 'restore');
+    assert.deepEqual(restore[2].brief_spaces.map((r) => r.id), [1, 2], 'the whole subtree goes back');
+    assert.equal(redoBtn(container).disabled, false, 'and it can be redone');
+  } finally {
+    unmount();
+  }
+});
+
+test('undoing a create deletes the row it made — and a redo tracks the new id', async () => {
+  const store = stubStore({ brief_spaces: [] });
+  const { container, schedule, unmount } = mount({ mode: 'brief', store });
+  try {
+    schedule();
+    const row = [...container.querySelectorAll('.brief-table tbody tr')].find((r) => /Lobby/.test(r.textContent));
+    const dup = [...row.querySelectorAll('.row-btn')].find((b) => /Duplicate/.test(b.title));
+    await act(async () => dup.dispatchEvent(new window.MouseEvent('click', { bubbles: true })));
+    assert.equal(store.calls.at(-1)[0], 'create');
+
+    await act(async () => undoBtn(container).dispatchEvent(new window.MouseEvent('click', { bubbles: true })));
+    assert.deepEqual(store.calls.at(-1), ['remove', 99], 'the copy it just made is the row removed');
+
+    await act(async () => redoBtn(container).dispatchEvent(new window.MouseEvent('click', { bubbles: true })));
+    assert.equal(store.calls.at(-1)[0], 'create', 'redo re-creates it');
+    await act(async () => undoBtn(container).dispatchEvent(new window.MouseEvent('click', { bubbles: true })));
+    assert.deepEqual(store.calls.at(-1), ['remove', 99], 'and a second undo removes the row the redo made');
+  } finally {
+    unmount();
+  }
+});
+
+test('Ctrl+Z on the schedule undoes; a keystroke inside a field does not', async () => {
+  const store = stubStore({ brief_spaces: [{ id: 2, name: 'Lobby' }] });
+  const { container, schedule, unmount } = mount({ mode: 'brief', store });
+  try {
+    schedule();
+    const row = [...container.querySelectorAll('.brief-table tbody tr')].find((r) => /Lobby/.test(r.textContent));
+    const del = [...row.querySelectorAll('.row-btn')].find((b) => b.title === 'Remove');
+    await act(async () => del.dispatchEvent(new window.MouseEvent('click', { bubbles: true })));
+
+    // Typing in the search box: the browser's own text undo is what's meant.
+    const search = container.querySelector('.brief-search input');
+    await act(async () => search.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true, cancelable: true })));
+    assert.equal(store.calls.filter((c) => c[0] === 'restore').length, 0, 'the field keeps its own undo');
+
+    await act(async () => window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true, cancelable: true })));
+    assert.equal(store.calls.at(-1)[0], 'restore', 'Ctrl+Z on the schedule undoes the delete');
+  } finally {
+    unmount();
+  }
+});

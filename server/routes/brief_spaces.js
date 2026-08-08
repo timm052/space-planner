@@ -146,10 +146,52 @@ router.delete('/brief-spaces/:id', (req, res) => {
     .all(id)
     .map((r) => r.id);
   const del = db.prepare('DELETE FROM brief_spaces WHERE id = ?');
+  // Capture the subtree BEFORE deleting: without it the response carried
+  // nothing and the delete was one-way, so a mis-drop on a building took its
+  // whole contents with no way back.
+  const removed = ids.map((sid) => db.prepare('SELECT * FROM brief_spaces WHERE id = ?').get(sid)).filter(Boolean);
   for (const sid of ids) del.run(sid);
   logRemoved(row.project_id, 'brief', row);
   resolveBriefAndPersist(row.project_id);
-  res.status(204).end();
+  res.json({ brief_spaces: removed });
+});
+
+// POST /api/projects/:id/brief-spaces/restore — hand a deleted subtree back.
+// Ids and parents are preserved, so an undo rebuilds exactly what was there
+// and anything matching by path still matches.
+router.post('/projects/:id/brief-spaces/restore', (req, res) => {
+  const project = requireProject(req, res);
+  if (!project) return;
+  const rows = Array.isArray(req.body?.brief_spaces) ? req.body.brief_spaces : [];
+  if (!rows.length) return res.json({ brief_spaces: [] });
+  if (rows.some((r) => Number(r.project_id) !== project.id)) {
+    return res.status(400).json({ error: 'Those rows belong to another project' });
+  }
+  const cols = db.prepare('PRAGMA table_info(brief_spaces)').all().map((c) => c.name);
+  const ins = db.prepare(
+    `INSERT OR IGNORE INTO brief_spaces (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`
+  );
+  // Parents first, so a child never references a row that does not exist yet.
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const done = new Set();
+  const visit = (r, guard) => {
+    if (!r || done.has(r.id) || guard.has(r.id)) return;
+    guard.add(r.id);
+    if (r.parent_id != null && byId.has(r.parent_id)) visit(byId.get(r.parent_id), guard);
+    if (done.has(r.id)) return;
+    done.add(r.id);
+    ins.run(...cols.map((c) => r[c] ?? null));
+  };
+  db.exec('BEGIN');
+  try {
+    for (const r of rows) visit(r, new Set());
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    return res.status(400).json({ error: `Restore failed: ${err.message}` });
+  }
+  resolveBriefAndPersist(project.id);
+  res.json({ brief_spaces: db.prepare('SELECT * FROM brief_spaces WHERE project_id = ? ORDER BY sort_order, id').all(project.id) });
 });
 
 // GET /api/projects/:id/brief-diff — preview an "overwrite the diagram" apply.

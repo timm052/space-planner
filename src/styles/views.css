@@ -547,3 +547,7 @@ input.is-formula { font-family: 'JetBrains Mono', ui-monospace, monospace; color
 .chart-dot { fill: var(--accent); stroke: var(--bg); stroke-width: 2; }
 .chart-label { fill: var(--muted); font-size: 11px; }
 .chart-label.dim { fill: var(--muted); font-size: 10px; }
+
+/* Undo / redo for the schedule — structural edits used to be one-way. */
+.brief-history button { min-width: 26px; padding: 3px 6px; font-size: 13px; line-height: 1; }
+.brief-history button:disabled { opacity: 0.35; cursor: default; }

@@ -37,7 +37,10 @@ export const api = {
   createBriefSpace: (projectId, data) =>
     request(`/api/projects/${projectId}/brief-spaces`, { method: 'POST', body: JSON.stringify(data) }),
   updateBriefSpace: (id, data) => request(`/api/brief-spaces/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  // Resolves to { brief_spaces } — the removed subtree, so a delete is undoable.
   deleteBriefSpace: (id) => request(`/api/brief-spaces/${id}`, { method: 'DELETE' }),
+  restoreBriefSpaces: (projectId, data) =>
+    request(`/api/projects/${projectId}/brief-spaces/restore`, { method: 'POST', body: JSON.stringify(data) }),
   // Reconcile the Brief onto the diagram (preview, then apply) / snapshot it.
   briefDiff: (projectId) => request(`/api/projects/${projectId}/brief-diff`),
   applyBrief: (projectId, opts) =>

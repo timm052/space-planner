@@ -542,6 +542,41 @@ test('the Brief tree is independent of the diagram spaces', async () => {
   assert.ok(b.id !== bundle.spaces[0].id); // separate rows
 });
 
+test('a deleted Brief subtree comes back whole, parents first', async () => {
+  // Deleting in the schedule was one-way: drop a building on the wrong row and
+  // its whole contents went with it. The DELETE now hands the subtree back and
+  // the restore rebuilds it under the same ids, so path matching still holds.
+  const pid = await newProject('BriefUndo');
+  const b = (await api('POST', `/api/projects/${pid}/brief-spaces`, { name: 'Block A', kind: 'building' })).body;
+  const room = (await api('POST', `/api/projects/${pid}/brief-spaces`, { name: 'Ward', target_area: 40, parent_id: b.id })).body;
+  const store = (await api('POST', `/api/projects/${pid}/brief-spaces`, { name: 'Store', target_area: 6, parent_id: room.id })).body;
+
+  const del = await api('DELETE', `/api/brief-spaces/${b.id}`);
+  assert.equal(del.status, 200);
+  assert.deepEqual(
+    del.body.brief_spaces.map((r) => r.id).sort((x, y) => x - y),
+    [b.id, room.id, store.id].sort((x, y) => x - y)
+  );
+  assert.equal((await api('GET', `/api/projects/${pid}`)).body.brief_spaces.length, 0);
+
+  const back = await api('POST', `/api/projects/${pid}/brief-spaces/restore`, del.body);
+  assert.equal(back.status, 200);
+  const rows = (await api('GET', `/api/projects/${pid}`)).body.brief_spaces;
+  assert.equal(rows.length, 3);
+  const ward = rows.find((r) => r.id === room.id);
+  assert.equal(ward.parent_id, b.id, 'the ward is back inside its own building');
+  assert.equal(rows.find((r) => r.id === store.id).parent_id, room.id, 'and the store inside the ward');
+  assert.equal(ward.target_area, 40, 'with its agreed area intact');
+});
+
+test('a Brief restore refuses rows from another project', async () => {
+  const a = await newProject('BriefUndoA');
+  const other = await newProject('BriefUndoB');
+  const room = (await api('POST', `/api/projects/${a}/brief-spaces`, { name: 'Ward', target_area: 40 })).body;
+  const del = (await api('DELETE', `/api/brief-spaces/${room.id}`)).body;
+  assert.equal((await api('POST', `/api/projects/${other}/brief-spaces/restore`, del)).status, 400);
+});
+
 test('Brief formulas resolve independently of the diagram', async () => {
   const pid = await newProject('BriefFormula');
   await api('PUT', `/api/projects/${pid}`, { variables: JSON.stringify({ staff: 15 }) });
