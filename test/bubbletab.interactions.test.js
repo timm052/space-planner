@@ -494,3 +494,114 @@ test('Escape abandons the note even when the cascade was built before it existed
     unmount();
   }
 });
+
+// ---- 5b/5c: the area lock, and the drawing as the source of truth ---------
+// Locked (the default, and how the app has always behaved): the typed figure
+// rules and dragging a corner only reshapes. Unlocked: the DRAWING rules —
+// dragging a corner changes what the footprint encloses and the schedule
+// figure follows it.
+
+// Freeform outlines live in the MASTER PLAN, where what is drawn is a building
+// envelope standing on the site. Its stated area is its layout slot's `a`.
+const AT = { x: 450, y: 310 };
+// A square normalised to unit area, which is how shape_json is stored.
+const unitSquare = JSON.stringify([
+  { x: -0.5, y: -0.5 }, { x: 0.5, y: -0.5 }, { x: 0.5, y: 0.5 }, { x: -0.5, y: 0.5 },
+]);
+const envelopeOf = (over) => ({
+  ...spaces[0],
+  plan_json: JSON.stringify({ 0: { x: AT.x, y: AT.y, a: 600 } }),
+  shape: 'poly',
+  shape_json: unitSquare,
+  ...over,
+});
+const planSpaces = (over) => [envelopeOf(over), spaces[1], spaces[2], spaces[3]];
+const planProject = { ...project, diagram_env: 'masterplan' };
+
+// Select the envelope and enter vertex-edit mode.
+async function shapeEditing(container, svg) {
+  const g = container.querySelector('g.bubble[data-space-id="1"]');
+  await act(async () => {
+    g.dispatchEvent(ev('pointerdown', { clientX: AT.x, clientY: AT.y }));
+    g.dispatchEvent(ev('pointerup', { clientX: AT.x, clientY: AT.y }));
+  });
+  const shapeBtn = [...container.querySelectorAll('.action-btn')].find((b) => /Shape/.test(b.textContent));
+  assert.ok(shapeBtn, 'the master plan offers freeform shape editing');
+  await act(async () => shapeBtn.dispatchEvent(ev('click')));
+  return [...container.querySelectorAll('.poly-handle')];
+}
+
+// Drag a handle far enough to clear the save threshold. Handle coordinates are
+// relative to the envelope's node, so world position = node + handle.
+async function dragHandle(svg, handle, dx, dy) {
+  const hx = AT.x + (Number(handle.getAttribute('cx') ?? handle.getAttribute('x')) || 0);
+  const hy = AT.y + (Number(handle.getAttribute('cy') ?? handle.getAttribute('y')) || 0);
+  await act(async () => {
+    handle.dispatchEvent(ev('pointerdown', { clientX: hx, clientY: hy }));
+    svg.dispatchEvent(ev('pointermove', { clientX: hx + dx, clientY: hy + dy }));
+    svg.dispatchEvent(ev('pointerup', { clientX: hx + dx, clientY: hy + dy }));
+  });
+}
+
+// The stated areas the envelope's layout slot was written with.
+const drawnAreaWrites = () => fetchCalls
+  .filter((c) => c.url === '/api/spaces/1' && c.options?.method === 'PUT')
+  .map((c) => JSON.parse(c.options.body))
+  .filter((b) => b.plan_json)
+  .map((b) => JSON.parse(b.plan_json)['0']?.a)
+  .filter((a) => a != null);
+
+test('locked (the default): reshaping never rewrites the stated area', async () => {
+  const { container, svg, unmount } = mount({ project: planProject, spaces: planSpaces() });
+  try {
+    const handles = await shapeEditing(container, svg);
+    assert.ok(handles.length >= 3, 'the outline has edit handles');
+    await dragHandle(svg, handles[0], -90, -90);
+    const shapeWrite = fetchCalls.find(
+      (c) => c.url === '/api/spaces/1' && /shape_json/.test(String(c.options?.body))
+    );
+    assert.ok(shapeWrite, 'the reshape was saved');
+    assert.deepEqual(
+      drawnAreaWrites().filter((a) => Math.abs(a - 600) > 0.01), [],
+      'the stated area is untouched'
+    );
+  } finally {
+    unmount();
+  }
+});
+
+test('unlocked: dragging a corner outward makes the stated area follow it', async () => {
+  const { container, svg, unmount } = mount({ project: planProject, spaces: planSpaces({ area_locked: 0 }) });
+  try {
+    const handles = await shapeEditing(container, svg);
+    await dragHandle(svg, handles[0], -90, -90); // pull the corner away from centre
+    const areas = drawnAreaWrites();
+    assert.ok(areas.length >= 1, 'the drawn area was written');
+    assert.ok(areas.at(-1) > 600, `area grew from 600 to ${areas.at(-1)}`);
+    // Shape and area travel in ONE patch, so a single undo puts both back.
+    const body = JSON.parse(
+      fetchCalls.filter((c) => c.url === '/api/spaces/1' && c.options?.method === 'PUT').at(-1).options.body
+    );
+    assert.ok('shape_json' in body && 'plan_json' in body, 'one patch, not two');
+  } finally {
+    unmount();
+  }
+});
+
+test('the lock toggle offers the two readings and persists the choice', async () => {
+  const { container, svg, unmount } = mount({ project: planProject, spaces: planSpaces() });
+  try {
+    await shapeEditing(container, svg);
+    const btn = container.querySelector('.area-lock');
+    assert.ok(btn, 'the lock sits beside the drawn-area chip');
+    assert.match(btn.textContent, /area/, 'locked reads as the figure ruling');
+    await act(async () => btn.dispatchEvent(ev('click')));
+    const put = fetchCalls.find(
+      (c) => c.url === '/api/spaces/1' && c.options?.method === 'PUT' && 'area_locked' in JSON.parse(c.options.body)
+    );
+    assert.ok(put, 'the choice persisted');
+    assert.equal(JSON.parse(put.options.body).area_locked, 0);
+  } finally {
+    unmount();
+  }
+});

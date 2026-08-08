@@ -124,6 +124,19 @@ ensureColumn('projects', 'north_locked', 'north_locked INTEGER DEFAULT 0'); // 1
 ensureColumn('projects', 'category_colors', 'category_colors TEXT'); // JSON map: category/building label → custom colour
 ensureColumn('projects', 'images_migrated', 'images_migrated INTEGER DEFAULT 0'); // legacy bg_/sat_ → images rows done
 
+// Which way round a room's area and its outline are related.
+//
+// 1 (the default, and how the app has always behaved): the typed area is the
+// truth and the outline only supplies proportion — dragging a corner reshapes
+// the footprint and the enclosed area is held constant.
+//
+// 0: the DRAWING is the truth. Dragging a corner changes what the footprint
+// encloses, and the schedule figure follows it. That is how a plan is actually
+// developed once it stops being a bubble diagram, and until now there was no
+// way to say it: no figure on a sheet could be traced back to the geometry it
+// sat on.
+ensureColumn('spaces', 'area_locked', 'area_locked INTEGER DEFAULT 1');
+
 // Title-block fields. A sheet that leaves the office is identified by more than
 // its project name: BS EN ISO 7200 makes the identification number, the
 // revision index, the date of issue and the people who created and approved it

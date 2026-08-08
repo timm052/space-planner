@@ -1586,7 +1586,15 @@ export default function BriefTab({
                               <span className="fx">ƒ</span> {fmtArea(s.target_area, project.units)}
                             </span>
                           );
-                        })() : (
+                        })() : s.area_locked === 0 ? (
+                          // 5c — this number came off the drawing, not off a
+                          // keyboard. Say so where the number is read: a figure
+                          // whose provenance is invisible is one nobody can
+                          // defend, which is the whole point of the exercise.
+                          <span className="formula-cell drawn" title="Taken from the drawn footprint — reshaping the room in the diagram changes this figure. Lock it in the diagram's action bar to type it instead.">
+                            <span className="fx">▱</span> {fmtArea(s.target_area, project.units)}
+                          </span>
+                        ) : (
                           fmtArea(s.target_area, project.units)
                         )}
                       </td>

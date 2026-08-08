@@ -124,6 +124,10 @@ router.put('/spaces/:id', (req, res) => {
     ? (req.body.circ_pct != null ? clampNum(req.body.circ_pct, 0, 0.6, 0) : null)
     : space.circ_pct;
 
+  // Area lock: 1 = the typed figure rules and the outline is proportion only,
+  // 0 = the outline rules and the figure follows what it encloses.
+  const area_locked = 'area_locked' in req.body ? (req.body.area_locked ? 1 : 0) : space.area_locked;
+
   // area_formula (nullable): a leading-'=' expression, else cleared to a literal.
   const area_formula = 'area_formula' in req.body
     ? (isFormulaStr(req.body.area_formula) ? req.body.area_formula.trim() : null)
@@ -134,12 +138,12 @@ router.put('/spaces/:id', (req, res) => {
     `UPDATE spaces SET department = ?, name = ?, count = ?, target_area = ?, notes = ?,
      pin_x = ?, pin_y = ?, pin_json = ?, parent_id = ?, kind = ?, shape = ?, shape_json = ?,
      plan_json = ?, block_json = ?, image = ?, sort_order = ?, child_mode = ?, level = ?,
-     height_m = ?, circ_pct = ?, area_formula = ? WHERE id = ?`
+     height_m = ?, circ_pct = ?, area_formula = ?, area_locked = ? WHERE id = ?`
   ).run(
     department, name, safeCount, area, notes,
     pin_x, pin_y, pin_json, parent_id, kind, oneOf(shape, VALID_SHAPES, 'bubble'), shape_json,
     plan_json, block_json, image, sort_order, child_mode, level ?? '',
-    height_m, circ_pct, area_formula, space.id
+    height_m, circ_pct, area_formula, area_locked, space.id
   );
   // Same rule as the Brief tree: a formula that does not evaluate is refused,
   // not stored as a 0 m² room. Restore the row's previous programme fields so

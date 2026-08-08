@@ -929,6 +929,41 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
     setTick, toSvgCoords, shapeOf, areaUnits, selected, selectedInst,
     posPatch: polyPosPatch,
     spaceById: byId,
+    // 5b — the lock is per unit and ON unless the user turns it off, which is
+    // exactly how the app has always behaved. A formula-driven room is always
+    // locked: its area is computed, so a figure written back from the outline
+    // would be overwritten by the next resolve and the drag would silently do
+    // nothing.
+    areaLocked: (s) => !!(s.area_locked ?? 1) || !!s.area_formula,
+    // 5c — turn a drawn footprint into the figure the schedule carries.
+    //
+    // areaUnits is in diagram-units² while the stored figure is in project
+    // units, and the mapping between them depends on the environment and the
+    // drawing scale. The RATIO does not: both are areas, so scaling one scales
+    // the other by the same factor whatever the mapping is.
+    //
+    // Where the figure LIVES differs by what was drawn. A building envelope
+    // carries its drawn area in its layout slot (the same `a` the action bar's
+    // area field writes); a room carries it in target_area.
+    onAreaFromShape: (space, drawnUnits) => {
+      const wasUnits = areaUnits(space);
+      if (!(wasUnits > 0) || !(drawnUnits > 0)) return null;
+      const next = Math.round(ea(space) * (drawnUnits / wasUnits) * 100) / 100;
+      if (!(next > 0)) return null;
+      if (isContainerKind(space)) {
+        const idx = selected === space.id ? selectedInst : 0;
+        const n = nodesRef.current.get(`${space.id}:${idx}`);
+        if (!n) return null;
+        if (Math.abs((n.a ?? 0) - next) < 0.005) return null;
+        n.a = next;
+        return {
+          before: { [layoutCol]: space[layoutCol] ?? null },
+          after: { [layoutCol]: JSON.stringify({ ...authoredPinsOf(space), [idx]: planSlot(n) }) },
+        };
+      }
+      if (Math.abs(next - space.target_area) < 0.005) return null;
+      return { before: { target_area: space.target_area }, after: { target_area: next } };
+    },
     // Un-drawn building envelopes render (and seed as) the default rectangle.
     defaultOutline: (s) => (isEnvelope && isContainerKind(s) ? rectanglePolygon(1.4) : null),
     // Corners latch to neighbours and the metric grid, like the footprint they
@@ -4560,6 +4595,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
             onRotateSelection={rotateSelection}
             envelope={selEnvelope}
             drawn={selDrawn}
+            onAreaLock={(space, locked) =>
+              commitSpace(space, { area_locked: locked ? 1 : 0 }, locked ? 'lock area' : 'unlock area')}
             onEnvelopeArea={saveEnvelopeArea}
             onEnvelopeHull={matchEnvelopeToHull}
             onEnvelopeCirc={(space, v) =>

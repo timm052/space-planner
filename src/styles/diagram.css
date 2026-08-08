@@ -2017,3 +2017,10 @@ tr.rel-met .rel-pair { opacity: 0.75; }
 .titleblock-grid .ctrl-input { width: 100%; min-width: 0; }
 .popover-note { font-size: 11.5px; color: var(--muted); margin: 0 0 6px; }
 .popover-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+/* 5b — which of the two rules the other. On (locked) is the default and the
+   quiet state; unlocked is called out, because the drawing is now writing
+   numbers into the schedule and that should never be a surprise. */
+.action-btn.area-lock { font-size: 11px; white-space: nowrap; }
+.action-btn.area-lock:not(.on) { color: var(--accent2-text); border-color: var(--accent2); }
+.action-btn.area-lock:disabled { opacity: 0.45; cursor: default; }

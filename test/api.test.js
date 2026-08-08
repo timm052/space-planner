@@ -1123,3 +1123,28 @@ test('an ordinary re-parent with no formulas is unaffected', async () => {
   const { body } = await api('GET', `/api/projects/${id}`);
   assert.equal(body.spaces.find((s) => s.id === b.body.id).parent_id, a.body.id);
 });
+
+test('the area lock is per room, defaults on, and survives a round trip', async () => {
+  // On (1) is how the app has always behaved: the typed figure rules and the
+  // outline only supplies proportion. Off means the drawing rules.
+  const pid = await newProject('AreaLock');
+  const room = (await api('POST', `/api/projects/${pid}/spaces`, { name: 'Hall', target_area: 200 })).body;
+  assert.equal(room.area_locked, 1, 'a new room keeps its typed area');
+
+  const off = await api('PUT', `/api/spaces/${room.id}`, { area_locked: 0 });
+  assert.equal(off.body.area_locked, 0);
+  // Unrelated edits must not silently re-lock it — the field is key-presence
+  // checked like every other nullable-ish column here.
+  const renamed = await api('PUT', `/api/spaces/${room.id}`, { name: 'Main hall' });
+  assert.equal(renamed.body.area_locked, 0, 'a rename does not re-lock the area');
+  assert.equal((await api('PUT', `/api/spaces/${room.id}`, { area_locked: 1 })).body.area_locked, 1);
+});
+
+test('unlocking does not by itself change the recorded area', async () => {
+  // The lock says which way round the two are related; it is not an edit.
+  const pid = await newProject('AreaLockInert');
+  const room = (await api('POST', `/api/projects/${pid}/spaces`, { name: 'Hall', target_area: 200 })).body;
+  await api('PUT', `/api/spaces/${room.id}`, { area_locked: 0 });
+  const after = (await api('GET', `/api/projects/${pid}`)).body.spaces.find((s) => s.id === room.id);
+  assert.equal(after.target_area, 200);
+});

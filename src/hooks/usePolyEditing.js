@@ -39,6 +39,13 @@ const SMOOTH_SEG = 14;
 export function usePolyEditing({
   project, nodesRef, pinOverride, history, applySpace, commitSpace, setError,
   setTick, toSvgCoords, shapeOf, areaUnits, selected, selectedInst,
+  // 5b/5c — which way round the area and the outline are related.
+  // (space) → true when the typed figure rules (the default, and how the app
+  // has always behaved). False means the DRAWING rules: a vertex drag changes
+  // what the footprint encloses, and `onAreaFromShape` is handed the new area
+  // so the schedule figure can follow it.
+  areaLocked = () => true,
+  onAreaFromShape = null,
   // Builds the { before, after, touched } patch that persists the anchor
   // node's recentred position. Defaults to pin_json (Concept); the authored
   // environments pass a patcher that writes their own layout column instead.
@@ -101,6 +108,12 @@ export function usePolyEditing({
   const polyScaleOf = (s) => {
     const np = liveNormOf(s);
     if (!np) return null;
+    // An UNLOCKED drag freezes the scale at the value the outline had when the
+    // press landed. Without that, re-deriving it from areaUnits every frame is
+    // itself the lock: the shape is scaled back to the stated area as fast as
+    // the handle enlarges it, and the corner appears not to move.
+    const d = polyDragRef.current;
+    if (d && d.space.id === s.id && d.frozenScale != null) return d.frozenScale;
     const k = polygonArea(outlinePoints(np, SMOOTH_SEG)) || polygonArea(np) || 1;
     return Math.sqrt(areaUnits(s) / k);
   };
@@ -159,10 +172,17 @@ export function usePolyEditing({
   // instance's node to the outline's centroid — the geometry on screen stays
   // exactly where the user left it and the label glides to its centre. The
   // position rides in the same undo entry as the shape.
-  function savePoly(space, verts, label = 'shape') {
+  function savePoly(space, verts, label = 'shape', drawnUnits = null) {
     const norm = normalizePolygon(verts);
     const before = { shape: space.shape, shape_json: space.shape_json ?? null };
     const after = { shape: 'poly', shape_json: JSON.stringify(norm) };
+    // 5c — the drawing as the source of truth. `drawnUnits` arrives only from an
+    // unlocked reshape, and it is the area the outline WILL render at, so the
+    // centroid compensation below has to use it rather than the figure the row
+    // still carries. The write itself is applied at the very end: a building
+    // envelope keeps its stated area in the same layout column the re-centring
+    // rewrites, so a patch built before that runs is simply overwritten.
+    const areaAfter = drawnUnits > 0 ? drawnUnits : areaUnits(space);
     // Render the saved outline immediately (liveNormOf) so releasing the
     // handle doesn't flash the pre-edit shape while the refetch is in flight.
     // `from` is the row we derived it from — see liveNormOf for why.
@@ -173,7 +193,9 @@ export function usePolyEditing({
       // Screen shift removed by normalization = centroid × the render scale the
       // outline had during the edit (smoothing is affine, so this is exact).
       const k = polygonArea(outlinePoints(verts, SMOOTH_SEG)) || polygonArea(verts) || 1;
-      const f = Math.sqrt(areaUnits(space) / k);
+      // The area the outline will render at AFTER this save — which is the new
+      // one when the drawing rules, not the figure the row still carries.
+      const f = Math.sqrt(areaAfter / k);
       // shape_json belongs to the SPACE, so every instance re-renders with the
       // re-centred outline. Compensating only the edited instance left the
       // others to jump by the centroid delta — and to persist there. Move them
@@ -196,6 +218,15 @@ export function usePolyEditing({
         Object.assign(before, patch.before);
         Object.assign(after, patch.after);
         for (const [i, p] of Object.entries(patch.touched)) pinOverride.current.set(`${space.id}:${i}`, p);
+      }
+    }
+    // The area, last, over the re-centred node — see areaAfter above. Same
+    // patch, so the shape, the positions and the figure are ONE undo entry.
+    if (drawnUnits > 0 && onAreaFromShape) {
+      const patch = onAreaFromShape(space, drawnUnits);
+      if (patch) {
+        for (const [k2, v] of Object.entries(patch.before)) if (!(k2 in before)) before[k2] = v;
+        Object.assign(after, patch.after);
       }
     }
     history.record({ label, undo: () => applySpace(space.id, before), redo: () => applySpace(space.id, after) });
@@ -267,6 +298,8 @@ export function usePolyEditing({
     polyDragRef.current = {
       space, vi, verts: np.map((p) => ({ ...p })),
       sx: e.clientX, sy: e.clientY, moved: 0, invalid: false,
+      // Read BEFORE the ref is set, so it is the pre-drag scale.
+      frozenScale: areaLocked(space) ? null : polyScaleOf(space),
     };
   }
 
@@ -295,18 +328,34 @@ export function usePolyEditing({
         x: dx * Math.cos(rad) + dy * Math.sin(rad),
         y: -dx * Math.sin(rad) + dy * Math.cos(rad),
       };
-      // Solve the vertex + area-lock scale together (see geometry.js): the
-      // dragged handle lands exactly under the cursor, the outline is a
-      // smooth deterministic function of it — no cross-frame feedback.
-      const solved = solveAreaLockedVertex(d.verts, d.vi, target, areaUnits(d.space), SMOOTH_SEG);
-      // A self-intersecting ring has no area for the lock to hold — it solves
-      // √(target / ~0) and the footprint balloons. Refuse the frame and keep the
-      // last valid outline; the canvas shows the handle as rejected.
-      if (solved.ok) {
-        d.verts = solved.verts;
-        d.invalid = false;
+      if (d.frozenScale != null) {
+        // UNLOCKED: no lock to solve for. The corner simply goes where the
+        // cursor is — in normalized space, since that is what verts are — and
+        // the footprint encloses whatever that makes it enclose.
+        const next = [...d.verts];
+        next[d.vi] = { ...next[d.vi], x: target.x / d.frozenScale, y: target.y / d.frozenScale };
+        // A ring with no positive area is still refused: it has no measurable
+        // footprint, so there is no number for the schedule to follow.
+        if (polygonArea(outlinePoints(next, SMOOTH_SEG)) > 0) {
+          d.verts = next;
+          d.invalid = false;
+        } else {
+          d.invalid = true;
+        }
       } else {
-        d.invalid = true;
+        // Solve the vertex + area-lock scale together (see geometry.js): the
+        // dragged handle lands exactly under the cursor, the outline is a
+        // smooth deterministic function of it — no cross-frame feedback.
+        const solved = solveAreaLockedVertex(d.verts, d.vi, target, areaUnits(d.space), SMOOTH_SEG);
+        // A self-intersecting ring has no area for the lock to hold — it solves
+        // √(target / ~0) and the footprint balloons. Refuse the frame and keep
+        // the last valid outline; the canvas shows the handle as rejected.
+        if (solved.ok) {
+          d.verts = solved.verts;
+          d.invalid = false;
+        } else {
+          d.invalid = true;
+        }
       }
       // Screen-space travel, so the save threshold means the same at every zoom
       // (it counted FRAMES before, so a single sub-pixel jitter wrote an entry).
@@ -319,8 +368,15 @@ export function usePolyEditing({
     const d = polyDragRef.current;
     if (!d) return false;
     polyDragRef.current = null;
-    if (d.moved >= DRAG_SLOP_PX) savePoly(d.space, d.verts, 'reshape');
-    else setTick((t) => t + 1);
+    if (d.moved >= DRAG_SLOP_PX) {
+      // What the outline now encloses, in the same diagram-units² that
+      // areaUnits speaks. Only meaningful when the lock was off — with it on
+      // the answer is areaUnits by construction.
+      const drawnUnits = d.frozenScale != null
+        ? polygonArea(outlinePoints(d.verts, SMOOTH_SEG)) * d.frozenScale ** 2
+        : null;
+      savePoly(d.space, d.verts, 'reshape', drawnUnits);
+    } else setTick((t) => t + 1);
     return true;
   }
   /** Abandon a vertex drag without saving (Escape / pointercancel). */
