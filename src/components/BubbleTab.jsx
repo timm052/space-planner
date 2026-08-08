@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api.js';
-import { fmtArea, areaToM2, distToMeters, distUnit, leafSpaces, rootContainer, isContainerKind, spaceStatus, instanceName } from '../compute.js';
+import { fmtArea, areaToM2, m2ToArea, distToMeters, distUnit, leafSpaces, rootContainer, isContainerKind, spaceStatus, instanceName, M2_PER_FT2 } from '../compute.js';
 import { STATUS_LABEL, CATEGORY_FALLBACK, categoryColorWarning } from '../viz.js';
 // pdfExport is lazy-loaded on demand — keeps jsPDF out of the initial bundle.
 import { useHistory } from '../useHistory.js';
@@ -33,6 +33,8 @@ import { useMarkup } from '../hooks/useMarkup.js';
 import { useMeasure } from '../hooks/useMeasure.js';
 import { scaleStroke, parseStroke, bboxOf as markupBbox, noteParts, NO_MARKUP, PEN_COLORS, PEN_WIDTHS, NOTE_HEIGHTS } from '../markup.js';
 import { sheetFileStem } from '../sheet.js';
+import { useTrace } from '../hooks/useTrace.js';
+import { traceToOutline, areaFromRing } from '../trace.js';
 import { bakeImage } from '../imageUtils.js';
 import { useTheme } from '../theme.jsx';
 import HelpPanel from './HelpPanel.jsx';
@@ -621,6 +623,112 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
     toSvgCoords, onChanged, setError, setTick, history,
   });
 
+  // ---------- Trace: imported geometry becomes programme ----------
+  //
+  // The one thing an import could not do. Reference geometry is deliberately
+  // inert, so a plan you imported showed the rooms and the schedule still had
+  // to be typed. Tracing a ring promotes it: the enclosed area becomes a real
+  // figure, the outline becomes the room's editable shape, and the path is
+  // removed from the underlay — it is no longer reference, it IS the room.
+  //
+  // Target: the SELECTED room if there is one, otherwise a new room. Whether
+  // the target's stated area follows the traced outline is the 5b lock's
+  // decision, not this tool's — a room someone has locked keeps its agreed
+  // figure and takes only the shape.
+  const traceTarget = selected != null ? byId.get(selected) : null;
+
+  async function applyTrace(cand, areaPU) {
+    if (!(effScale > 0)) {
+      return setError('Set a drawing scale before tracing — an area needs real units.');
+    }
+    setError(null);
+    // Measure the SIMPLIFIED outline, not the raw ring: what the room ends up
+    // drawn as is what its area has to say, or the two disagree from birth.
+    const { verts, centroid } = traceToOutline(cand.ring);
+    const area = Math.round(areaFromRing(verts, effScale, units, M2_PER_FT2) * 100) / 100;
+    if (!(area > 0)) return setError('That outline encloses no area.');
+    const shape_json = JSON.stringify(normalizePolygon(verts));
+    const slot = { x: centroid.x, y: centroid.y };
+    const target = traceTarget;
+    try {
+      // Write the room FIRST, then take the path out of the underlay. The other
+      // order loses the geometry if the write fails: the path is already gone
+      // and there is no room to show for it, and the file is not re-importable
+      // without redoing the placement.
+      if (target) {
+        const before = {
+          shape: target.shape ?? null,
+          shape_json: target.shape_json ?? null,
+          [layoutCol]: target[layoutCol] ?? null,
+          target_area: target.target_area,
+        };
+        const after = {
+          shape: 'poly',
+          shape_json,
+          [layoutCol]: JSON.stringify({ ...authoredPinsOf(target), 0: { ...(authoredPinsOf(target)[0] || {}), ...slot } }),
+          // A locked room keeps its agreed figure and takes only the shape.
+          ...(target.area_locked === 0 ? { target_area: area } : {}),
+        };
+        await applySpace(target.id, after);
+        const removed = await api.deleteMarkup(cand.id);
+        history.record({
+          label: `trace ${target.name}`,
+          undo: async () => {
+            await applySpace(target.id, before);
+            await api.restoreMarkups(project.id, { markups: [removed] });
+            onChanged();
+          },
+          redo: async () => {
+            await applySpace(target.id, after);
+            await api.deleteMarkup(cand.id);
+            onChanged();
+          },
+        });
+      } else {
+        // A new room. The source layer is the best available guess at what it
+        // is — CAD layers are named for a living — and beats "General".
+        const label = (cand.layer || 'Traced').trim() || 'Traced';
+        const created = await api.createSpace(project.id, {
+          name: label, department: label, count: 1, target_area: area,
+          level: isBuilding && levels.includes(floorMode) ? floorMode : '',
+        });
+        const geom = {
+          shape: 'poly', shape_json, [layoutCol]: JSON.stringify({ 0: slot }),
+          // Traced rooms start UNLOCKED: the drawing is where this figure came
+          // from, so the drawing should keep setting it (see 5b/5c).
+          area_locked: 0,
+        };
+        if (!created?.id) throw new Error('The traced room was not created.');
+        await applySpace(created.id, geom);
+        const removed = await api.deleteMarkup(cand.id);
+        history.record({
+          label: `trace ${label}`,
+          undo: async () => {
+            await api.deleteSpace(created.id);
+            await api.restoreMarkups(project.id, { markups: [removed] });
+            onChanged();
+          },
+          redo: async () => {
+            await api.restoreSpaces(project.id, { spaces: [{ ...created, ...geom, project_id: project.id }] });
+            await api.deleteMarkup(cand.id);
+            onChanged();
+          },
+        });
+      }
+      onChanged();
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
+  const {
+    candidates: traceCands, hover: traceHover, hoverRef: traceHoverRef, hoverArea: traceHoverArea,
+    tracePointerDown, tracePointerMove, traceCancel, hasTraceable,
+  } = useTrace({
+    strokes: markupStrokes, active: sel.tool === 'trace', effScale, units,
+    toSvgCoords, onTrace: applyTrace, setTick,
+  });
+
   // Measure / dimension tool. Reads the drawing, never writes to it.
   const {
     liveRef: measureRef, committed: measureDone, measureLabel,
@@ -748,6 +856,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
         applySel((s) => linking.setTool(s, 'markup'));
       } else if (e.key.toLowerCase() === 'm' && !mod && !is3DRef.current) {
         applySel((s) => linking.setTool(s, 'measure'));
+      } else if (e.key.toLowerCase() === 't' && !mod && !is3DRef.current && hasTraceable) {
+        applySel((s) => linking.setTool(s, 'trace'));
       } else if (e.key.toLowerCase() === 'a' && !mod && caps.autoLayout) {
         runAutoLayout(); // authored Master plan / Building have no auto-layout
       } else if (e.key === 'Tab' && !mod) {
@@ -1063,7 +1173,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
    */
   function modalTool() {
     const t = selRef.current.tool;
-    return t === 'markup' || t === 'measure';
+    return t === 'markup' || t === 'measure' || t === 'trace';
   }
 
   function rotHandleDown(e, o) {
@@ -2153,7 +2263,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
     // Markup tool is selected — so every other gesture arbitrates unchanged
     // when it is off. Deliberately after the right/middle-button branches:
     // panning must keep working while you are drawing.
-    if (markupPointerDown(e) || measurePointerDown(e)) {
+    if (markupPointerDown(e) || measurePointerDown(e) || tracePointerDown(e)) {
       // The modal tool owns the whole gesture from here. Anything a child
       // handler armed before this ran has to go with it: the modal up-handler
       // returns first, so a drag left in the ref is never released and the room
@@ -2247,6 +2357,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
       moveRafRef.current = 0;
       moveRef.current = null;
     }
+    if (traceCancel()) had = true;
     if (markupCancel()) had = true;
     if (measureCancel()) had = true;
     if (polyCancel()) had = true;
@@ -2315,6 +2426,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
     const rect = readRect();
     if (pinchRef.current) return void pinchMove(e); // two fingers own the view
     if (pointersRef.current.has(e.pointerId)) pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    tracePointerMove(e); // hover highlight only — never claims the event
     if (markupPointerMove(e)) return; // freehand redline — handled by useMarkup
     if (measurePointerMove(e)) return; // dimension drag — handled by useMeasure
     if (polyPointerMove(e)) return; // vertex drag — handled by usePolyEditing
@@ -3495,7 +3607,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
   }
 
   // ---------- derived render values ----------
-  if (spaces.length === 0)
+  // An empty project still gets a canvas when there is imported geometry with
+  // rings in it: tracing those rings is how the schedule gets its FIRST rooms,
+  // and sending the user to the Brief to type them is the exact hand work the
+  // import was meant to remove.
+  if (spaces.length === 0 && !hasTraceable)
     return (
       <div className="stage-empty">
         <Empty action={onGoTab ? { label: 'Open the Brief', onClick: () => onGoTab('Brief') } : null}>
@@ -3503,7 +3619,7 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
         </Empty>
       </div>
     );
-  if (leaves.length === 0)
+  if (leaves.length === 0 && !hasTraceable)
     return (
       <div className="stage-empty">
         <Empty action={onGoTab ? { label: 'Open the Design', onClick: () => onGoTab('Design') } : null}>
@@ -4301,6 +4417,11 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
               onToggleOnion={() => setPref('onion', !onion)}
               showMarkup={!is3D}
               showMeasure={!is3D}
+              showTrace={!is3D && (hasTraceable || sel.tool === 'trace')}
+              traceTarget={traceTarget}
+              traceHoverArea={traceHoverArea}
+              traceCount={traceCands.length}
+              traceUnits={units}
               markupPen={markupPen}
               onMarkupPen={setMarkupPen}
               penColors={PEN_COLORS}
@@ -4560,6 +4681,8 @@ export default function BubbleTab({ project, spaces, adjacencies, images = [], m
             markupStrokes={markupStrokes}
             inkRef={inkRef}
             noteDraft={noteDraft}
+            traceCands={sel.tool === 'trace' ? traceCands : null}
+            traceHoverRef={traceHoverRef}
             measureRef={measureRef}
             measureDone={measureDone}
             measureLabel={measureLabel}

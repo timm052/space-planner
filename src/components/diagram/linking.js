@@ -62,5 +62,11 @@ export function setTool(sel, tool) {
   if (tool === 'markup' || tool === 'measure') {
     return done({ ...sel, tool, selected: null, multi: new Set(), selLink: null, linkFrom: null, linkFromInst: 0 });
   }
+  // Trace KEEPS the selection, unlike the other modal tools: which room is
+  // selected is what a traced ring is applied to, so clearing it would throw
+  // away the choice the moment you picked the tool.
+  if (tool === 'trace') {
+    return done({ ...sel, tool: 'trace', selLink: null, linkFrom: null, linkFromInst: 0 });
+  }
   return done({ ...sel, tool: 'select', linkFrom: null, linkFromInst: 0 });
 }

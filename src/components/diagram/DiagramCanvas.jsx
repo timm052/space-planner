@@ -219,6 +219,9 @@ export default function DiagramCanvas({
   markupStrokes = [],
   inkRef = null,
   noteDraft = null,
+  // Trace tool: every enclosed imported ring, and the one under the cursor.
+  traceCands = null,
+  traceHoverRef = null,
   // Measure tool: the in-flight drag (a ref, per-move) and the last reading.
   measureRef = null,
   measureDone = null,
@@ -1352,6 +1355,22 @@ click to select · drag to move the building · drag the dot to re-plan the room
                     pending
                   />
                 )}
+              </g>
+            )}
+
+            {/* Trace tool — the imported rings that bound an area, and the one
+                under the cursor. Inert to the pointer: the tool takes its
+                press from the SVG (modes.MODE_ORDER), so an overlay that
+                intercepted it would break the very click it is advertising. */}
+            {traceCands?.length > 0 && (
+              <g className="trace-layer" pointerEvents="none" aria-hidden="true">
+                {traceCands.map((c) => (
+                  <path
+                    key={`tc:${c.id}`}
+                    className={`trace-ring${traceHoverRef?.current?.id === c.id ? ' hot' : ''}`}
+                    d={c.path}
+                  />
+                ))}
               </g>
             )}
 

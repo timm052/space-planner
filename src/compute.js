@@ -298,6 +298,11 @@ export function areaToM2(area, units) {
   return units === 'ft2' ? area * M2_PER_FT2 : area;
 }
 
+/** Square metres back into project area units — the inverse of areaToM2. */
+export function m2ToArea(m2, units) {
+  return units === 'ft2' ? m2 / M2_PER_FT2 : m2;
+}
+
 export function distToMeters(d, units) {
   return units === 'ft2' ? d * M_PER_FT : d;
 }

@@ -121,6 +121,7 @@ test('parseStroke reads a stored row', () => {
   const s = parseStroke({ id: 7, env: 'masterplan', level: 'Ground', color: '#3e63dd', width: 5, points: '[[1,2],[3,4]]' });
   assert.deepEqual(s, {
     id: 7, env: 'masterplan', level: 'Ground', kind: 'ink', text: '',
+    layer: null, source: null,
     color: '#3e63dd', width: 5, points: [[1, 2], [3, 4]],
   });
 });

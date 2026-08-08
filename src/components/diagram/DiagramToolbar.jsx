@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { fmtArea } from '../../compute.js';
 
 /**
  * The diagram's chrome along the top and left edge: the responsive top bar
@@ -318,6 +319,7 @@ export function ToolDock({
   showInterior = false, interior = true, onToggleInterior,
   showOnion = false, onion = false, onToggleOnion,
   showMarkup = false, markupPen = null, onMarkupPen, penColors = [], penWidths = [], noteHeights = [],
+  showTrace = false, traceTarget = null, traceHoverArea = null, traceCount = 0, traceUnits = 'm2',
   noteDraft = null, onNoteDraft, onCommitNote,
   hasMarkup = false, onClearMarkup, markupScopeNote = 'this environment',
   showMeasure = false,
@@ -350,6 +352,17 @@ export function ToolDock({
           {/* pen nib */}
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 20l4-1 10-10a2.5 2.5 0 0 0-3.5-3.5L4.5 15.5z" /><line x1="14" y1="6.5" x2="17.5" y2="10" /></svg>
           <span className="tool-key">D</span>
+        </button>
+      )}
+      {showTrace && (
+        <button
+          className={`tool-btn ${tool === 'trace' ? 'active' : ''}`}
+          onClick={() => onTool('trace')}
+          title="Trace — turn an enclosed path in an imported drawing into a room the schedule counts (T)"
+        >
+          {/* a closed outline with a measured fill */}
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"><path d="M4 8l5-4 8 3 3 7-5 6-9-1z" /><path d="M9 12h6" strokeWidth="1.2" /><path d="M9 15h4" strokeWidth="1.2" /></svg>
+          <span className="tool-key">T</span>
         </button>
       )}
       {showMeasure && (
@@ -421,6 +434,22 @@ export function ToolDock({
             disabled={!hasMarkup}
             title={hasMarkup ? `Clear all markup on ${markupScopeNote} (one undo step)` : 'No markup to clear'}
           >Clear</button>
+        </div>
+      )}
+      {/* Trace tray — says what the next click does BEFORE it does it: which
+          room the ring lands on, and what it is worth. */}
+      {showTrace && tool === 'trace' && (
+        <div className="trace-tray" role="group" aria-label="Trace target">
+          <div className="trace-target">
+            {traceTarget ? <>→ {traceTarget.name}</> : <>→ new room</>}
+          </div>
+          <div className="trace-hint">
+            {traceCount === 0
+              ? 'No enclosed paths here'
+              : traceHoverArea != null
+                ? fmtArea(traceHoverArea, traceUnits)
+                : `${traceCount} enclosed path${traceCount === 1 ? '' : 's'}`}
+          </div>
         </div>
       )}
       {/* The note being written. It appears only once a note has been placed,

@@ -182,6 +182,7 @@ const SECTIONS = [
       ['It moves with the drawing', 'Ink is authored in the drawing’s own coordinates, so it stays on whatever you drew it over through pan, zoom and a change of drawing scale — and prints at the weight you drew it.'],
       ['Removing it', 'Ctrl+Z undoes the last stroke. “Clear” removes every mark in the current scope as a single undoable step.'],
       ['On the sheet', 'Markup exports with every output — PDF, SVG, .ai and DXF — over the drawing, with notes as real text on their own layer. The sheet says so in the legend, so a marked-up print is never mistaken for an issued drawing.'],
+      ['Trace an import into the schedule', 'An imported DXF/SVG/.ai is reference geometry: it never touches an area or a total. The Trace tool (T) is the way across. It appears once an import contains enclosed paths; every one of them shows as a dashed outline, and clicking one turns it into a room the schedule counts — the enclosed area becomes the figure, the outline becomes the room’s editable shape, and the path leaves the underlay. Nested paths pick smallest-first, so a click inside a room in a building on a site means the room. With a room selected first, the ring is applied to THAT room instead of making a new one; whether its stated area follows is the area lock’s decision, so a locked room takes the shape and keeps its agreed figure. Tracing needs a drawing scale — an area needs real units.'],
     ],
   },
   {

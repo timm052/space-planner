@@ -708,3 +708,224 @@ test('Markup: a press on a room still commits a stroke', async () => {
     unmount();
   }
 });
+
+// ---- Trace: imported geometry becomes programme --------------------------
+// An import is deliberately inert reference geometry, so a plan you imported
+// showed the rooms and the schedule still had to be typed. Tracing a ring
+// promotes it: the enclosed area becomes a real figure, the outline becomes
+// the room's editable shape, and the path leaves the underlay.
+
+// 1:1000 => 0.2646 m/unit. A 200 x 150 unit ring is 52.92 m x 39.69 m.
+const TRACE_SCALE = 0.2646;
+const traceProject = { ...project, diagram_env: 'masterplan', display_scale: TRACE_SCALE };
+const importedRing = (id, x0, y0, w, h, over = {}) => ({
+  id,
+  project_id: 1,
+  env: 'masterplan',
+  level: '',
+  kind: 'survey',
+  color: '#7b8794',
+  width: 1.5,
+  src_layer: 'A-ROOM',
+  src_name: 'plan.dxf',
+  points: JSON.stringify([[x0, y0], [x0 + w, y0], [x0 + w, y0 + h], [x0, y0 + h], [x0, y0]]),
+  ...over,
+});
+
+function traceMode(container) {
+  const btn = [...container.querySelectorAll('.tool-btn')].find((b) => /Trace/.test(b.title || ''));
+  assert.ok(btn, 'the Trace tool is offered once there is imported geometry');
+  act(() => btn.dispatchEvent(ev('click')));
+  return btn;
+}
+
+// Click inside a ring, in diagram coords (client == diagram here, see the note
+// at the top of this file).
+async function traceClick(svg, x, y) {
+  await act(async () => {
+    svg.dispatchEvent(ev('pointermove', { clientX: x, clientY: y }));
+    svg.dispatchEvent(ev('pointerdown', { clientX: x, clientY: y }));
+    svg.dispatchEvent(ev('pointerup', { clientX: x, clientY: y }));
+  });
+}
+
+test('the Trace tool is hidden until there is imported geometry to trace', () => {
+  const { container, unmount } = mount({ project: traceProject });
+  try {
+    assert.equal([...container.querySelectorAll('.tool-btn')].some((b) => /Trace/.test(b.title || '')), false);
+  } finally {
+    unmount();
+  }
+});
+
+test('an enclosed imported path becomes a room with the area it encloses', async () => {
+  const { container, svg, unmount } = mount({
+    project: traceProject,
+    markups: [importedRing(90, 100, 100, 200, 150)],
+  });
+  try {
+    traceMode(container);
+    // Rings show as traceable outlines before anything is clicked.
+    assert.equal(container.querySelectorAll('.trace-ring').length, 1);
+    await traceClick(svg, 200, 175); // inside it
+
+    const post = fetchCalls.find((c) => /\/projects\/1\/spaces$/.test(c.url) && c.options?.method === 'POST');
+    assert.ok(post, 'a room was created');
+    const body = JSON.parse(post.options.body);
+    // 200 x 150 units at 0.2646 m/unit = 52.92 x 39.69 = 2100.39 m². By hand.
+    assert.ok(Math.abs(body.target_area - 2100.39) < 0.02, `area ${body.target_area}`);
+    // The source layer is the best available guess at what it is.
+    assert.equal(body.name, 'A-ROOM');
+    assert.equal(body.department, 'A-ROOM');
+
+    // This mount's stub never returns the created row, so the write cannot
+    // finish — and the path must still be there. Losing the geometry to a
+    // failed write would leave nothing to retry with, since re-importing the
+    // file means redoing the placement.
+    assert.equal(
+      fetchCalls.some((c) => c.url === '/api/markups/90' && c.options?.method === 'DELETE'),
+      false,
+      'a write that did not finish leaves the underlay alone'
+    );
+  } finally {
+    unmount();
+  }
+});
+
+// The shared fetch stub resolves every call to null. The create-then-place
+// flow needs the created row back, so this hands one over for the POST.
+function withCreatedRow(id) {
+  const real = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    const res = await real(url, options);
+    if (/\/spaces$/.test(String(url)) && options?.method === 'POST') {
+      return { ok: true, status: 201, json: async () => ({ id, ...JSON.parse(options.body) }) };
+    }
+    return res;
+  };
+  return () => { globalThis.fetch = real; };
+}
+
+test('a traced room carries the outline, unlocked so the drawing keeps setting it', async () => {
+  const restoreFetch = withCreatedRow(77);
+  const { container, svg, unmount } = mount({
+    project: traceProject,
+    markups: [importedRing(90, 100, 100, 200, 150)],
+  });
+  try {
+    traceMode(container);
+    await traceClick(svg, 200, 175);
+    const put = fetchCalls.find((c) => c.url === '/api/spaces/77' && c.options?.method === 'PUT');
+    assert.ok(put, 'the geometry was written');
+    const body = JSON.parse(put.options.body);
+    assert.equal(body.shape, 'poly');
+    assert.equal(body.area_locked, 0, 'the drawing is where this figure came from');
+    const verts = JSON.parse(body.shape_json);
+    assert.equal(verts.length, 4, 'a rectangle stays a rectangle');
+    assert.ok(verts.every((v) => v.k === 's'), 'corners stay sharp — it is a measured shape');
+    // The room lands on what it was traced from: the ring centres on (200,175).
+    const slot = JSON.parse(body.plan_json)['0'];
+    assert.ok(Math.abs(slot.x - 200) < 0.01 && Math.abs(slot.y - 175) < 0.01, JSON.stringify(slot));
+    // Only once the room exists does the path leave the underlay.
+    const del = fetchCalls.findIndex((c) => c.url === '/api/markups/90' && c.options?.method === 'DELETE');
+    const putAt = fetchCalls.indexOf(put);
+    assert.ok(putAt < del, 'the room is written BEFORE the path is removed');
+  } finally {
+    restoreFetch();
+    unmount();
+  }
+});
+
+test('with a room selected, the ring is applied to it instead', async () => {
+  const { container, svg, unmount } = mount({
+    project: traceProject,
+    spaces,
+    markups: [importedRing(90, 100, 100, 200, 150)],
+  });
+  try {
+    // Select Lobby via the rail, THEN pick the tool — trace keeps the selection.
+    const row = [...container.querySelectorAll('.split-row, .rail-row, .dl-row')].find((r) => /Lobby/.test(r.textContent));
+    await act(async () => row.dispatchEvent(ev('click')));
+    traceMode(container);
+    assert.match(container.querySelector('.trace-target').textContent, /Lobby/, 'the tray says where it will land');
+
+    await traceClick(svg, 200, 175);
+    assert.equal(
+      fetchCalls.some((c) => /\/projects\/1\/spaces$/.test(c.url) && c.options?.method === 'POST'),
+      false,
+      'no new room — it went to the selected one'
+    );
+    const put = fetchCalls.find((c) => c.url === '/api/spaces/2' && c.options?.method === 'PUT');
+    assert.ok(put, 'the selected room took the outline');
+    const body = JSON.parse(put.options.body);
+    assert.equal(body.shape, 'poly');
+    // Lobby is area-LOCKED (the default), so it takes the shape and keeps its
+    // agreed figure. Which of the two rules the other is the lock's decision.
+    assert.equal('target_area' in body, false, 'a locked room keeps its agreed area');
+  } finally {
+    unmount();
+  }
+});
+
+test('an unlocked target takes the traced area as well as the shape', async () => {
+  const unlocked = spaces.map((s) => (s.id === 2 ? { ...s, area_locked: 0 } : s));
+  const { container, svg, unmount } = mount({
+    project: traceProject,
+    spaces: unlocked,
+    markups: [importedRing(90, 100, 100, 200, 150)],
+  });
+  try {
+    const row = [...container.querySelectorAll('.split-row, .rail-row, .dl-row')].find((r) => /Lobby/.test(r.textContent));
+    await act(async () => row.dispatchEvent(ev('click')));
+    traceMode(container);
+    await traceClick(svg, 200, 175);
+    const body = JSON.parse(fetchCalls.find((c) => c.url === '/api/spaces/2' && c.options?.method === 'PUT').options.body);
+    assert.ok(Math.abs(body.target_area - 2100.39) < 0.02, `area followed the drawing: ${body.target_area}`);
+  } finally {
+    unmount();
+  }
+});
+
+test('a redline is never traceable, however enclosed it is', async () => {
+  // Circling a room in red is a comment. If that could be scheduled, markup
+  // would stop being inert with respect to the programme.
+  const { container, unmount } = mount({
+    project: traceProject,
+    markups: [importedRing(91, 100, 100, 200, 150, { kind: 'ink', src_layer: null, src_name: null })],
+  });
+  try {
+    assert.equal([...container.querySelectorAll('.tool-btn')].some((b) => /Trace/.test(b.title || '')), false);
+  } finally {
+    unmount();
+  }
+});
+
+test('clicking open ground traces nothing and starts no marquee', async () => {
+  const { container, svg, unmount } = mount({
+    project: traceProject,
+    markups: [importedRing(90, 100, 100, 200, 150)],
+  });
+  try {
+    traceMode(container);
+    await traceClick(svg, 700, 500); // well outside the ring
+    assert.equal(fetchCalls.some((c) => c.options?.method === 'POST'), false);
+    assert.equal(container.querySelector('.marquee'), null, 'a modal tool does not rubber-band');
+  } finally {
+    unmount();
+  }
+});
+
+test('without a drawing scale, tracing refuses rather than inventing units', async () => {
+  const { container, svg, unmount } = mount({
+    project: { ...project, diagram_env: 'masterplan' }, // no display_scale
+    markups: [importedRing(90, 100, 100, 200, 150)],
+  });
+  try {
+    traceMode(container);
+    await traceClick(svg, 200, 175);
+    assert.equal(fetchCalls.some((c) => c.options?.method === 'POST' && /spaces$/.test(c.url)), false);
+    assert.match(container.textContent, /drawing scale/i, 'and says why');
+  } finally {
+    unmount();
+  }
+});

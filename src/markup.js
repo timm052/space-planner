@@ -200,6 +200,10 @@ export function parseStroke(row) {
     level: row.level ?? '',
     kind: row.kind || 'ink',
     text: row.note_text || '',
+    // Kept for imported geometry: the source drawing's layer is the best guess
+    // at what a traced ring IS, and the import name groups it (see trace.js).
+    layer: row.src_layer || null,
+    source: row.src_name || null,
     color: row.color || DEFAULT_PEN.color,
     width: Number(row.width) || DEFAULT_PEN.width,
     points: clean,
